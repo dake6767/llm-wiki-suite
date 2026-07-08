@@ -1,0 +1,687 @@
+use std::io::ErrorKind;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
+
+use anyhow::{Context, Result};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use llm_wiki_connector::{ConnectorConfig, ConnectorEvent, run_connector_with_events};
+use llm_wiki_core::config::CoreConfig;
+use llm_wiki_core::registry::load_registry;
+use llm_wiki_core::{FullTextSearcher, IndexManager};
+use llm_wiki_server::{AutostartControl, ServerConfig, ServerControl, serve};
+use tauri::image::Image;
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::TrayIconBuilder;
+use tauri::{ActivationPolicy, Manager, Url, WindowEvent};
+use tauri_plugin_autostart::{MacosLauncher, ManagerExt as _};
+
+const DEFAULT_PORT: u16 = 8800;
+const CONFIG_PATH: &str = "desktop/config";
+
+/// 本地服务端口，每进程解析一次：持久化配置 > `PORT` 环境变量 > 默认 8800。
+fn server_port() -> u16 {
+    static PORT: OnceLock<u16> = OnceLock::new();
+    *PORT.get_or_init(resolve_port)
+}
+
+fn resolve_port() -> u16 {
+    if let Some(port) = load_persisted_port() {
+        return port;
+    }
+    if let Ok(env) = std::env::var("PORT")
+        && let Ok(port) = env.trim().parse::<u16>()
+        && port >= 1024
+    {
+        return port;
+    }
+    DEFAULT_PORT
+}
+
+fn local_base_url() -> String {
+    format!("http://127.0.0.1:{}/", server_port())
+}
+
+fn port_pref_path() -> Option<PathBuf> {
+    Some(llm_wiki_core::paths::connector_dir()?.join("server-port"))
+}
+
+fn load_persisted_port() -> Option<u16> {
+    let content = std::fs::read_to_string(port_pref_path()?).ok()?;
+    let port = content.trim().parse::<u16>().ok()?;
+    (port >= 1024).then_some(port)
+}
+
+fn save_persisted_port(port: u16) -> std::io::Result<()> {
+    let Some(path) = port_pref_path() else {
+        return Err(std::io::Error::new(ErrorKind::NotFound, "home dir 不可用"));
+    };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, format!("{port}\n"))
+}
+
+fn main() {
+    tracing_subscriber::fmt::init();
+    // One-time move of legacy ~/.llm-wiki-connector and ~/.config/llm-wiki into
+    // the unified ~/.my-llm-wiki home, before anything reads those paths.
+    llm_wiki_core::paths::migrate_legacy();
+    tauri::Builder::default()
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            None,
+        ))
+        .setup(|app| {
+            let local_url = local_base_url();
+            let app_handle = app.handle().clone();
+            let online_wiki_url = Arc::new(Mutex::new(None));
+            match prepare_local_server(app.handle(), online_wiki_url.clone()) {
+                Ok(Some((std_listener, mut server_config))) => {
+                    server_config.control = Some(server_control(app.handle().clone()));
+                    tauri::async_runtime::spawn(async move {
+                        let listener = match tokio::net::TcpListener::from_std(std_listener) {
+                            Ok(listener) => listener,
+                            Err(err) => {
+                                tracing::error!(error = ?err, "failed to create tokio listener");
+                                return;
+                            }
+                        };
+                        if let Err(err) = serve(listener, server_config).await {
+                            tracing::error!(error = ?err, "failed to start local wiki server");
+                        }
+                    });
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    tracing::error!(error = ?err, "failed to prepare local wiki server");
+                }
+            }
+            let connector_config = connector_config();
+            let tray = build_tray(app.handle(), local_url.clone(), online_wiki_url.clone())?;
+            let _ = app.set_activation_policy(ActivationPolicy::Accessory);
+            let relay_runtime = RelayRuntime::new(connector_config, tray, online_wiki_url);
+            // 中继默认关闭，仅当用户上次手动开启过才自动连接。
+            if load_relay_enabled() {
+                relay_runtime.start();
+            }
+
+            if let Some(window) = app.get_webview_window("main") {
+                window
+                    .navigate(Url::parse(&config_url()).context("invalid config URL")?)
+                    .context("navigate main window to config page")?;
+            }
+
+            tracing::info!("started {}", app.package_info().name);
+            app_handle.manage(DesktopState {
+                local_url: local_url.clone(),
+            });
+            app_handle.manage(relay_runtime);
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+                let _ = window
+                    .app_handle()
+                    .set_activation_policy(ActivationPolicy::Accessory);
+            }
+        })
+        .run(tauri::generate_context!())
+        .expect("failed to run LLM-Wiki desktop app");
+}
+
+struct DesktopState {
+    local_url: String,
+}
+
+#[derive(Clone)]
+struct TrayState {
+    relay_status: MenuItem<tauri::Wry>,
+    open_online_wiki: MenuItem<tauri::Wry>,
+    copy_share_link: MenuItem<tauri::Wry>,
+    relay_toggle: MenuItem<tauri::Wry>,
+}
+
+#[derive(Clone)]
+struct RelayRuntime {
+    config: ConnectorConfig,
+    worker_ws: String,
+    tray: TrayState,
+    online_wiki_url: Arc<Mutex<Option<String>>>,
+    handle: Arc<Mutex<Option<tauri::async_runtime::JoinHandle<()>>>>,
+}
+
+impl RelayRuntime {
+    fn new(
+        config: ConnectorConfig,
+        tray: TrayState,
+        online_wiki_url: Arc<Mutex<Option<String>>>,
+    ) -> Self {
+        Self {
+            worker_ws: config.worker_ws.clone(),
+            config,
+            tray,
+            online_wiki_url,
+            handle: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    fn start(&self) {
+        let Ok(mut handle) = self.handle.lock() else {
+            return;
+        };
+        if handle.is_some() {
+            return;
+        }
+
+        let config = self.config.clone();
+        let worker_ws = self.worker_ws.clone();
+        let tray = self.tray.clone();
+        let online_wiki_url = self.online_wiki_url.clone();
+        let _ = self.tray.relay_toggle.set_text("断开中继服务");
+        let _ = self.tray.relay_status.set_text("🔴 中继：重连中");
+        let _ = self.tray.open_online_wiki.set_enabled(false);
+        let _ = self.tray.copy_share_link.set_enabled(false);
+
+        *handle = Some(tauri::async_runtime::spawn(async move {
+            if let Err(err) = run_connector_with_events(config, move |event| {
+                update_tray_relay(&tray, online_wiki_url.clone(), &worker_ws, event);
+            })
+            .await
+            {
+                tracing::error!(error = ?err, "relay connector stopped");
+            }
+        }));
+    }
+
+    fn stop(&self) {
+        if let Ok(mut handle) = self.handle.lock()
+            && let Some(handle) = handle.take()
+        {
+            handle.abort();
+        }
+        if let Ok(mut guard) = self.online_wiki_url.lock() {
+            *guard = None;
+        }
+        let _ = self.tray.relay_status.set_text("⚪ 中继：已关闭");
+        let _ = self.tray.open_online_wiki.set_enabled(false);
+        let _ = self.tray.copy_share_link.set_enabled(false);
+        let _ = self.tray.relay_toggle.set_text("连接中继服务");
+    }
+
+    fn toggle(&self) {
+        let running = self
+            .handle
+            .lock()
+            .map(|handle| handle.is_some())
+            .unwrap_or(false);
+        if running {
+            self.stop();
+            save_relay_enabled(false);
+        } else {
+            self.start();
+            save_relay_enabled(true);
+        }
+    }
+}
+
+fn relay_pref_path() -> Option<PathBuf> {
+    Some(llm_wiki_core::paths::connector_dir()?.join("relay-enabled"))
+}
+
+/// Whether the relay should auto-connect on launch. Defaults to `false` so the
+/// first launch stays offline until the user opts in; once toggled, the choice
+/// is persisted and restored on the next launch.
+fn load_relay_enabled() -> bool {
+    relay_pref_path()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .is_some_and(|content| content.trim() == "1")
+}
+
+fn save_relay_enabled(enabled: bool) {
+    let Some(path) = relay_pref_path() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Err(err) = std::fs::write(&path, if enabled { "1\n" } else { "0\n" }) {
+        tracing::warn!(error = ?err, "failed to persist relay preference");
+    }
+}
+
+fn prepare_local_server(
+    app: &tauri::AppHandle,
+    online_wiki_url: Arc<Mutex<Option<String>>>,
+) -> Result<Option<(std::net::TcpListener, ServerConfig)>> {
+    let config = CoreConfig::from_env();
+    let registry = load_registry(&config).context("load wiki registry")?;
+    let manager = IndexManager::build(registry.into_values()).context("build wiki index")?;
+    let searcher = FullTextSearcher::open(config.cache_dir.join("fts5.sqlite3"))
+        .context("open full-text search index")?;
+    for idx in manager.wikis.values() {
+        searcher
+            .reindex_wiki(&idx.entry.key, &idx.search_docs())
+            .with_context(|| format!("reindex wiki {}", idx.entry.key))?;
+    }
+
+    let frontend_dist = frontend_dist_path(app).filter(|path| path.is_dir());
+    let port = server_port();
+    let addr = SocketAddr::new(
+        std::env::var("HOST")
+            .ok()
+            .and_then(|host| host.parse::<IpAddr>().ok())
+            .unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+        port,
+    );
+    let std_listener = match std::net::TcpListener::bind(addr) {
+        Ok(listener) => listener,
+        Err(err) if err.kind() == ErrorKind::AddrInUse => {
+            tracing::warn!(
+                address = %addr,
+                "local wiki server port is already in use; assuming another instance is running"
+            );
+            return Ok(None);
+        }
+        Err(err) => return Err(err).context("bind local wiki server"),
+    };
+    std_listener
+        .set_nonblocking(true)
+        .context("set local wiki server listener nonblocking")?;
+
+    Ok(Some((
+        std_listener,
+        ServerConfig {
+            frontend_dist,
+            index_manager: manager,
+            searcher,
+            auth_token: auth_token(),
+            watch_wikis: true,
+            registry_config: Some(config),
+            port,
+            control: None,
+            share_url: Some(Arc::new(move || {
+                online_wiki_url.lock().ok().and_then(|guard| guard.clone())
+            })),
+        },
+    )))
+}
+
+/// 注入给 HTTP 层的运行期控制：持久化端口、延迟重启进程、开机自启。
+fn server_control(app: tauri::AppHandle) -> ServerControl {
+    let restart_app = app.clone();
+    let query_app = app.clone();
+    ServerControl {
+        persist_port: Arc::new(save_persisted_port),
+        restart: Arc::new(move || {
+            let app = restart_app.clone();
+            // 延迟少许，让 HTTP 响应先回到设置页再重启。
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                app.restart();
+            });
+        }),
+        autostart: Some(AutostartControl {
+            is_enabled: Arc::new(move || {
+                query_app
+                    .autolaunch()
+                    .is_enabled()
+                    .map_err(|err| err.to_string())
+            }),
+            set_enabled: Arc::new(move |enabled| {
+                let manager = app.autolaunch();
+                if enabled {
+                    // auto-launch 不会自建 ~/Library/LaunchAgents；新建的 macOS
+                    // 账户可能没有该目录，缺失时 enable 会直接失败。
+                    #[cfg(target_os = "macos")]
+                    if let Some(home) = dirs::home_dir() {
+                        let _ = std::fs::create_dir_all(home.join("Library/LaunchAgents"));
+                    }
+                    manager.enable()
+                } else {
+                    manager.disable()
+                }
+                .map_err(|err| err.to_string())
+            }),
+        }),
+    }
+}
+
+/// 前端静态资源目录解析顺序：
+/// 1. `LLM_WIKI_WEB_FRONTEND` 环境变量（显式覆盖）；
+/// 2. 打进 .app 的随包资源（`$RESOURCE/frontend`）——发布形态，自洽且不会与仓库 dist 版本错位；
+/// 3. 开发态回退到仓库内的 `frontend/dist`。
+fn frontend_dist_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+    if let Some(custom) = std::env::var_os("LLM_WIKI_WEB_FRONTEND") {
+        return Some(PathBuf::from(custom));
+    }
+    if let Ok(bundled) = app
+        .path()
+        .resolve("frontend", tauri::path::BaseDirectory::Resource)
+        && bundled.is_dir()
+    {
+        return Some(bundled);
+    }
+    Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../frontend/dist"))
+}
+
+fn connector_config() -> ConnectorConfig {
+    let mut config = ConnectorConfig::default();
+    if let Ok(worker_ws) = std::env::var("WORKER_WS") {
+        config.worker_ws = worker_ws;
+    }
+    config.origin = local_base_url().trim_end_matches('/').to_string();
+    if let Some(dir) = llm_wiki_core::paths::connector_dir() {
+        config.identity_file = dir.join("identity.json");
+    }
+    if let Ok(identity_file) = std::env::var("IDENTITY_FILE") {
+        config.identity_file = PathBuf::from(identity_file);
+    }
+    config
+}
+
+/// Resolve the shared auth token, computed once per process.
+///
+/// Order: `LLM_WIKI_WEB_TOKEN` env override (dev / explicit), otherwise a
+/// locally-persisted token under `~/.my-llm-wiki/connector/token`, generated on
+/// first launch. A GUI app started from Finder inherits no shell env, so the
+/// persisted file is what makes the token non-empty in production — without it
+/// the server, the settings window, and the tray links would all be tokenless.
+fn auth_token() -> String {
+    static TOKEN: OnceLock<String> = OnceLock::new();
+    TOKEN.get_or_init(resolve_auth_token).clone()
+}
+
+fn resolve_auth_token() -> String {
+    if let Ok(env) = std::env::var("LLM_WIKI_WEB_TOKEN") {
+        let env = env.trim();
+        if !env.is_empty() {
+            return env.to_string();
+        }
+    }
+    load_or_create_token().unwrap_or_default()
+}
+
+fn load_or_create_token() -> Option<String> {
+    let path = llm_wiki_core::paths::connector_dir()?.join("token");
+    if let Ok(existing) = std::fs::read_to_string(&path) {
+        let existing = existing.trim();
+        if !existing.is_empty() {
+            return Some(existing.to_string());
+        }
+    }
+
+    let token = generate_token();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Err(err) = write_token_file(&path, &token) {
+        tracing::warn!(error = ?err, "failed to persist auth token; using in-memory token for this session");
+    }
+    Some(token)
+}
+
+fn generate_token() -> String {
+    let mut bytes = [0u8; 18];
+    getrandom::fill(&mut bytes).expect("system RNG unavailable");
+    URL_SAFE_NO_PAD.encode(bytes)
+}
+
+fn write_token_file(path: &std::path::Path, token: &str) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .mode(0o600)
+            .open(path)?;
+        file.write_all(token.as_bytes())?;
+        file.write_all(b"\n")?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, format!("{token}\n"))
+    }
+}
+
+fn build_tray(
+    app: &tauri::AppHandle,
+    local_url: String,
+    online_wiki_url: Arc<Mutex<Option<String>>>,
+) -> Result<TrayState> {
+    let relay_status =
+        MenuItem::with_id(app, "relay_status", "⚪ 中继：已关闭", false, None::<&str>)?;
+    let status = MenuItem::with_id(
+        app,
+        "status",
+        format!("本地服务: {local_url}"),
+        false,
+        None::<&str>,
+    )?;
+    let show_window = MenuItem::with_id(app, "show_window", "设置", true, None::<&str>)?;
+    let open_local_wiki =
+        MenuItem::with_id(app, "open_local_wiki", "打开本地 WIKI", true, None::<&str>)?;
+    let open_online_wiki = MenuItem::with_id(
+        app,
+        "open_online_wiki",
+        "打开线上 WIKI",
+        false,
+        None::<&str>,
+    )?;
+    let copy_share_link =
+        MenuItem::with_id(app, "copy_share_link", "复制分享链接", false, None::<&str>)?;
+    let relay_toggle = MenuItem::with_id(app, "relay_toggle", "连接中继服务", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+    let separator = PredefinedMenuItem::separator(app)?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &relay_status,
+            &status,
+            &open_local_wiki,
+            &open_online_wiki,
+            &copy_share_link,
+            &relay_toggle,
+            &show_window,
+            &separator,
+            &quit,
+        ],
+    )?;
+    // 模板图标:macOS 只取 alpha 通道着色,菜单栏深浅色下自动适配
+    let icon = Image::from_bytes(include_bytes!("../icons/tray.png"))?;
+
+    TrayIconBuilder::with_id("main")
+        .tooltip("LLM-Wiki")
+        .icon(icon)
+        .icon_as_template(true)
+        .menu(&menu)
+        .show_menu_on_left_click(true)
+        .on_menu_event(move |app, event| match event.id().as_ref() {
+            "show_window" => {
+                let _ = app.set_activation_policy(ActivationPolicy::Regular);
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                    if let Ok(url) = Url::parse(&config_url()) {
+                        let _ = window.navigate(url);
+                    }
+                }
+            }
+            "open_local_wiki" => {
+                if let Some(state) = app.try_state::<DesktopState>() {
+                    let url = local_url_with_token(&state.local_url, &auth_token());
+                    let _ = open::that(&url);
+                }
+            }
+            "open_online_wiki" => {
+                if let Ok(guard) = online_wiki_url.lock()
+                    && let Some(url) = guard.as_ref()
+                {
+                    let _ = open::that(url);
+                }
+            }
+            "copy_share_link" => {
+                let url = online_wiki_url.lock().ok().and_then(|guard| guard.clone());
+                if let Some(url) = url {
+                    if let Err(err) = copy_to_clipboard(&url) {
+                        tracing::error!(error = ?err, "failed to copy share link to clipboard");
+                    }
+                }
+            }
+            "relay_toggle" => {
+                if let Some(relay_runtime) = app.try_state::<RelayRuntime>() {
+                    relay_runtime.toggle();
+                }
+            }
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .build(app)?;
+
+    Ok(TrayState {
+        relay_status,
+        open_online_wiki,
+        copy_share_link,
+        relay_toggle,
+    })
+}
+
+fn copy_to_clipboard(text: &str) -> Result<()> {
+    let mut clipboard = arboard::Clipboard::new().context("open system clipboard")?;
+    clipboard
+        .set_text(text.to_string())
+        .context("write share link to clipboard")?;
+    Ok(())
+}
+
+fn config_url() -> String {
+    local_url_with_token(&format!("{}{CONFIG_PATH}", local_base_url()), &auth_token())
+}
+
+fn update_tray_relay(
+    tray: &TrayState,
+    online_wiki_url: Arc<Mutex<Option<String>>>,
+    worker_ws: &str,
+    event: ConnectorEvent,
+) {
+    match event {
+        ConnectorEvent::Connected { uid } => {
+            let url = online_url(worker_ws, &uid, &auth_token());
+            let enabled = url.is_some();
+            if let Ok(mut guard) = online_wiki_url.lock() {
+                *guard = url;
+            }
+            let _ = tray
+                .relay_status
+                .set_text(format!("🟢 中继：已连接 ({uid})"));
+            let _ = tray.open_online_wiki.set_enabled(enabled);
+            let _ = tray.copy_share_link.set_enabled(enabled);
+        }
+        ConnectorEvent::Disconnected => {
+            if let Ok(mut guard) = online_wiki_url.lock() {
+                *guard = None;
+            }
+            let _ = tray.relay_status.set_text("🔴 中继：未连接");
+            let _ = tray.open_online_wiki.set_enabled(false);
+            let _ = tray.copy_share_link.set_enabled(false);
+        }
+        ConnectorEvent::Retrying { .. } => {
+            let _ = tray.relay_status.set_text("🔴 中继：重连中");
+            let _ = tray.open_online_wiki.set_enabled(false);
+            let _ = tray.copy_share_link.set_enabled(false);
+        }
+        ConnectorEvent::IdentityLoaded { .. } | ConnectorEvent::RequestFinished { .. } => {}
+    }
+}
+
+fn local_url_with_token(local_url: &str, auth_token: &str) -> String {
+    if auth_token.is_empty() {
+        return local_url.to_string();
+    }
+    match url::Url::parse(local_url) {
+        Ok(mut url) => {
+            url.query_pairs_mut().append_pair("token", auth_token);
+            url.to_string()
+        }
+        Err(_) => local_url.to_string(),
+    }
+}
+
+fn online_url(worker_ws: &str, uid: &str, auth_token: &str) -> Option<String> {
+    let mut url = url::Url::parse(worker_ws).ok()?;
+    match url.scheme() {
+        "wss" => url.set_scheme("https").ok()?,
+        "ws" => url.set_scheme("http").ok()?,
+        _ => {}
+    }
+    url.set_path(&format!("/{uid}/"));
+    url.set_query(None);
+    if !auth_token.is_empty() {
+        url.query_pairs_mut().append_pair("token", auth_token);
+    }
+    Some(url.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_url_keeps_plain_when_token_empty() {
+        assert_eq!(
+            local_url_with_token("http://127.0.0.1:8800/", ""),
+            "http://127.0.0.1:8800/"
+        );
+    }
+
+    #[test]
+    fn local_url_appends_token_when_present() {
+        assert_eq!(
+            local_url_with_token("http://127.0.0.1:8800/", "secret"),
+            "http://127.0.0.1:8800/?token=secret"
+        );
+    }
+
+    #[test]
+    fn local_url_percent_encodes_token() {
+        assert_eq!(
+            local_url_with_token("http://127.0.0.1:8800/", "a b/c"),
+            "http://127.0.0.1:8800/?token=a+b%2Fc"
+        );
+    }
+
+    #[test]
+    fn online_url_converts_scheme_and_appends_token() {
+        assert_eq!(
+            online_url("wss://relay.example/ws", "abc123", "secret").as_deref(),
+            Some("https://relay.example/abc123/?token=secret")
+        );
+    }
+
+    #[test]
+    fn generated_token_is_url_safe_and_unique() {
+        let a = generate_token();
+        let b = generate_token();
+        assert_ne!(a, b);
+        assert_eq!(a.len(), 24);
+        assert!(
+            a.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        );
+    }
+
+    #[test]
+    fn online_url_omits_token_when_empty() {
+        assert_eq!(
+            online_url("wss://relay.example/ws", "abc123", "").as_deref(),
+            Some("https://relay.example/abc123/")
+        );
+    }
+}

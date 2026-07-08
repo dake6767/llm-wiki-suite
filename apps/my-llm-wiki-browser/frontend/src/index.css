@@ -1,0 +1,306 @@
+@import "tailwindcss";
+
+/* ───────────────────────────────────────────────────────────
+   「藏」· LLM-Wiki —— 学者档案 / 手稿阅读器
+   暖纸 + 暖墨 + 朱砂，宋体手稿正文，等宽索引 chrome。
+   ─────────────────────────────────────────────────────────── */
+
+@theme {
+  --color-paper: #f6f2e9;
+  --color-paper-2: #efe7d6;
+  --color-paper-3: #e8dfca;
+  --color-ink: #1d1a16;
+  --color-ink-soft: #574f45;
+  --color-ink-faint: #938877;
+  --color-cinnabar: #b23f33;
+  --color-cinnabar-deep: #8c2f26;
+  --color-spine: #1e1b17;
+  --color-spine-2: #272219;
+  --color-cream: #ddd3c0;
+  --color-cream-soft: #a89e8c;
+  --color-brass: #97713f;
+
+  --font-display: "Fraunces", "Noto Serif SC", Georgia, serif;
+  --font-serif: "Noto Serif SC", "Fraunces", Georgia, serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+:root {
+  --rule: rgba(29, 26, 22, 0.14);
+  --rule-soft: rgba(29, 26, 22, 0.08);
+  --rule-cream: rgba(221, 211, 192, 0.16);
+  color-scheme: light;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--font-serif);
+  background: var(--color-paper);
+  color: var(--color-ink);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* 全局纸张噪点纹理 */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  pointer-events: none;
+  opacity: 0.05;
+  mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+::selection {
+  background: rgba(178, 63, 51, 0.22);
+  color: var(--color-ink);
+}
+
+/* 滚动条 */
+::-webkit-scrollbar {
+  width: 11px;
+  height: 11px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(29, 26, 22, 0.18);
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: 99px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(29, 26, 22, 0.32);
+  background-clip: content-box;
+}
+.spine ::-webkit-scrollbar-thumb {
+  background: rgba(221, 211, 192, 0.18);
+  background-clip: content-box;
+}
+
+/* ── 排版工具 ─────────────────────────────────────────── */
+.font-display { font-family: var(--font-display); }
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--color-ink-faint);
+}
+.tnum { font-variant-numeric: tabular-nums; }
+
+/* 朱砂印章 */
+.seal {
+  display: inline-grid;
+  place-items: center;
+  font-family: var(--font-serif);
+  font-weight: 600;
+  color: #f6ecdf;
+  background: linear-gradient(160deg, var(--color-cinnabar), var(--color-cinnabar-deep));
+  border-radius: 5px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14),
+    0 1px 2px rgba(0, 0, 0, 0.35);
+}
+
+/* ── 入场动画 ─────────────────────────────────────────── */
+@keyframes rise {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: none; }
+}
+.reveal > * {
+  opacity: 0;
+  animation: rise 0.62s cubic-bezier(0.2, 0.7, 0.2, 1) forwards;
+}
+.reveal > *:nth-child(1) { animation-delay: 0.03s; }
+.reveal > *:nth-child(2) { animation-delay: 0.1s; }
+.reveal > *:nth-child(3) { animation-delay: 0.17s; }
+.reveal > *:nth-child(4) { animation-delay: 0.24s; }
+.reveal > *:nth-child(5) { animation-delay: 0.31s; }
+.reveal > *:nth-child(6) { animation-delay: 0.38s; }
+.reveal > *:nth-child(7) { animation-delay: 0.45s; }
+.reveal > *:nth-child(8) { animation-delay: 0.52s; }
+.rise { animation: rise 0.6s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .reveal > *,
+  .rise { animation: none; opacity: 1; }
+}
+
+/* ── 目录索引行（引导点） ─────────────────────────────── */
+.index-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0;
+  padding: 0.7rem 0;
+  border-bottom: 1px solid var(--rule-soft);
+  color: var(--color-ink);
+  transition: color 0.18s ease;
+}
+.index-row:hover { color: var(--color-cinnabar); }
+.index-leader {
+  flex: 1;
+  margin: 0 0.7rem;
+  align-self: center;
+  border-bottom: 1px dotted var(--rule);
+  transition: border-color 0.18s ease;
+}
+.index-row:hover .index-leader {
+  border-bottom-color: rgba(178, 63, 51, 0.5);
+}
+
+/* ── 自定义 select（书脊上） ──────────────────────────── */
+.spine-select {
+  appearance: none;
+  width: 100%;
+  background: rgba(221, 211, 192, 0.06);
+  color: var(--color-cream);
+  font-family: var(--font-serif);
+  font-size: 0.92rem;
+  padding: 0.55rem 2rem 0.55rem 0.7rem;
+  border: 1px solid var(--rule-cream);
+  border-radius: 4px;
+  cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' fill='none' stroke='%23ddd3c0' stroke-width='1.4'%3E%3Cpath d='M1 1.5 6 6l5-4.5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.7rem center;
+  transition: border-color 0.18s ease;
+}
+.spine-select:hover { border-color: rgba(221, 211, 192, 0.4); }
+.spine-select option { color: #1d1a16; }
+
+/* ── markdown 手稿正文 ──────────────────────────────── */
+mark {
+  background: linear-gradient(transparent 58%, rgba(178, 63, 51, 0.26) 58%);
+  color: inherit;
+  padding: 0 1px;
+}
+
+.prose-wiki {
+  font-family: var(--font-serif);
+  font-size: var(--prose-size, 1.06rem);
+  line-height: 1.92;
+  color: var(--color-ink);
+  word-break: break-word;
+}
+.prose-wiki h1,
+.prose-wiki h2,
+.prose-wiki h3 {
+  font-family: var(--font-display);
+  color: var(--color-ink);
+  letter-spacing: -0.01em;
+}
+.prose-wiki h1 { font-size: 1.74em; font-weight: 600; margin: 1.6rem 0 0.9rem; line-height: 1.2; }
+.prose-wiki h2 {
+  font-size: 1.32em;
+  font-weight: 600;
+  margin: 2.2rem 0 0.8rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid var(--rule);
+}
+.prose-wiki h2::before {
+  content: "";
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.95rem;
+  margin-right: 0.55rem;
+  vertical-align: -0.05rem;
+  background: var(--color-cinnabar);
+  border-radius: 1px;
+}
+.prose-wiki h3 { font-size: 1.09em; font-weight: 600; margin: 1.5rem 0 0.5rem; }
+.prose-wiki p { margin: 0.85rem 0; }
+.prose-wiki ul { list-style: none; padding-left: 1.3rem; margin: 0.7rem 0; }
+.prose-wiki ul > li::before {
+  content: "—";
+  color: var(--color-cinnabar);
+  position: absolute;
+  margin-left: -1.3rem;
+}
+.prose-wiki ol { list-style: decimal; padding-left: 1.5rem; margin: 0.7rem 0; }
+.prose-wiki ol::marker { color: var(--color-ink-faint); }
+.prose-wiki li { margin: 0.3rem 0; position: relative; }
+.prose-wiki a {
+  color: var(--color-ink);
+  text-decoration: underline;
+  text-decoration-color: rgba(178, 63, 51, 0.55);
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1.5px;
+  transition: background 0.15s ease;
+}
+.prose-wiki a:hover {
+  background: rgba(178, 63, 51, 0.1);
+  text-decoration-color: var(--color-cinnabar);
+}
+.prose-wiki code {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  background: var(--color-paper-2);
+  padding: 0.12rem 0.35rem;
+  border-radius: 3px;
+  border: 1px solid var(--rule-soft);
+}
+.prose-wiki pre {
+  font-family: var(--font-mono);
+  background: var(--color-spine);
+  color: #e7ddcb;
+  padding: 1rem 1.2rem;
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 0.86em;
+  line-height: 1.7;
+  margin: 1.1rem 0;
+}
+.prose-wiki pre code { background: transparent; border: 0; padding: 0; font-size: inherit; }
+.prose-wiki blockquote {
+  border-left: 2px solid var(--color-cinnabar);
+  padding: 0.1rem 0 0.1rem 1.1rem;
+  color: var(--color-ink-soft);
+  font-style: italic;
+  margin: 1rem 0;
+}
+.prose-wiki img {
+  max-width: 100%;
+  border-radius: 4px;
+  border: 1px solid var(--rule);
+  margin: 1rem 0;
+  box-shadow: 0 1px 3px rgba(29, 26, 22, 0.08);
+}
+.prose-wiki hr {
+  border: 0;
+  margin: 2rem 0;
+  text-align: center;
+}
+.prose-wiki hr::before {
+  content: "❧";
+  color: var(--color-cinnabar);
+  font-size: 1.1rem;
+}
+.prose-wiki table {
+  border-collapse: collapse;
+  margin: 1rem 0;
+  display: block;
+  overflow-x: auto;
+  font-size: 0.95em;
+}
+.prose-wiki th,
+.prose-wiki td {
+  border: 1px solid var(--rule);
+  padding: 0.5rem 0.85rem;
+  text-align: left;
+}
+.prose-wiki th {
+  background: var(--color-paper-2);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-weight: 600;
+}

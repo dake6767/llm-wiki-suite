@@ -1,0 +1,207 @@
+# Script Reference
+
+All commands use:
+
+```bash
+python3 /path/to/my-llm-wiki-maintainer/scripts/wiki_ops.py <command>
+```
+
+## Root And Init
+
+```bash
+wiki_ops.py resolve-root /path/to/wiki/raw/sources/file.md
+wiki_ops.py init /path/to/new-wiki
+```
+
+`init` creates the standard wiki tree, templates, `.llm-wiki/` App state, `.llm-wiki/agent/` Skill state, and Obsidian compatibility files. Use `--force` only when intentionally replacing templates/state.
+
+## Index
+
+```bash
+wiki_ops.py compact-index /path/to/wiki
+wiki_ops.py compact-index /path/to/wiki --no-desc
+wiki_ops.py merge-index /path/to/wiki --delta-file /tmp/index-delta.md --write
+```
+
+`merge-index` expects delta entries grouped by `## Section`; it merges by normalized wikilink target and preserves existing entries. `compact-index --no-desc` drops the ` — description` tail (sections + page links only) — the input shape for the overview digest.
+
+## Source Page (dedup)
+
+```bash
+wiki_ops.py source-page /path/to/wiki --raw raw/sources/x/article.md --url https://x.com/h/status/123
+```
+
+Resolves the canonical source page for a raw source so one source never gets two pages. Returns JSON: `existing` (wiki-relative path if a page already covers this raw file or URL — merge into it), `slug`, and `page` (where to write). The slug is deterministic (URL handle+id, or raw filename stem), so re-ingest always targets the same page. Run this before emitting the `wiki/sources/<slug>.md` FILE block.
+
+## Large-Source Ingest (map-reduce)
+
+```bash
+wiki_ops.py probe-source /path/to/wiki --raw raw/sources/big-report.md
+wiki_ops.py split-source /path/to/wiki --raw raw/sources/big-report.md --url https://… --write
+wiki_ops.py stage-status /path/to/wiki --source raw/sources/big-report.md
+wiki_ops.py stage-status /path/to/wiki --source raw/sources/big-report.md --mark-done 7
+```
+
+For very large sources (a long report / big PDF the capture skill flattened into
+one un-chunked `.md`). All stdlib-only; the chunker is a pure function (unit tests
+in `scripts/test_chunker.py`). Full SOP in `references/large-source-ingest.md`.
+
+- `probe-source` — size gate. Strips frontmatter, counts BODY chars, estimates
+  CJK-aware tokens. Returns `{bodyChars, cjkRatio, estTokens, path: "small"|"large",
+  threshold, …}`. Decision is on `bodyChars` vs `--threshold` (default 40000);
+  `estTokens` is observability only. `small` → single-pass ingest; `large` → map-reduce.
+- `split-source` — chunks the body along H1–H3 (oversized headingless blocks fall
+  back to fence-safe char windows; fenced code is never split) into
+  `.llm-wiki/agent/ingest-staging/<source-slug>/{manifest.json, chunks/, map/}`.
+  Idempotent + resumable via the raw-file hash: same hash → `reused` (keeps MAP
+  progress); changed hash → re-split, all `pending`; `--force` wipes and re-splits.
+  Without `--write` it is a dry run (prints the manifest). `<source-slug>` =
+  `compute_source_slug`, the SAME slug the source page uses.
+- `stage-status` — report mode prints `{chunkCount, done, pending, stale,
+  pendingIndices, staleIndices, ready}`; it drives resumption and gates REDUCE
+  (`ready` only when nothing pending/stale). `--mark-done N` flips chunk N's
+  `mapStatus` after confirming `map/chunk-NNN.json` exists and parses (refuses
+  otherwise — conservative failure); a done chunk whose map file vanished or whose
+  text changed reports as `stale`.
+
+## Apply Blocks
+
+```bash
+wiki_ops.py apply-blocks /path/to/wiki --blocks-file /tmp/llm-output.txt --source raw/sources/file.md
+```
+
+This applies FILE blocks and persists REVIEW blocks. It skips `wiki/overview.md` during ingest, and **normalizes every content page's `related:` field to bare basename slugs** (so the app's relation panel resolves them) before writing. Existing content pages are skipped unless `--overwrite` is passed. Use `merge-page` or an LLM semantic merge before overwriting existing content pages.
+
+## Page Merge
+
+```bash
+wiki_ops.py merge-page /path/to/wiki wiki/concepts/foo.md --incoming-file /tmp/incoming.md
+wiki_ops.py merge-page /path/to/wiki wiki/concepts/foo.md --incoming-file /tmp/incoming.md --write
+```
+
+This deterministic fallback unions `sources`, `tags`, and `related` (normalizing `related` to bare slugs), locks `type`, `title`, and `created`, and sets `updated` to today. For significant body differences, ask the LLM for a semantic merge first, then use this as a fallback/safety layer.
+
+## Review
+
+```bash
+wiki_ops.py review list /path/to/wiki --status open
+wiki_ops.py review add-blocks /path/to/wiki --blocks-file /tmp/output.txt --source raw/sources/file.md
+wiki_ops.py review resolve /path/to/wiki review-20260611-0001 --action researched
+wiki_ops.py sweep-reviews /path/to/wiki
+```
+
+`sweep-reviews` implements only deterministic stale-review rules. Use the LLM semantic sweep from `references/review-research.md` for ambiguous remaining items.
+
+## Cache
+
+```bash
+wiki_ops.py cache check /path/to/wiki /path/to/wiki/raw/sources/file.md
+wiki_ops.py cache save /path/to/wiki /path/to/wiki/raw/sources/file.md wiki/sources/file.md wiki/concepts/foo.md
+wiki_ops.py cache pending /path/to/wiki   # list raw sources not yet ingested (new) or changed since (changed)
+```
+
+`cache pending` is the batch-discovery entry point for "process the inbox": it scans `raw/sources/**/*.md` and returns those with no cache entry or a changed hash. Read-only; takes one explicit wiki root (no multi-wiki discovery — the caller picks the root).
+
+## Dedup
+
+```bash
+wiki_ops.py dedup-summaries /path/to/wiki
+wiki_ops.py dedup-merge /path/to/wiki --canonical 野生小虎 --slugs 野生小虎,wild-tiger --body-file /tmp/merged.md
+wiki_ops.py dedup-not-duplicate /path/to/wiki --slugs foo,bar
+```
+
+`dedup-summaries` emits `{summaries, notDuplicates}` for the LLM detector (scans `wiki/entities` + `wiki/concepts`). `dedup-merge` applies one user-confirmed merge deterministically: frontmatter union, `related` → bare slugs, `[[wikilink]]` + `related:` cross-reference rewrites, `index.md` line removal, backup to `.llm-wiki/agent/page-history/dedup-<stamp>/`, delete merged-away pages. `dedup-not-duplicate` appends a group to the shared whitelist `.llm-wiki/dedup-not-duplicates.json` (App-compatible). Full SOP + LLM prompts in `references/review-research.md`.
+
+## Lint And Trace
+
+```bash
+wiki_ops.py lint /path/to/wiki
+wiki_ops.py lint /path/to/wiki --exit-code                 # cron/CI gate: non-zero on warnings+
+wiki_ops.py lint /path/to/wiki --exit-code --fail-on error # only hard errors trip the gate
+wiki_ops.py trace /path/to/wiki ingest.analysis --source raw/sources/file.md --input-chars 12000 --output-chars 3000
+```
+
+`lint` writes `.llm-wiki/lint.json` and always prints `{count, failing, fail_on, issues}`.
+By default it exits 0 (report-only). `--exit-code` turns it into a **cron/CI gate** —
+it exits 1 when any issue at or above `--fail-on` (severity ranking `info < warning <
+error`, default `warning`) exists, so broken links / missing frontmatter fail a scheduled
+health check while advisory `info` items (orphans, no-outlinks) don't. `trace` appends
+JSONL to `.llm-wiki/agent/token-trace.jsonl`.
+
+## Lint Scope (incremental semantic lint)
+
+```bash
+wiki_ops.py lint-scope /path/to/wiki           # report changed + neighbors since last --mark
+wiki_ops.py lint-scope /path/to/wiki --mark    # record baseline AFTER the semantic pass ran
+```
+
+`lint-scope` hashes every content page and diffs against the Skill-only baseline
+in `.llm-wiki/agent/lint-state.json`. Output: `changed[]`, `deleted[]`,
+`neighbors[]` (one hop out from each changed page — same graph relations as
+`neighbors`), and `scope[]` (changed ∪ neighbors) — the input set for the LLM
+semantic lint pass. `firstRun: true` (no baseline yet) puts the whole wiki in
+scope. `--mark` snapshots current hashes; run it only after the semantic pass
+actually completed. Structural lint (`lint`) is script-cheap and stays full-repo.
+
+## Neighbors (conflict-sentinel input)
+
+```bash
+wiki_ops.py neighbors /path/to/wiki --page wiki/concepts/x.md --max 12
+wiki_ops.py neighbors /path/to/wiki --slugs "harness,skill是能力商品"   # new page's link targets
+```
+
+`neighbors` walks the wiki graph one hop out from a target page: outbound body
+wikilinks, inbound wikilinks, `related:` entries (both directions), and pages
+sharing a `sources[]` entry (compared by basename). `--page` takes an existing
+page; `--slugs` resolves the wikilink targets of a page that hasn't been written
+yet (both can combine). Output is JSON with `neighbors[].file` (project-relative)
+and `via` (the relation kinds), ranked closest-first — more distinct relations =
+tighter neighbor — and capped by `--max` (default 12) so the conflict-sentinel
+prompt stays small. Used by the ingest Conflict Sentinel
+(`ingest-update.md`); index/log/overview are excluded from the graph.
+
+## Optional Browser Share Link
+
+```bash
+wiki_ops.py browser-share
+wiki_ops.py browser-share /path/to/wiki --page wiki/sources/example.md
+wiki_ops.py browser-share /path/to/wiki --page wiki/sources/example.md --base-url http://127.0.0.1:8800 --token <token>
+wiki_ops.py browser-share /path/to/wiki --page wiki/sources/example.md --label 点击查看总结
+```
+
+`browser-share` probes the optional My LLM Wiki Browser local API for its current
+relay share URL. It reads the persisted browser port and auth token from
+`~/.my-llm-wiki/connector/` (or `LLM_WIKI_BROWSER_URL` / `LLM_WIKI_WEB_URL` /
+`LLM_WIKI_WEB_TOKEN`) and calls `/api/v1/config/share`. When given a project root
+and `--page`, it also calls `/api/v1/config/wikis` to resolve the browser wiki key
+and returns `pageUrl`, a deep link like `/w/<wiki>/page/sources/<slug>`. It also
+returns `markdownLink` using the label from `--label` (default: `点击查看总结`).
+
+It always exits successfully and prints JSON. Prefer `markdownLink` in the final
+user response; fall back to formatting `pageUrl`/`onlineUrl` as
+`[点击查看总结](url)` only when `markdownLink` is absent. If `available: false`
+(`browser-unavailable`, `relay-not-connected`, `unauthorized`, etc.), omit the
+link during normal maintainer output.
+
+## Optional Browser Full-Text Search (Query first tier)
+
+```bash
+wiki_ops.py browser-search /path/to/wiki --q "检索词" --top 8
+wiki_ops.py browser-search /path/to/wiki --q "检索词" --type concept --tag seo
+wiki_ops.py browser-search --wiki <browser-wiki-key> --q "检索词"   # skip root resolution
+```
+
+`browser-search` is the **first retrieval tier of the Query SOP** (see
+`lint-query-save.md`): it queries the browser's full-text index
+(`/api/v1/wikis/<key>/search`) instead of hand-scanning `wiki/`, so candidate
+retrieval costs stay flat as the wiki grows. Connection and auth resolution are
+identical to `browser-share`. The project root (or `--wiki`) picks which
+registered wiki to search.
+
+It always exits 0 and prints JSON. On success: `available: true` and `hits[]`,
+each hit carrying `file` (project-relative, e.g. `wiki/concepts/x.md` — read it
+directly), `title`, `type`, `snippet` (with `<mark>` highlights), `score`. On
+`available: false` (`browser-unavailable`, `wiki-key-unresolved`,
+`unauthorized`, …) **fall back silently** to the manual keyword scan in the
+Query SOP — the browser is optional and its absence is a normal state, not an
+error to surface.

@@ -1,0 +1,26 @@
+[package]
+name = "llm-wiki-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+arboard = "3"
+base64.workspace = true
+dirs.workspace = true
+getrandom = "0.3"
+llm-wiki-core = { path = "../../crates/llm-wiki-core" }
+llm-wiki-connector = { path = "../../crates/llm-wiki-connector" }
+llm-wiki-server = { path = "../../crates/llm-wiki-server" }
+open.workspace = true
+tauri = { workspace = true, features = ["tray-icon", "image-png"] }
+tauri-plugin-autostart = "2"
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+url.workspace = true
+
+[build-dependencies]
+tauri-build.workspace = true

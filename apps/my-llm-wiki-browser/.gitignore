@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+# frontend
+frontend/node_modules/
+frontend/dist/
+.DS_Store
+# 运行期
+.run/
+logs/
+
+# TS 增量构建缓存
+frontend/*.tsbuildinfo
+
+# Rust
+target/
+desktop/src-tauri/gen/

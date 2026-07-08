@@ -1,0 +1,123 @@
+{
+  "optimizer_hints": {
+    "capability": "Ingest external content into the immutable RAW layer of an LLM-WIKI knowledge base",
+    "inputs": ["a URL", "a WeChat 公众号 link", "an X/Twitter post", "a 小红书 note", "a web page", "an online video link", "the user's own thought", "a local PDF/doc"],
+    "trigger_actions": ["save a link into the wiki", "archive/clip/沉淀 a source into RAW", "sync X bookmarks into RAW", "file my own note/idea", "distill a video into RAW", "initialize a new wiki"],
+    "exclusions": ["summarize or analyze the content", "search for content", "judge whether it is worth reading", "rip a video file to keep", "convert a PDF just to read it", "generate the wiki's derived pages", "sync notes between apps"]
+  },
+  "fallback_positive_concepts": ["archive_link", "bookmark_sync", "first_party_note", "video_to_raw", "init_wiki"],
+  "positive_concepts": {
+    "archive_link": {
+      "weight": 0.3,
+      "phrases": [
+        "save this link", "save this article", "archive this", "clip this", "clip this page",
+        "capture this into my wiki", "store this in my knowledge base", "keep this article",
+        "file this into RAW", "save it as RAW", "save into the knowledge base",
+        "存成 RAW", "存到知识库", "存进知识库", "存一下这篇", "存下来", "把这个链接存进知识库",
+        "沉淀这篇文章", "沉淀一下", "归档这篇", "保存到我的 wiki", "存到人文库", "存到我的库",
+        "把这篇公众号存了", "存这条推文", "存这条小红书"
+      ]
+    },
+    "bookmark_sync": {
+      "weight": 0.16,
+      "phrases": [
+        "sync my X bookmarks", "sync my twitter bookmarks", "pull my bookmarks into RAW",
+        "import my twitter bookmarks", "batch sync bookmarks",
+        "同步我的 X 收藏", "同步我的推特收藏", "把我的收藏同步进来", "批量同步收藏"
+      ]
+    },
+    "first_party_note": {
+      "weight": 0.16,
+      "phrases": [
+        "file my own note", "save this idea", "record my thought", "capture my take",
+        "记一下我的想法", "存个 idea", "沉淀一个观点", "记个笔记到知识库", "把我的想法存下来",
+        "记录我的观察", "存个想法"
+      ]
+    },
+    "video_to_raw": {
+      "weight": 0.16,
+      "phrases": [
+        "distill this video into the wiki", "save this video's content into RAW",
+        "capture this youtube into the knowledge base", "transcript of this video into the wiki",
+        "把这个视频存进知识库", "沉淀一下这个 YouTube", "把这个视频沉淀进来", "存这个 B 站视频的内容",
+        "把视频内容存进 wiki"
+      ]
+    },
+    "init_wiki": {
+      "weight": 0.12,
+      "phrases": [
+        "initialize a wiki", "set up my llm-wiki", "create a knowledge base", "scaffold a wiki",
+        "初始化 wiki", "建一个知识库", "搭一个知识库", "新建一个 wiki", "初始化我的知识库"
+      ]
+    },
+    "raw_terms": {
+      "weight": 0.1,
+      "phrases": [
+        "RAW", "RAW layer", "knowledge base", "llm-wiki", "the wiki", "source of truth", "immutable original",
+        "知识库", "wiki", "原始层", "沉淀", "归档", "存档"
+      ]
+    }
+  },
+  "negative_concepts": {
+    "summarize_analyze_only": {
+      "weight": 0.32,
+      "exclusive": true,
+      "phrases": [
+        "summarize this article", "summarize this tweet", "analyze this", "give me the key points",
+        "what does this article say", "tldr", "recap this",
+        "总结这篇", "总结一下这条", "分析一下这篇文章", "提炼重点", "讲讲这篇说了什么", "概括一下"
+      ]
+    },
+    "search_only": {
+      "weight": 0.26,
+      "exclusive": true,
+      "phrases": [
+        "search for", "find articles about", "look up", "search the web for",
+        "搜一下", "帮我搜", "找一些关于", "查一下"
+      ]
+    },
+    "judge_worth": {
+      "weight": 0.2,
+      "exclusive": true,
+      "phrases": [
+        "is this worth reading", "should I read this", "is this any good", "rate this article",
+        "这篇值得读吗", "这个值不值得看", "帮我判断要不要读"
+      ]
+    },
+    "rip_video_file": {
+      "weight": 0.3,
+      "exclusive": true,
+      "phrases": [
+        "download this video", "download the mp4", "rip this youtube video", "save the video file",
+        "grab the video", "keep the video file",
+        "下载这个视频", "把视频下下来", "存成 mp4", "把这个视频文件保存", "下载 mp4"
+      ]
+    },
+    "pdf_for_reading": {
+      "weight": 0.2,
+      "exclusive": true,
+      "phrases": [
+        "convert this pdf to markdown to read", "turn this pdf into markdown so I can read it",
+        "extract the text from this pdf", "pdf to markdown for processing",
+        "把这个 PDF 转成 markdown 方便阅读", "把 PDF 转成文本看看", "提取 PDF 文字"
+      ]
+    },
+    "generate_wiki_pages": {
+      "weight": 0.26,
+      "exclusive": true,
+      "phrases": [
+        "generate the wiki pages", "write the wiki page from my notes", "synthesize my notes into pages",
+        "build the derived wiki pages", "create the wiki articles",
+        "把笔记整理成 wiki 页面", "生成 wiki 页面", "把这些笔记综合成文章", "写成 wiki 词条"
+      ]
+    },
+    "sync_apps": {
+      "weight": 0.2,
+      "exclusive": true,
+      "phrases": [
+        "sync notes to notion", "obsidian to notion", "move my notes to another app",
+        "把笔记同步到 notion", "从 obsidian 同步到 notion", "把笔记搬到另一个应用"
+      ]
+    }
+  }
+}

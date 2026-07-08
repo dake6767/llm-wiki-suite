@@ -1,0 +1,45 @@
+{
+  "_comment": "Route-regression cases for my-llm-wiki-maintainer. should_trigger = real maintainer operations. near_neighbor = my-llm-wiki capture requests (fetch/clip/archive a NEW source into RAW) that must NOT route here. should_not_trigger = generic explain/summarize/translate. Run with yao-meta-skill scripts/trigger_eval.py against evals/route/semantic_config.json.",
+  "recommended_threshold": 0.33,
+  "should_trigger": [
+    { "text": "Ingest the new raw sources into wiki pages and run the review queue.", "family": "ingest" },
+    { "text": "Flush the inbox — synthesize every raw source not yet compiled into pages.", "family": "ingest" },
+    { "text": "Re-ingest the changed sources and merge them into the existing pages.", "family": "update" },
+    { "text": "Compile the raw sources in this wiki into interlinked pages.", "family": "ingest" },
+    { "text": "Run deep research on the gaps in the review queue and ingest the findings back.", "family": "research" },
+    { "text": "Sweep the stale review items and resolve the ones that are done.", "family": "review" },
+    { "text": "Dedup the wiki — merge the duplicate entity pages saved under different names.", "family": "dedup" },
+    { "text": "Lint my knowledge base and show me the broken wikilinks.", "family": "lint" },
+    { "text": "Answer this question from the wiki with citations and wikilinks.", "family": "query" },
+    { "text": "Save that answer back into the wiki so the knowledge compounds.", "family": "save" },
+    { "text": "Refresh the overview page for this wiki.", "family": "overview" },
+    { "text": "Initialize a new LLM Wiki with purpose.md, schema.md, and wiki/index.md.", "family": "init" },
+    { "text": "把这个 wiki 里已沉淀的 raw 源编译成相互链接的页面。", "family": "ingest" },
+    { "text": "维护我的 LLM Wiki：跑一遍 review 队列，处理收件箱里的新源。", "family": "review" },
+    { "text": "对知识库做 lint，检查坏链和缺失的 frontmatter。", "family": "lint" },
+    { "text": "从 wiki 里带引用回答这个问题，然后把答案回存。", "family": "query" },
+    { "text": "对这个知识库去重，把重名的实体页合并成一个。", "family": "dedup" },
+    { "text": "刷新这个 wiki 的 overview 概览页。", "family": "overview" }
+  ],
+  "near_neighbor": [
+    { "text": "Save this 公众号 article to my wiki.", "family": "capture" },
+    { "text": "Clip this X post into my knowledge base.", "family": "capture" },
+    { "text": "Archive this link as a faithful Markdown original with its images.", "family": "capture" },
+    { "text": "Fetch this URL and download the images locally into RAW.", "family": "capture" },
+    { "text": "Sync my Twitter bookmarks into the RAW layer.", "family": "capture" },
+    { "text": "Distill this YouTube video into RAW as a timestamped transcript.", "family": "capture" },
+    { "text": "File my idea as a note in the wiki.", "family": "capture" },
+    { "text": "把这个链接存进知识库，存成 raw。", "family": "capture" },
+    { "text": "同步我的 X 收藏到 RAW。", "family": "capture" },
+    { "text": "把这个视频存进知识库。", "family": "capture" },
+    { "text": "记一下我的想法，存个 idea 到 wiki。", "family": "capture" }
+  ],
+  "should_not_trigger": [
+    { "text": "Summarize this article for me.", "family": "summarize" },
+    { "text": "Translate this page into English.", "family": "translate" },
+    { "text": "Explain what an LLM wiki is in simple terms.", "family": "explain" },
+    { "text": "总结一下这篇文章的重点。", "family": "summarize" },
+    { "text": "把这段翻译成中文。", "family": "translate" },
+    { "text": "解释一下知识库是什么意思。", "family": "explain" }
+  ]
+}

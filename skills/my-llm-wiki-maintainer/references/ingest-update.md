@@ -1,0 +1,281 @@
+# Ingest And Update SOP
+
+## Ingest
+
+Goal: compile one raw source into durable wiki pages while preserving traceability.
+
+1. Resolve project root.
+2. Read `purpose.md`, `schema.md`, and `wiki/index.md`.
+3. Extract source text and compute a hash.
+4. Check `.llm-wiki/agent/ingest-cache.json`. If hash and written files are unchanged, skip full ingest.
+5. Build a compact index for prompts. Keep full `index.md` on disk.
+
+   **Size gate (large sources).** Before analyzing, run
+   `scripts/wiki_ops.py probe-source <root> --raw <source>`. If it returns
+   `path: "large"` (body chars ≥ threshold, default 40000), do NOT do single-pass
+   synthesis — switch to the two-phase MAP/REDUCE flow in
+   `references/large-source-ingest.md`, which chunks the source, extracts
+   candidates per chunk, dedupes across chunks, and emits FILE/REVIEW blocks. It
+   rejoins THIS SOP at step 8 (apply-blocks), so steps 8–12 below are shared. For
+   `path: "small"`, continue with steps 6–12 as written.
+
+6. Run analysis:
+   - Key entities and concepts.
+   - Main arguments and evidence strength.
+   - Connections to existing pages.
+   - Contradictions or tensions.
+   - Pages to create/update and review gaps.
+7. Generate FILE/REVIEW blocks. Require:
+   - Source summary at `wiki/sources/<source-slug>.md`. Give it a **short, readable slug in the source's language** (3–6 words from the title/topic, e.g. `野生小虎-出海seo小游戏案例`) — do NOT dump the whole raw filename. First run `scripts/wiki_ops.py source-page` for dedup (see Source Identity below).
+   - Content pages for important entities/concepts/schema-defined types.
+   - `wiki/index.md` as delta entries only, not a full rewrite.
+   - `wiki/log.md` as an append-only entry.
+   - No `wiki/overview.md` block.
+   - Links must follow the Link Convention in `project-protocol.md`: body uses `[[folder/slug]]`, `related:` uses bare basename slugs. `apply-blocks` normalizes `related:` anyway, but emit it correctly.
+   - **REVIEW blocks are part of the deliverable, not an optional extra.** For every
+     source, explicitly decide 0–3 `suggestion` items — the research gaps this source
+     opens: claims worth verifying, adjacent topics the wiki lacks, tensions with
+     existing pages — each with 2–3 ready-to-run `searchQueries`. Zero suggestions is
+     a legitimate call for a thin source, but it must be a decision, not a forgotten
+     step: review generation silently dropping off is how the deep-research loop
+     starves (the queue stops filling, so the user is never offered a direction).
+
+## Source Identity (dedup)
+
+One raw source must map to exactly one `wiki/sources/` page. Two pages for one source (e.g. a clean slug plus an auto-slugged filename) split the graph and double-count.
+
+Before writing the source summary, run:
+
+```text
+scripts/wiki_ops.py source-page <project_root> --raw <raw/sources/...> [--url <url>]
+```
+
+It scans existing source pages for one already pointing at this raw file (by `sources:` basename) or the same `url:`, and returns JSON:
+
+- `existing` — a wiki-relative path if a wiki page already covers this source. If set, **merge into it** (via `merge-page`); do not create a new page.
+- `slug` / `page` — a **fallback** slug derived from the raw filename (date prefix stripped). Prefer your own short readable slug over this; the fallback is only for when you don't supply one.
+
+Dedup does NOT depend on the slug being stable — `existing` is matched by frontmatter `sources`/`url`, so a short hand-written slug re-ingests to the same page just fine. That's why you're free to name the source page concisely (`野生小虎-出海seo小游戏案例`) instead of echoing the raw filename.
+
+## Ingesting listicle / recommendation-heavy sources
+
+When the source is a long listicle that names many specific entities (X handles, books, YouTube channels, podcasts, blogs — anything with a proper name and a 1-line blurb), **do not create entity stubs for every name**. That explodes the graph with shallow pages and drowns the genuinely-canonical entities.
+
+Pattern that works:
+
+- **Always** create 1 source page and the concept page(s) for the article's actual framework or thesis (e.g. "9-category information-source framework", "input > output for AI content creation"). Those are the durable ideas.
+- **Sometimes** create entity pages for canonical, distinctive names the wiki would genuinely cross-link to from future sources (e.g. a foundational researcher's homepage, a single canonical aggregator everyone cites). Skip the long tail.
+- **Default** to **one synthesis page** that consolidates the list — the full X-handles list, the full books list, the full YouTube list per domain. This is queryable, easy to extend on the next listicle, and keeps the entity graph focused.
+
+Existing-entity check: before creating any entity page, grep `wiki/index.md` for `[[entities/<name>`. If the canonical name is already there, don't duplicate — reference it from the synthesis page instead.
+
+When in doubt, the synthesis-page-consolidation pattern beats N stub entity pages almost every time. The RAW source remains a faithful record of every name the article mentioned; the synthesis page is the curated, queryable index, not the only place those names exist.
+
+## Cross-Linking
+
+Pages must connect across types, not only within a type. When ingesting a source whose entities and concepts come from one another:
+
+- Each **entity** page body links the concepts it exemplifies (and the source): an entity that only links other entities sits at the graph periphery.
+- Each **concept** page body links the entity/source it is grounded in, plus adjacent concepts.
+- Put the same neighbors in `related:` (bare slugs) so the relation panel mirrors the body links.
+
+## Conflict Sentinel (between generating and applying blocks)
+
+Step 6's contradiction check sees only the compact index; this sentinel catches what
+that can't — direct conflicts with the **content** of pages one hop away, which is
+where "today's summary contradicts last week's and nobody notices" actually lives.
+Run it after generating blocks (step 7), before applying them (step 8), for each
+content page the ingest updates or heavily links:
+
+1. **Gather the neighborhood** (deterministic):
+   ```bash
+   # existing page being updated/merged:
+   python3 scripts/wiki_ops.py neighbors <root> --page wiki/concepts/x.md --max 12
+   # new page — pass the wikilink targets from its generated block:
+   python3 scripts/wiki_ops.py neighbors <root> --slugs "harness,skill是能力商品" --max 12
+   ```
+2. **Compare** the new block against the returned `neighbors[].file` (ranked
+   closest-first; trim the list before trimming per-page content when budget is
+   tight). **Direct conflicts only**: the same claim with opposite conclusions, or
+   mutually exclusive facts (dates, numbers, "X causes Y" vs "X doesn't"). Different
+   emphasis, scope, or style is NOT a conflict. When unsure, it is not a conflict —
+   review noise destroys review trust.
+3. **Never block the write.** RAW facts win: apply the blocks as planned regardless
+   of conflicts. For each real conflict, emit ONE review block (lands in step 10):
+   - `type: contradiction`;
+   - `affectedPages`: all conflicting pages;
+   - description: one line per side quoting the conflicting claim, each tagged with
+     its source and `captured_at` — newer is not automatically right, but the
+     reviewer needs the timeline to judge.
+4. Scope note: the sentinel runs per source as it lands; the cross-source semantic
+   lint sweep still owns what per-source checks can't see.
+
+8. Apply blocks using `scripts/wiki_ops.py apply-blocks`:
+   ```bash
+   # New pages only (no existing pages):
+   python3 scripts/wiki_ops.py apply-blocks <root> --blocks-file /tmp/blocks.txt --source <raw/source/path>
+   # Existing content pages (backs up old, then overwrites):
+   python3 scripts/wiki_ops.py apply-blocks <root> --blocks-file /tmp/blocks.txt --overwrite --source <raw/source/path>
+   ```
+
+   **Always pass `--source <raw/source/path>`.** Whichever pass carries the REVIEW
+   blocks (step 10) threads this value into each persisted review as `sourcePath`.
+   Omit it and the reviews land with `sourcePath: null` — silently, since `apply-blocks`
+   still succeeds — and the Browser can no longer trace a suggestion back to its raw source.
+
+   **New vs existing pages — two-pass pattern.** `apply-blocks` without `--overwrite`
+   **skips** any content page that already exists (prints `"Skipped existing content page without --overwrite"`).
+   When an ingest creates new pages AND updates existing ones, split into two passes:
+   1. First pass (no `--overwrite`): writes new pages, index delta, log.
+   2. Second pass (`--overwrite`): writes updated/merged pages (backs up old content first).
+
+   Alternatively, use `merge-page` for intelligent merge of a single existing page:
+   ```bash
+   python3 scripts/wiki_ops.py merge-page <root> <existing-page-path> --incoming-file /tmp/merge-blocks.txt --write
+   ```
+   Note: the flag is `--incoming-file`, NOT `--blocks-file`. Requires `--write` to persist.
+   This unions `sources`, `tags`, `related` and calls the LLM to merge bodies. Prefer
+   when the page has substantial existing content you want to preserve alongside new additions.
+   Use `--overwrite` (with LLM-generated merged content already in the block) when you've
+   written the merged body yourself.
+
+   **Pitfall: `merge-page` may write `---FILE:` wrapper into output.** Observed
+   behavior: `merge-page` can leave the `---FILE: wiki/concepts/...md---` wrapper
+   line at the top of the actual file. After merge-page, verify the output file
+   starts with `---` (YAML frontmatter), not `---FILE:`. If malformed, strip the
+   wrapper: `sed -i '' '1{/^---FILE:/d;}' <file>` and any trailing
+   `---END FILE---` line.
+
+   **Pitfall: `apply-blocks` is flag-based.** The blocks file is `--blocks-file`
+   (or `--items` / `--file`), NOT a positional argument. Forgetting the flag gives
+   "unrecognized arguments".
+
+   **Pitfall: FILE block headers must include `.md` suffix.** Every `---FILE:` header
+   must end with `.md` (e.g. `---FILE: wiki/entities/openspec.md---`). Omitting the
+   suffix (e.g. `---FILE: wiki/entities/openspec---`) causes `apply-blocks` to emit
+   a warning per affected block ("FILE path missing .md suffix") even though it
+   auto-corrects and writes to the right path. The warnings are noisy and can obscure
+   real problems during verification (step 9). Always write the full filename including
+   `.md` in the block header.
+
+9. Verify the apply result before moving on: every FILE path you emitted must
+   appear in `written[]`, and `warnings` must be empty. A non-empty `warnings`
+   (e.g. "not closed with ---END FILE---", "Skipped existing content page") means
+   a block was malformed, recovered, or skipped — inspect the affected page for
+   stray content or a missing write, fix it, and re-apply. Do not save cache on a
+   block that didn't land cleanly. (A common cause: an editor/linter strips the
+   trailing `---END FILE---` from the temp blocks file after you write it.)
+10. Add review blocks to `.llm-wiki/review.json`. They ride in the step-8 blocks
+    file (persisted by `apply-blocks`) or go through `review add-blocks` — either way
+    **pass `--source <raw/source/path>`** so each review gets its `sourcePath`, and give
+    every REVIEW block a `PAGES:` line so `affectedPages` is populated. A review with
+    neither is orphaned: the Browser can't link it to a source or a page.
+11. Save cache only after successful, verified writes:
+    ```bash
+    python3 scripts/wiki_ops.py cache save <root> "<raw/source/path>" <wiki/page1> <wiki/page2> ...
+    ```
+
+    **Pitfall: cache save with CJK paths in shell args can hang silently.** When the raw
+    path or wiki page slugs contain long CJK segments (e.g. `raw/sources/x/2026-06-16-AI-内容创作的地基信息源以-AI投资设计三个领域为例.md`),
+    calling `wiki_ops.py cache save` through the shell can appear to hang. The script
+    itself is fine — it succeeds with exit 0 and writes the cache; the shell wrapper
+    is what's slow/fragile. The reliable pattern is to invoke it from a tiny Python
+    wrapper using `subprocess.run([...])` with args as a list (no shell expansion):
+
+    ```python
+    # /tmp/save_cache.py
+    import subprocess
+    script = "<skill>/scripts/wiki_ops.py"
+    subprocess.run(
+        ["python3", script, "cache", "save", root, raw, *pages],
+        check=True, timeout=30,
+    )
+    ```
+
+    Always verify the cache write landed afterwards (read `ingest-cache.json` and
+    confirm the key exists with the expected `filesWritten` list) — silent success is
+    worse than a loud failure. **The cache structure is nested**: `{"entries": {<key>: {...}}}`,
+    not a flat dict — so a naive `cache[key]` lookup fails; access `cache["entries"][key]`
+    instead. In Python:
+    ```python
+    import json
+    with open(f"{root}/.llm-wiki/agent/ingest-cache.json") as f:
+        entries = json.load(f)["entries"]
+    assert key in entries and entries[key].get("filesWritten") == pages
+    ```
+12. Run review sweep after a batch drains.
+
+## Output Language & Filenames
+
+The whole ingest output follows the **source content's own language** — titles, body, filenames, index descriptions, review text. Do not translate to English, or to any fixed language; match what the reader of the source reads. (This is the agent-side equivalent of the app's mandatory output-language directive — there is no hardcoded language anywhere.)
+
+- **Filenames**: derive each page's filename from its title, in that same language. For CJK (中文/日本語/한국어) titles keep the readable characters as-is — never transliterate or translate the slug to English: `wiki/concepts/产品留存作为seo信号.md`, not `wiki/concepts/product-retention-as-seo-signal.md`. Latin-script titles use kebab-case as before.
+- **Body wikilinks** then reference those same-language slugs: `[[concepts/产品留存作为seo信号]]`.
+- **`related:`** uses the bare basename of that slug: `related: [产品留存作为seo信号]`.
+- **Source pages**: take the slug from `source-page`, which derives it from the raw filename — that already carries the source language.
+
+This mirrors the app's ingest rule (filenames from the title in the output language; keep CJK) so app- and skill-generated pages look the same. CJK filenames are fully supported across the toolchain (lint, dedup, wikilink/related resolution).
+
+## Index Delta Rule
+
+The LLM should emit only new or changed index entries:
+
+```text
+---FILE: wiki/index.md---
+## Concepts
+- [[concepts/example|Example]] — one-line description
+---END FILE---
+```
+
+The script merges by normalized wikilink target. Existing entries not mentioned remain untouched.
+
+**Pitfall: do NOT append "delta" or "append" to index/log FILE paths.** The block header must be exactly `---FILE: wiki/index.md---` and `---FILE: wiki/log.md---`. Using `---FILE: wiki/index.md delta---` or `---FILE: wiki/log.md append---` causes `apply-blocks` to write separate files (`wiki/index.md delta.md`, `wiki/log.md append.md`) instead of merging into the real files. The script prints a warning ("FILE path missing .md suffix") but still succeeds — creating orphan files you must then manually merge with `merge-index` (for index) or `cat >>` (for log), then delete the orphans. Always use the exact filenames, no suffixes or qualifiers.
+
+**Pitfall: `merge-index` reads from a file, not stdin.** When cleaning up orphan delta files, first merge the delta content into the real index:
+```bash
+python3 scripts/wiki_ops.py merge-index <root> --delta-file "<root>/wiki/index.md delta.md"
+rm "<root>/wiki/index.md delta.md"
+```
+For log entries, simply append:
+```bash
+cat "<root>/wiki/log.md append.md" >> "<root>/wiki/log.md"
+rm "<root>/wiki/log.md append.md"
+```
+
+## Page Merge Rule
+
+When a generated content page already exists:
+
+1. Union `sources`, `tags`, and `related`.
+2. If body is unchanged, skip LLM merge.
+3. If body differs, ask the LLM to merge old and new bodies.
+4. Reject LLM merge if:
+   - output has no frontmatter;
+   - merged body is shorter than 70% of the longer input body.
+5. Lock old `type`, `title`, and `created`.
+6. Set `updated` to today.
+7. Back up old content before fallback writes.
+
+Use this for content pages: `entities`, `concepts`, `queries`, `sources`, `synthesis`, `comparisons`, and custom schema-defined content folders. Do not use it for `index.md`, `log.md`, or `overview.md`.
+
+## Update
+
+Update is ingest with a changed source:
+
+1. Recompute source hash.
+2. Find affected pages from cache, frontmatter `sources[]`, and content references.
+3. Re-run analysis with attention to deltas and stale claims.
+4. Apply FILE blocks through page merge.
+5. Update index by delta merge.
+6. Append log entry.
+7. Sweep review queue conservatively.
+
+## Failure Handling
+
+- On parse anomalies, `apply-blocks` recovers what it can (an unterminated block
+  is bounded at the next `---FILE:`/EOF instead of swallowing the following block)
+  and reports a warning per affected block. Always surface those warnings and
+  fix the cause — recovery is a safety net, not a guarantee the page is clean.
+- On hard write failure, do not update ingest cache.
+- On uncertain semantic merge, keep existing content via backup and create review item.
+- Never delete pages as part of ingest unless the user explicitly requests source deletion cleanup.

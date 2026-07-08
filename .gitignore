@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.DS_Store
+
+# Per-skill locally generated outputs (self-interpretation reports, render artifacts)
+skills/*/reports/
+
+# Agent self-improvement / runtime-accumulated experience artifacts (scenario-specific)
+skills/my-llm-wiki/data/
+skills/my-llm-wiki-maintainer/data/

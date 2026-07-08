@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "updated_at": "2026-07-01",
+  "home": "~/.my-llm-wiki",
+  "default_repo_home": "~/.my-llm-wiki/suite",
+  "connector_dir": "~/.my-llm-wiki/connector",
+  "wiki_registry_path": "~/.my-llm-wiki/wikis.json",
+  "migrates_from": {
+    "_note": "One-time MOVE into ~/.my-llm-wiki on first launch of the rebuilt app (desktop paths::migrate_legacy). No symlink, no fallback reads — a clean cutover, so any leftover reference to these fails loudly.",
+    "connector_dir": "~/.llm-wiki-connector",
+    "wiki_registry_path": "~/.config/llm-wiki/wikis.json"
+  },
+  "default_skill_targets": [
+    "~/.codex/skills",
+    "~/.claude/skills",
+    "~/.hermes/skills",
+    "~/.agents/skills"
+  ],
+  "default_wiki_root": "~/wikis/my-llm-wiki",
+  "browser": {
+    "slug": "my-llm-wiki-browser",
+    "collection_path": "apps/my-llm-wiki-browser",
+    "release_strategy": "download-release-first",
+    "asset_patterns": {
+      "darwin-arm64": [
+        "My LLM Wiki Browser*_aarch64.dmg",
+        "My-LLM-Wiki-Browser*_aarch64.dmg",
+        "*macos*aarch64*.dmg"
+      ],
+      "darwin-x64": [
+        "My LLM Wiki Browser*_x64.dmg",
+        "My-LLM-Wiki-Browser*_x64.dmg",
+        "*macos*x64*.dmg"
+      ],
+      "darwin-universal": [
+        "My LLM Wiki Browser*_universal.dmg",
+        "My-LLM-Wiki-Browser*_universal.dmg",
+        "*macos*universal*.dmg"
+      ],
+      "windows-x64": [
+        "My LLM Wiki Browser*_x64-setup.exe",
+        "My-LLM-Wiki-Browser*_x64-setup.exe",
+        "My LLM Wiki Browser*_x64.msi",
+        "My-LLM-Wiki-Browser*_x64.msi"
+      ],
+      "linux-x64": [
+        "My LLM Wiki Browser*_amd64.AppImage",
+        "My-LLM-Wiki-Browser*_amd64.AppImage",
+        "My LLM Wiki Browser*_amd64.deb",
+        "My-LLM-Wiki-Browser*_amd64.deb"
+      ]
+    },
+    "source_build": {
+      "frontend_dir": "apps/my-llm-wiki-browser/frontend",
+      "tauri_dir": "apps/my-llm-wiki-browser/desktop/src-tauri",
+      "commands": [
+        "npm ci",
+        "npm run build",
+        "cargo tauri build"
+      ]
+    }
+  },
+  "first_run": {
+    "host": "127.0.0.1",
+    "port_pref_file": "~/.my-llm-wiki/connector/server-port",
+    "port_env": "PORT",
+    "default_port": 8800,
+    "health_path": "/api/v1/healthz",
+    "_note": "Browser port is resolved like the app itself (desktop/src-tauri/src/main.rs): port_pref_file > $PORT > default_port. Health probe only needs liveness — an auth-gated response (token required) still proves the server is up."
+  }
+}

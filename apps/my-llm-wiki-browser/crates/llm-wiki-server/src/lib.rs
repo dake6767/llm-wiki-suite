@@ -1,0 +1,2581 @@
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Component, Path, PathBuf};
+use std::sync::{
+    Arc, Mutex, RwLock, RwLockReadGuard,
+    mpsc::{Receiver, RecvTimeoutError},
+};
+use std::time::Duration;
+
+use axum::{
+    Json, Router,
+    body::Body,
+    extract::{Path as AxumPath, Query, State},
+    http::{HeaderValue, Request, StatusCode, header},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
+    routing::{get, post},
+};
+use llm_wiki_core::{
+    FullTextSearcher, IndexManager, PageRecord, WikiIndex, config::CoreConfig,
+    indexer::build_wiki_index, parser, registry::load_registry, to_plain_text,
+};
+use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use serde::{Deserialize, Serialize};
+use tokio::net::TcpListener;
+use tower_http::{
+    compression::{CompressionLayer, DefaultPredicate, Predicate, predicate::NotForContentType},
+    cors::CorsLayer,
+    services::{ServeDir, ServeFile},
+    trace::TraceLayer,
+};
+
+mod mcp;
+
+pub struct ServerConfig {
+    pub frontend_dist: Option<PathBuf>,
+    pub index_manager: IndexManager,
+    pub searcher: FullTextSearcher,
+    pub auth_token: String,
+    /// Watch wiki markdown directories and hot-refresh the page/search indexes.
+    pub watch_wikis: bool,
+    /// Registry/discovery config used to hot-reload added or removed wiki repositories.
+    pub registry_config: Option<CoreConfig>,
+    /// 当前实际绑定的端口，供设置界面展示。
+    pub port: u16,
+    /// 由宿主（桌面外壳）注入：持久化端口、重启进程。`None` 时这些操作不可用（如纯浏览器/测试场景）。
+    pub control: Option<ServerControl>,
+    /// 由宿主注入的当前公网分享入口。`None` 表示宿主不支持，返回空状态。
+    pub share_url: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
+}
+
+/// 宿主提供的运行期控制钩子，让 HTTP 层无需依赖 Tauri 即可触发持久化与重启。
+#[derive(Clone)]
+pub struct ServerControl {
+    pub persist_port: Arc<dyn Fn(u16) -> std::io::Result<()> + Send + Sync>,
+    pub restart: Arc<dyn Fn() + Send + Sync>,
+    /// 开机自启控制；宿主不支持（如纯浏览器场景）时为 `None`。
+    pub autostart: Option<AutostartControl>,
+}
+
+/// 开机自启的读写钩子，由桌面外壳注入（错误以文案形式透传给设置页）。
+#[derive(Clone)]
+pub struct AutostartControl {
+    pub is_enabled: Arc<dyn Fn() -> Result<bool, String> + Send + Sync>,
+    pub set_enabled: Arc<dyn Fn(bool) -> Result<(), String> + Send + Sync>,
+}
+
+#[derive(Clone)]
+struct AppState {
+    manager: Arc<RwLock<IndexManager>>,
+    searcher: Arc<Mutex<FullTextSearcher>>,
+    auth_token: Arc<String>,
+    port: u16,
+    control: Option<ServerControl>,
+    share_url: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
+    _wiki_watcher: Option<Arc<Mutex<RecommendedWatcher>>>,
+}
+
+pub fn build_router(config: ServerConfig) -> Router {
+    let manager = Arc::new(RwLock::new(config.index_manager));
+    let searcher = Arc::new(Mutex::new(config.searcher));
+    let registry_config = config.registry_config.clone();
+    let wiki_watcher = if config.watch_wikis {
+        start_wiki_watcher(manager.clone(), searcher.clone(), registry_config)
+    } else {
+        None
+    };
+    let state = AppState {
+        manager,
+        searcher,
+        auth_token: Arc::new(config.auth_token),
+        port: config.port,
+        control: config.control,
+        share_url: config.share_url,
+        _wiki_watcher: wiki_watcher,
+    };
+    let api = Router::new()
+        .route("/healthz", get(healthz))
+        .route("/wikis", get(list_wikis))
+        .route("/config/wikis", get(list_config_wikis))
+        .route(
+            "/config/server",
+            get(get_server_config).put(put_server_config),
+        )
+        .route("/config/share", get(get_share_config))
+        .route(
+            "/config/autostart",
+            get(get_autostart_config).put(put_autostart_config),
+        )
+        .route("/config/restart", post(restart_server))
+        .route("/wikis/{wiki}/tree", get(wiki_tree))
+        .route("/wikis/{wiki}/pages/{*path}", get(get_page))
+        .route("/wikis/{wiki}/raw/{*path}", get(get_raw))
+        .route("/wikis/{wiki}/assets/{*name}", get(get_asset))
+        .route("/wikis/{wiki}/graph", get(get_graph))
+        .route("/wikis/{wiki}/review", get(get_review))
+        .route("/wikis/{wiki}/search", get(search))
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
+    // MCP 端点与 /api/v1 同一套 Bearer 鉴权。注册 /mcp 与 /mcp/ 两个字面路径：
+    // axum 0.8 不做尾斜杠重定向，而接入文档/复制提示词里写的是带斜杠形式。
+    let mcp_routes = Router::new()
+        .route(
+            "/mcp",
+            post(mcp::mcp_post)
+                .get(mcp::mcp_method_not_allowed)
+                .delete(mcp::mcp_method_not_allowed),
+        )
+        .route(
+            "/mcp/",
+            post(mcp::mcp_post)
+                .get(mcp::mcp_method_not_allowed)
+                .delete(mcp::mcp_method_not_allowed),
+        )
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
+    let mut app = Router::new()
+        .nest("/api/v1", api)
+        .merge(mcp_routes)
+        .layer(CorsLayer::permissive())
+        .layer(TraceLayer::new_for_http())
+        .with_state(state);
+
+    if let Some(dist) = config.frontend_dist {
+        app = app.fallback_service(
+            ServeDir::new(&dist).fallback(ServeFile::new(dist.join("index.html"))),
+        );
+    }
+
+    // 公网经中继访问时每个资源都要走一遍 wss 往返。给带内容哈希的打包产物
+    // （/assets/index-<hash>.js|css）打上 immutable 长缓存，让浏览器跨导航直接命中本地缓存，
+    // 不再为静态资源反复回源；其余响应（含 index.html）标 no-cache，发版后立即拿到新哈希。
+    let app = app.layer(middleware::from_fn(cache_headers));
+
+    // 文本资源（JS/CSS/JSON/markdown）回源后即 gzip，使其在 wss 这一段以压缩字节传输，
+    // 直接减小公网/本地代理链路上的体积（打包 JS ~451KB → ~140KB）。
+    // 默认策略已排除图片/gRPC/SSE（SSE 必须不压缩，否则破坏流式）；再排除 text/html，
+    // 因为中继要读 HTML 外壳注入 <base>，压缩会让其无法解析。
+    let compression = CompressionLayer::new()
+        .compress_when(DefaultPredicate::new().and(NotForContentType::const_new("text/html")));
+    app.layer(compression)
+}
+
+// 按本机路径设置缓存策略（中继已剥掉 /<uid> 前缀，源站这里看到的就是 /assets、/api、/ 等）。
+async fn cache_headers(request: Request<Body>, next: Next) -> Response {
+    let path = request.uri().path().to_owned();
+    let mut response = next.run(request).await;
+    let cache_control = if path.starts_with("/assets/") {
+        "public, max-age=31536000, immutable"
+    } else if path.starts_with("/api/") {
+        return response; // API 响应不在此统一处理，保留各 handler 自身语义。
+    } else {
+        "no-cache" // SPA 外壳与根文件：始终重新校验，避免缓存到旧 index.html。
+    };
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static(cache_control));
+    response
+}
+
+pub async fn serve(listener: TcpListener, config: ServerConfig) -> std::io::Result<()> {
+    let local_addr = listener.local_addr()?;
+    tracing::info!("LLM-Wiki server listening on http://{local_addr}");
+    axum::serve(listener, build_router(config)).await
+}
+
+const WIKI_WATCH_DEBOUNCE_MS: u64 = 700;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WatchDepth {
+    NonRecursive,
+    Recursive,
+}
+
+impl WatchDepth {
+    fn mode(self) -> RecursiveMode {
+        match self {
+            Self::NonRecursive => RecursiveMode::NonRecursive,
+            Self::Recursive => RecursiveMode::Recursive,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::NonRecursive => "non-recursive",
+            Self::Recursive => "recursive",
+        }
+    }
+}
+
+#[derive(Default)]
+struct PendingChanges {
+    reload_registry: bool,
+    wiki_keys: BTreeSet<String>,
+}
+
+fn start_wiki_watcher(
+    manager: Arc<RwLock<IndexManager>>,
+    searcher: Arc<Mutex<FullTextSearcher>>,
+    registry_config: Option<CoreConfig>,
+) -> Option<Arc<Mutex<RecommendedWatcher>>> {
+    let (tx, rx) = std::sync::mpsc::channel::<notify::Result<Event>>();
+    let watcher = match notify::recommended_watcher(move |event| {
+        let _ = tx.send(event);
+    }) {
+        Ok(watcher) => watcher,
+        Err(err) => {
+            tracing::warn!(error = ?err, "failed to create wiki directory watcher");
+            return None;
+        }
+    };
+    let watcher = Arc::new(Mutex::new(watcher));
+    let mut watched = BTreeMap::new();
+    sync_watches_from_manager(&watcher, &mut watched, &manager, registry_config.as_ref());
+    if watched.is_empty() {
+        return None;
+    }
+
+    let thread_watcher = watcher.clone();
+    if let Err(err) = std::thread::Builder::new()
+        .name("llm-wiki-watch".to_string())
+        .spawn(move || {
+            wiki_watch_loop(
+                rx,
+                manager,
+                searcher,
+                registry_config,
+                thread_watcher,
+                watched,
+            )
+        })
+    {
+        tracing::warn!(error = ?err, "failed to spawn wiki watcher thread");
+        return None;
+    }
+
+    Some(watcher)
+}
+
+fn wiki_watch_loop(
+    rx: Receiver<notify::Result<Event>>,
+    manager: Arc<RwLock<IndexManager>>,
+    searcher: Arc<Mutex<FullTextSearcher>>,
+    registry_config: Option<CoreConfig>,
+    watcher: Arc<Mutex<RecommendedWatcher>>,
+    mut watched: BTreeMap<PathBuf, WatchDepth>,
+) {
+    let mut pending = PendingChanges::default();
+    while let Ok(event) = rx.recv() {
+        collect_watch_event(event, &manager, registry_config.as_ref(), &mut pending);
+
+        loop {
+            match rx.recv_timeout(Duration::from_millis(WIKI_WATCH_DEBOUNCE_MS)) {
+                Ok(event) => {
+                    collect_watch_event(event, &manager, registry_config.as_ref(), &mut pending)
+                }
+                Err(RecvTimeoutError::Timeout) => break,
+                Err(RecvTimeoutError::Disconnected) => {
+                    apply_pending_changes(
+                        &pending,
+                        &manager,
+                        &searcher,
+                        registry_config.as_ref(),
+                        &watcher,
+                        &mut watched,
+                    );
+                    return;
+                }
+            }
+        }
+
+        apply_pending_changes(
+            &pending,
+            &manager,
+            &searcher,
+            registry_config.as_ref(),
+            &watcher,
+            &mut watched,
+        );
+        pending = PendingChanges::default();
+    }
+}
+
+fn collect_watch_event(
+    event: notify::Result<Event>,
+    manager: &Arc<RwLock<IndexManager>>,
+    registry_config: Option<&CoreConfig>,
+    pending: &mut PendingChanges,
+) {
+    let event = match event {
+        Ok(event) => event,
+        Err(err) => {
+            tracing::warn!(error = ?err, "wiki watcher event error");
+            return;
+        }
+    };
+    if matches!(event.kind, EventKind::Access(_)) {
+        return;
+    }
+
+    let Ok(manager) = manager.read() else {
+        tracing::warn!("failed to read wiki index while handling watcher event");
+        return;
+    };
+    if let Some(config) = registry_config
+        && (event.paths.is_empty()
+            || event_touches_registry(&event, config)
+            || event_touches_discovery_root(&event, &manager, config))
+    {
+        pending.reload_registry = true;
+    }
+    for key in event_wiki_keys(&event, &manager) {
+        pending.wiki_keys.insert(key);
+    }
+}
+
+fn apply_pending_changes(
+    pending: &PendingChanges,
+    manager: &Arc<RwLock<IndexManager>>,
+    searcher: &Arc<Mutex<FullTextSearcher>>,
+    registry_config: Option<&CoreConfig>,
+    watcher: &Arc<Mutex<RecommendedWatcher>>,
+    watched: &mut BTreeMap<PathBuf, WatchDepth>,
+) {
+    if pending.reload_registry {
+        if let Some(config) = registry_config {
+            match reload_registry_index(config, manager, searcher) {
+                Ok(()) => sync_watches_from_manager(watcher, watched, manager, Some(config)),
+                Err(err) => {
+                    tracing::warn!(error = %err, "failed to reload wiki registry");
+                    refresh_pending_wikis(&pending.wiki_keys, manager, searcher);
+                }
+            }
+            return;
+        }
+    }
+
+    refresh_pending_wikis(&pending.wiki_keys, manager, searcher);
+}
+
+fn event_wiki_keys(event: &Event, manager: &IndexManager) -> BTreeSet<String> {
+    let mut keys = BTreeSet::new();
+    if event.paths.is_empty() {
+        keys.extend(manager.wikis.keys().cloned());
+        return keys;
+    }
+
+    for path in &event.paths {
+        for idx in manager.wikis.values() {
+            let wiki_dir = normalize_watch_path(idx.entry.wiki_dir.clone());
+            if path_within(path, &wiki_dir) || path_within(path, &idx.entry.wiki_dir) {
+                keys.insert(idx.entry.key.clone());
+            }
+        }
+    }
+    keys
+}
+
+fn event_touches_registry(event: &Event, config: &CoreConfig) -> bool {
+    let registry_path = expand_home_path(&config.registry_path);
+    let Some(registry_parent) = registry_path.parent() else {
+        return false;
+    };
+    let registry_parent = normalize_watch_path(registry_parent.to_path_buf());
+    let registry_path = registry_path
+        .file_name()
+        .map(|name| registry_parent.join(name))
+        .unwrap_or(registry_path);
+    event.paths.iter().any(|path| {
+        path == &registry_path
+            || path == &registry_parent
+            || path
+                .parent()
+                .is_some_and(|parent| parent == registry_parent.as_path())
+    })
+}
+
+fn event_touches_discovery_root(
+    event: &Event,
+    manager: &IndexManager,
+    config: &CoreConfig,
+) -> bool {
+    let roots = config
+        .wiki_dirs
+        .iter()
+        .map(expand_home_path)
+        .map(normalize_watch_path)
+        .filter(|root| root.is_dir())
+        .collect::<Vec<_>>();
+    if roots.is_empty() {
+        return false;
+    }
+
+    for path in &event.paths {
+        if !roots.iter().any(|root| path_within(path, root)) {
+            continue;
+        }
+        let existing = manager.wikis.values().find(|idx| {
+            let root_dir = normalize_watch_path(idx.entry.root_dir.clone());
+            path_within(path, &root_dir) || path_within(path, &idx.entry.root_dir)
+        });
+        let Some(idx) = existing else {
+            return true;
+        };
+        if !idx.entry.root_dir.is_dir() || !idx.entry.wiki_dir.is_dir() {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn refresh_pending_wikis(
+    keys: &BTreeSet<String>,
+    manager: &Arc<RwLock<IndexManager>>,
+    searcher: &Arc<Mutex<FullTextSearcher>>,
+) {
+    for key in keys {
+        if let Err(err) = refresh_wiki_index(key, manager, searcher) {
+            tracing::warn!(wiki = %key, error = %err, "failed to refresh wiki index");
+        }
+    }
+}
+
+fn refresh_wiki_index(
+    key: &str,
+    manager: &Arc<RwLock<IndexManager>>,
+    searcher: &Arc<Mutex<FullTextSearcher>>,
+) -> Result<(), String> {
+    let entry = {
+        let manager = manager
+            .read()
+            .map_err(|_| "wiki index lock poisoned".to_string())?;
+        manager
+            .get(key)
+            .map(|idx| idx.entry.clone())
+            .ok_or_else(|| format!("wiki not found: {key}"))?
+    };
+
+    let index = build_wiki_index(entry).map_err(|err| err.to_string())?;
+    let docs = index.search_docs();
+    let key = index.entry.key.clone();
+    let page_count = index.pages.len();
+
+    {
+        let mut manager = manager
+            .write()
+            .map_err(|_| "wiki index lock poisoned".to_string())?;
+        manager.wikis.insert(key.clone(), index);
+    }
+
+    searcher
+        .lock()
+        .map_err(|_| "search index lock poisoned".to_string())?
+        .reindex_wiki(&key, &docs)
+        .map_err(|err| err.to_string())?;
+
+    tracing::info!(wiki = %key, pages = page_count, "wiki index refreshed");
+    Ok(())
+}
+
+fn reload_registry_index(
+    config: &CoreConfig,
+    manager: &Arc<RwLock<IndexManager>>,
+    searcher: &Arc<Mutex<FullTextSearcher>>,
+) -> Result<(), String> {
+    let entries = load_registry(config).map_err(|err| err.to_string())?;
+    let next = IndexManager::build(entries.into_values()).map_err(|err| err.to_string())?;
+    let docs_by_wiki = next
+        .wikis
+        .values()
+        .map(|idx| (idx.entry.key.clone(), idx.search_docs()))
+        .collect::<Vec<_>>();
+
+    searcher
+        .lock()
+        .map_err(|_| "search index lock poisoned".to_string())?
+        .reindex_all(
+            docs_by_wiki
+                .iter()
+                .map(|(key, docs)| (key.as_str(), docs.as_slice())),
+        )
+        .map_err(|err| err.to_string())?;
+
+    let wiki_count = next.wikis.len();
+    let page_count = next
+        .wikis
+        .values()
+        .map(|idx| idx.pages.len())
+        .sum::<usize>();
+    {
+        let mut manager = manager
+            .write()
+            .map_err(|_| "wiki index lock poisoned".to_string())?;
+        *manager = next;
+    }
+
+    tracing::info!(
+        wikis = wiki_count,
+        pages = page_count,
+        "wiki registry reloaded"
+    );
+    Ok(())
+}
+
+fn sync_watches_from_manager(
+    watcher: &Arc<Mutex<RecommendedWatcher>>,
+    watched: &mut BTreeMap<PathBuf, WatchDepth>,
+    manager: &Arc<RwLock<IndexManager>>,
+    registry_config: Option<&CoreConfig>,
+) {
+    let Ok(manager) = manager.read() else {
+        tracing::warn!("failed to read wiki index while syncing watcher targets");
+        return;
+    };
+    let desired = watch_targets(&manager, registry_config);
+    sync_watch_targets(watcher, watched, desired);
+}
+
+fn watch_targets(
+    manager: &IndexManager,
+    registry_config: Option<&CoreConfig>,
+) -> BTreeMap<PathBuf, WatchDepth> {
+    let mut targets = BTreeMap::new();
+    for idx in manager.wikis.values() {
+        insert_watch_target(
+            &mut targets,
+            idx.entry.wiki_dir.clone(),
+            WatchDepth::Recursive,
+        );
+    }
+
+    if let Some(config) = registry_config {
+        let registry_path = expand_home_path(&config.registry_path);
+        if let Some(parent) = registry_path.parent().filter(|parent| parent.is_dir()) {
+            insert_watch_target(&mut targets, parent.to_path_buf(), WatchDepth::NonRecursive);
+        }
+        for root in &config.wiki_dirs {
+            let root = expand_home_path(root);
+            insert_watch_target(&mut targets, root, WatchDepth::Recursive);
+        }
+    }
+
+    targets
+        .into_iter()
+        .filter(|(path, _)| path.is_dir())
+        .collect()
+}
+
+fn insert_watch_target(
+    targets: &mut BTreeMap<PathBuf, WatchDepth>,
+    path: PathBuf,
+    depth: WatchDepth,
+) {
+    let path = normalize_watch_path(path);
+    match targets.get(&path).copied() {
+        Some(WatchDepth::Recursive) => {}
+        Some(WatchDepth::NonRecursive) if depth == WatchDepth::Recursive => {
+            targets.insert(path, depth);
+        }
+        Some(_) => {}
+        None => {
+            targets.insert(path, depth);
+        }
+    }
+}
+
+fn sync_watch_targets(
+    watcher: &Arc<Mutex<RecommendedWatcher>>,
+    watched: &mut BTreeMap<PathBuf, WatchDepth>,
+    desired: BTreeMap<PathBuf, WatchDepth>,
+) {
+    let stale = watched
+        .iter()
+        .filter_map(|(path, depth)| (desired.get(path) != Some(depth)).then_some(path.clone()))
+        .collect::<Vec<_>>();
+    for path in stale {
+        match watcher.lock() {
+            Ok(mut watcher) => {
+                if let Err(err) = watcher.unwatch(&path) {
+                    tracing::warn!(path = %path.display(), error = ?err, "failed to unwatch path");
+                }
+            }
+            Err(_) => tracing::warn!("wiki watcher lock poisoned while unwatching path"),
+        }
+        watched.remove(&path);
+    }
+
+    for (path, depth) in desired {
+        if watched.get(&path) == Some(&depth) {
+            continue;
+        }
+        match watcher.lock() {
+            Ok(mut watcher) => match watcher.watch(&path, depth.mode()) {
+                Ok(()) => {
+                    watched.insert(path.clone(), depth);
+                    tracing::info!(
+                        path = %path.display(),
+                        depth = depth.label(),
+                        "watching wiki path"
+                    );
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        depth = depth.label(),
+                        error = ?err,
+                        "failed to watch wiki path"
+                    );
+                }
+            },
+            Err(_) => tracing::warn!("wiki watcher lock poisoned while watching path"),
+        }
+    }
+}
+
+fn normalize_watch_path(path: PathBuf) -> PathBuf {
+    std::fs::canonicalize(&path).unwrap_or(path)
+}
+
+fn expand_home_path(path: impl AsRef<Path>) -> PathBuf {
+    let path = path.as_ref();
+    let Some(text) = path.to_str() else {
+        return path.to_path_buf();
+    };
+    if text == "~" {
+        return std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| path.to_path_buf());
+    }
+    if let Some(rest) = text.strip_prefix("~/") {
+        return std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("~"))
+            .join(rest);
+    }
+    path.to_path_buf()
+}
+
+fn path_within(path: &Path, root: &Path) -> bool {
+    path == root || path.starts_with(root)
+}
+
+#[derive(Debug, Serialize)]
+struct Healthz {
+    ok: bool,
+}
+
+async fn healthz() -> Json<Healthz> {
+    Json(Healthz { ok: true })
+}
+
+fn read_manager(state: &AppState) -> Result<RwLockReadGuard<'_, IndexManager>, ApiError> {
+    state
+        .manager
+        .read()
+        .map_err(|_| ApiError::internal("索引不可用"))
+}
+
+async fn require_auth(
+    State(state): State<AppState>,
+    request: Request<Body>,
+    next: Next,
+) -> Result<Response, ApiError> {
+    if authorized(&state, &request) {
+        Ok(next.run(request).await)
+    } else {
+        Err(ApiError::unauthorized())
+    }
+}
+
+fn authorized(state: &AppState, request: &Request<Body>) -> bool {
+    let expected = state.auth_token.trim();
+    if expected.is_empty() {
+        return !is_relay_request(request);
+    }
+
+    presented_token(request).is_some_and(|presented| presented == expected)
+}
+
+fn is_relay_request(request: &Request<Body>) -> bool {
+    request
+        .headers()
+        .get("x-llm-wiki-relay")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value == "1")
+}
+
+fn presented_token(request: &Request<Body>) -> Option<String> {
+    if let Some(token) = query_token(request.uri().query()) {
+        return Some(token);
+    }
+    let authorization = request
+        .headers()
+        .get(header::AUTHORIZATION)?
+        .to_str()
+        .ok()?;
+    authorization
+        .strip_prefix("Bearer ")
+        .map(|token| token.trim().to_string())
+}
+
+fn query_token(query: Option<&str>) -> Option<String> {
+    let query = query?;
+    query.split('&').find_map(|part| {
+        let (key, value) = part.split_once('=')?;
+        (key == "token").then(|| {
+            urlencoding::decode(value)
+                .map(|value| value.into_owned())
+                .unwrap_or_else(|_| value.to_string())
+        })
+    })
+}
+
+async fn list_wikis(State(state): State<AppState>) -> Result<Json<Vec<WikiInfo>>, ApiError> {
+    let manager = read_manager(&state)?;
+    let mut out = manager
+        .wikis
+        .values()
+        .map(|idx| WikiInfo {
+            key: idx.entry.key.clone(),
+            name: idx.entry.name.clone(),
+            description: idx.entry.description.clone().unwrap_or_default(),
+            default: idx.entry.default,
+            page_count: idx.pages.len(),
+        })
+        .collect::<Vec<_>>();
+    out.sort_by(|a, b| {
+        (std::cmp::Reverse(a.default), &a.name).cmp(&(std::cmp::Reverse(b.default), &b.name))
+    });
+    Ok(Json(out))
+}
+
+async fn list_config_wikis(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<WikiConfigInfo>>, ApiError> {
+    let manager = read_manager(&state)?;
+    let mut out = manager
+        .wikis
+        .values()
+        .map(|idx| WikiConfigInfo {
+            key: idx.entry.key.clone(),
+            name: idx.entry.name.clone(),
+            description: idx.entry.description.clone().unwrap_or_default(),
+            default: idx.entry.default,
+            page_count: idx.pages.len(),
+            root_dir: path_label(&idx.entry.root_dir),
+            wiki_dir: path_label(&idx.entry.wiki_dir),
+            raw_dir: path_label(&idx.entry.raw_dir),
+            assets_dir: path_label(&idx.entry.assets_dir),
+        })
+        .collect::<Vec<_>>();
+    out.sort_by(|a, b| {
+        (std::cmp::Reverse(a.default), &a.name).cmp(&(std::cmp::Reverse(b.default), &b.name))
+    });
+    Ok(Json(out))
+}
+
+async fn get_server_config(State(state): State<AppState>) -> Json<ServerConfigInfo> {
+    Json(ServerConfigInfo { port: state.port })
+}
+
+async fn get_share_config(State(state): State<AppState>) -> Json<ShareConfigInfo> {
+    let online_url = state.share_url.as_ref().and_then(|provider| provider());
+    Json(ShareConfigInfo {
+        relay_connected: online_url.is_some(),
+        online_url,
+    })
+}
+
+/// 持久化新的本地服务端口。仅写入配置，不影响当前进程——需重启生效。
+async fn put_server_config(
+    State(state): State<AppState>,
+    Json(update): Json<ServerConfigUpdate>,
+) -> Result<Json<ServerConfigUpdateResult>, ApiError> {
+    if update.port < 1024 {
+        return Err(ApiError::bad_request("端口需在 1024-65535 之间"));
+    }
+    let control = state
+        .control
+        .as_ref()
+        .ok_or(ApiError::not_supported("当前环境不支持修改端口"))?;
+    (control.persist_port)(update.port).map_err(|_| ApiError::internal("写入端口配置失败"))?;
+    Ok(Json(ServerConfigUpdateResult {
+        port: update.port,
+        restart_required: update.port != state.port,
+    }))
+}
+
+/// 读取开机自启状态。宿主未注入钩子时 `supported: false`，设置页据此隐藏开关。
+async fn get_autostart_config(
+    State(state): State<AppState>,
+) -> Result<Json<AutostartConfigInfo>, ApiError> {
+    let Some(autostart) = state.control.as_ref().and_then(|c| c.autostart.as_ref()) else {
+        return Ok(Json(AutostartConfigInfo {
+            supported: false,
+            enabled: false,
+        }));
+    };
+    let enabled =
+        (autostart.is_enabled)().map_err(|_| ApiError::internal("读取开机自启状态失败"))?;
+    Ok(Json(AutostartConfigInfo {
+        supported: true,
+        enabled,
+    }))
+}
+
+/// 开关开机自启，立即生效（写系统级 LaunchAgent/注册表，由宿主实现）。
+async fn put_autostart_config(
+    State(state): State<AppState>,
+    Json(update): Json<AutostartUpdate>,
+) -> Result<Json<AutostartConfigInfo>, ApiError> {
+    let autostart = state
+        .control
+        .as_ref()
+        .and_then(|c| c.autostart.as_ref())
+        .ok_or(ApiError::not_supported("当前环境不支持开机自启"))?;
+    (autostart.set_enabled)(update.enabled)
+        .map_err(|_| ApiError::internal("写入开机自启配置失败"))?;
+    Ok(Json(AutostartConfigInfo {
+        supported: true,
+        enabled: update.enabled,
+    }))
+}
+
+/// 重启宿主进程，使新端口生效。
+async fn restart_server(State(state): State<AppState>) -> Result<Json<RestartResult>, ApiError> {
+    let control = state
+        .control
+        .as_ref()
+        .ok_or(ApiError::not_supported("当前环境不支持重启"))?;
+    (control.restart)();
+    Ok(Json(RestartResult { ok: true }))
+}
+
+async fn wiki_tree(
+    State(state): State<AppState>,
+    AxumPath(wiki): AxumPath<String>,
+) -> Result<Json<Vec<TreeNode>>, ApiError> {
+    let manager = read_manager(&state)?;
+    let idx = manager
+        .get(&wiki)
+        .ok_or(ApiError::not_found("wiki 不存在"))?;
+    let mut buckets: BTreeMap<String, Vec<PageRef>> = BTreeMap::new();
+    for rec in idx.pages.values() {
+        let top = rec
+            .path
+            .split_once('/')
+            .map(|(head, _)| head)
+            .unwrap_or("_root")
+            .to_string();
+        buckets.entry(top).or_default().push(page_ref(rec));
+    }
+    let mut nodes = buckets
+        .into_iter()
+        .map(|(page_type, mut pages)| {
+            pages.sort_by(|a, b| a.title.cmp(&b.title));
+            TreeNode {
+                page_type,
+                count: pages.len(),
+                pages,
+            }
+        })
+        .collect::<Vec<_>>();
+    nodes.sort_by(|a, b| type_order(&a.page_type).cmp(&type_order(&b.page_type)));
+    Ok(Json(nodes))
+}
+
+async fn get_page(
+    State(state): State<AppState>,
+    AxumPath((wiki, path)): AxumPath<(String, String)>,
+) -> Result<Json<Page>, ApiError> {
+    let manager = read_manager(&state)?;
+    let idx = manager
+        .get(&wiki)
+        .ok_or(ApiError::not_found("wiki 不存在"))?;
+    let path = parser::normalize_page_path(&path);
+    let rec = idx
+        .pages
+        .get(&path)
+        .ok_or(ApiError::not_found("页面不存在"))?;
+    let body = parser::rewrite_body(&rec.body, &wiki, |target| {
+        idx.resolve(target).map(ToString::to_string)
+    });
+    let outgoing_links = outgoing_links(idx, rec);
+    let backlinks = idx
+        .backlinks
+        .get(&path)
+        .into_iter()
+        .flatten()
+        .filter_map(|path| idx.pages.get(path))
+        .map(page_ref)
+        .collect();
+
+    Ok(Json(Page {
+        wiki,
+        path: rec.path.clone(),
+        slug: rec.slug.clone(),
+        title: rec.title.clone(),
+        page_type: rec.page_type.clone(),
+        frontmatter: rec.frontmatter.clone(),
+        body,
+        outgoing_links,
+        backlinks,
+        sources: rec.sources.clone(),
+        tags: rec.tags.clone(),
+    }))
+}
+
+/// 读取 `raw/` 下的原始源（含图片重写），用于「溯源」查看。
+async fn get_raw(
+    State(state): State<AppState>,
+    AxumPath((wiki, path)): AxumPath<(String, String)>,
+) -> Result<Json<Page>, ApiError> {
+    let manager = read_manager(&state)?;
+    let idx = manager
+        .get(&wiki)
+        .ok_or(ApiError::not_found("wiki 不存在"))?;
+    let raw_root = &idx.entry.raw_dir;
+    let rel = path.strip_prefix("raw/").unwrap_or(&path);
+
+    let mut target = safe_join(raw_root, rel).ok_or(ApiError::bad_request("非法路径"))?;
+    if !target.is_file() && !rel.ends_with(".md") {
+        // wikilink 风格无扩展名
+        target =
+            safe_join(raw_root, &format!("{rel}.md")).ok_or(ApiError::bad_request("非法路径"))?;
+    }
+    if !target.is_file() {
+        return Err(ApiError::not_found("原始源不存在"));
+    }
+
+    let parsed = parser::parse_file(&target).map_err(|_| ApiError::internal("读取原始源失败"))?;
+    let body = parser::rewrite_body(&parsed.body, &wiki, |target| {
+        idx.resolve(target).map(ToString::to_string)
+    });
+    let rel_posix = target
+        .strip_prefix(raw_root)
+        .unwrap_or(&target)
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/");
+    let stem = target
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_default()
+        .to_string();
+    let title = parsed
+        .frontmatter
+        .get("title")
+        .and_then(|value| value.as_str())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| stem.clone());
+    let page_type = parsed
+        .frontmatter
+        .get("source_type")
+        .and_then(|value| value.as_str())
+        .unwrap_or("source")
+        .to_string();
+    let tags = parsed
+        .frontmatter
+        .get("tags")
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(ToString::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Ok(Json(Page {
+        wiki,
+        path: format!("raw/{rel_posix}"),
+        slug: stem,
+        title,
+        page_type,
+        frontmatter: parsed.frontmatter,
+        body,
+        outgoing_links: Vec::new(),
+        backlinks: Vec::new(),
+        sources: Vec::new(),
+        tags,
+    }))
+}
+
+async fn get_asset(
+    State(state): State<AppState>,
+    AxumPath((wiki, name)): AxumPath<(String, String)>,
+) -> Result<Response, ApiError> {
+    let assets_dir = {
+        let manager = read_manager(&state)?;
+        manager
+            .get(&wiki)
+            .ok_or(ApiError::not_found("wiki 不存在"))?
+            .entry
+            .assets_dir
+            .clone()
+    };
+    let target = safe_join(&assets_dir, &name).ok_or(ApiError::bad_request("非法路径"))?;
+    if !target.is_file() {
+        return Err(ApiError::not_found("资源不存在"));
+    }
+    let ext = target
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !parser::IMAGE_EXTS.contains(&ext.as_str()) {
+        return Err(ApiError::bad_request("不支持的资源类型"));
+    }
+    let bytes = tokio::fs::read(&target)
+        .await
+        .map_err(|_| ApiError::internal("读取资源失败"))?;
+    Ok(([(header::CONTENT_TYPE, image_content_type(&ext))], bytes).into_response())
+}
+
+async fn get_graph(
+    State(state): State<AppState>,
+    AxumPath(wiki): AxumPath<String>,
+    Query(query): Query<GraphQuery>,
+) -> Result<Json<GraphResponse>, ApiError> {
+    let manager = read_manager(&state)?;
+    let idx = manager
+        .get(&wiki)
+        .ok_or(ApiError::not_found("wiki 不存在"))?;
+    let keep = |rec: &PageRecord| {
+        query.page_type.as_ref().is_none_or(|page_type| {
+            rec.path
+                .split_once('/')
+                .map(|(head, _)| head)
+                .unwrap_or(rec.path.as_str())
+                == page_type
+        })
+    };
+
+    let nodes: Vec<GraphNode> = idx
+        .pages
+        .values()
+        .filter(|rec| keep(rec))
+        .map(|rec| GraphNode {
+            id: rec.path.clone(),
+            title: rec.title.clone(),
+            page_type: rec.page_type.clone(),
+        })
+        .collect();
+    let node_ids: std::collections::HashSet<&str> =
+        nodes.iter().map(|node| node.id.as_str()).collect();
+
+    let mut edges = Vec::new();
+    for rec in idx.pages.values() {
+        if !node_ids.contains(rec.path.as_str()) {
+            continue;
+        }
+        for target in &rec.targets {
+            if let Some(hit) = idx.resolve(target)
+                && hit != rec.path
+                && node_ids.contains(hit)
+            {
+                edges.push(GraphEdge {
+                    source: rec.path.clone(),
+                    target: hit.to_string(),
+                });
+            }
+        }
+    }
+
+    Ok(Json(GraphResponse { nodes, edges }))
+}
+
+/// 读取该 wiki 的 App 兼容 review 队列（`.llm-wiki/review.json`）。
+/// 浏览器本身不能发起 review，本接口只做展示——items 原样透传，前端据此生成
+/// 可复制给 agent 的提示词。文件缺失时返回空队列。
+async fn get_review(
+    State(state): State<AppState>,
+    AxumPath(wiki): AxumPath<String>,
+) -> Result<Json<ReviewResponse>, ApiError> {
+    let root_dir = {
+        let manager = read_manager(&state)?;
+        manager
+            .get(&wiki)
+            .ok_or(ApiError::not_found("wiki 不存在"))?
+            .entry
+            .root_dir
+            .clone()
+    };
+    let path = root_dir.join(".llm-wiki").join("review.json");
+    let items: Vec<serde_json::Value> = match std::fs::read(&path) {
+        Ok(bytes) => {
+            let value = serde_json::from_slice::<serde_json::Value>(&bytes)
+                .map_err(|_| ApiError::internal("review.json 解析失败"))?;
+            // 两种格式并存：App 写 {"items":[...]}，skill 写顶层数组 [...]。
+            if let serde_json::Value::Array(arr) = value {
+                arr
+            } else {
+                value
+                    .get("items")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default()
+            }
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(_) => return Err(ApiError::internal("读取 review.json 失败")),
+    };
+    let open_count = items.iter().filter(|item| is_open_review(item)).count();
+    Ok(Json(ReviewResponse {
+        wiki,
+        root: path_label(&root_dir),
+        count: items.len(),
+        open_count,
+        items,
+    }))
+}
+
+/// 判断一条 review 项是否仍待处理。`resolved:true` 或落入收尾状态集视为已处理，
+/// 其余（含缺省 status）一律当作待办，宁可多显不漏。
+fn is_open_review(item: &serde_json::Value) -> bool {
+    if item.get("resolved").and_then(|v| v.as_bool()) == Some(true) {
+        return false;
+    }
+    match item.get("status").and_then(|v| v.as_str()) {
+        Some(status) => !matches!(
+            status,
+            "resolved" | "done" | "closed" | "skipped" | "skip" | "researched"
+                | "queued-for-research"
+        ),
+        None => true,
+    }
+}
+
+/// 把相对路径安全拼到 `root` 下，拒绝 `..` 越界与绝对路径。
+fn safe_join(root: &Path, rel: &str) -> Option<PathBuf> {
+    let mut out = root.to_path_buf();
+    for component in Path::new(rel).components() {
+        match component {
+            Component::Normal(part) => out.push(part),
+            Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
+fn image_content_type(ext: &str) -> &'static str {
+    match ext {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "bmp" => "image/bmp",
+        "avif" => "image/avif",
+        _ => "application/octet-stream",
+    }
+}
+
+async fn search(
+    State(state): State<AppState>,
+    AxumPath(wiki): AxumPath<String>,
+    Query(query): Query<SearchQuery>,
+) -> Result<Json<SearchResponse>, ApiError> {
+    let q = query.q.trim();
+    if q.is_empty() && query.tag.is_none() && query.page_type.is_none() {
+        return Err(ApiError::bad_request("需提供 q，或 tag/type 过滤条件"));
+    }
+
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let hits: Vec<SearchHit> = if q.is_empty() {
+        let manager = read_manager(&state)?;
+        let idx = manager
+            .get(&wiki)
+            .ok_or(ApiError::not_found("wiki 不存在"))?;
+        let mut records = idx
+            .pages
+            .values()
+            .filter(|record| {
+                query
+                    .tag
+                    .as_ref()
+                    .is_none_or(|tag| record.tags.iter().any(|candidate| candidate == tag))
+                    && query
+                        .page_type
+                        .as_ref()
+                        .is_none_or(|page_type| &record.page_type == page_type)
+            })
+            .collect::<Vec<_>>();
+        records.sort_by(|a, b| a.title.cmp(&b.title));
+        records
+            .into_iter()
+            .take(limit)
+            .map(|record| SearchHit {
+                path: record.path.clone(),
+                slug: record.slug.clone(),
+                title: record.title.clone(),
+                page_type: record.page_type.clone(),
+                snippet: preview(&record.body, 120),
+                score: 0.0,
+            })
+            .collect()
+    } else {
+        {
+            let manager = read_manager(&state)?;
+            manager
+                .get(&wiki)
+                .ok_or(ApiError::not_found("wiki 不存在"))?;
+        }
+        state
+            .searcher
+            .lock()
+            .map_err(|_| ApiError::internal("搜索索引不可用"))?
+            .search(
+                Some(&wiki),
+                q,
+                query.page_type.as_deref(),
+                query.tag.as_deref(),
+                limit,
+            )
+            .map_err(|_| ApiError::internal("搜索失败"))?
+            .into_iter()
+            .map(|result| SearchHit {
+                path: result.path,
+                slug: result.slug,
+                title: result.title,
+                page_type: result.page_type,
+                snippet: result.snippet,
+                score: result.score,
+            })
+            .collect()
+    };
+
+    Ok(Json(SearchResponse {
+        query: q.to_string(),
+        total: hits.len(),
+        hits,
+    }))
+}
+
+fn outgoing_links(idx: &WikiIndex, rec: &PageRecord) -> Vec<LinkRef> {
+    let mut seen = std::collections::BTreeSet::new();
+    rec.targets
+        .iter()
+        .filter_map(|target| {
+            if !seen.insert(target) {
+                return None;
+            }
+            let label = target.rsplit('/').next().unwrap_or(target).to_string();
+            Some(match idx.resolve(target) {
+                Some(hit) => LinkRef {
+                    target: Some(hit.to_string()),
+                    label: idx
+                        .pages
+                        .get(hit)
+                        .map(|page| page.title.clone())
+                        .unwrap_or(label),
+                    broken: false,
+                },
+                None => LinkRef {
+                    target: None,
+                    label,
+                    broken: true,
+                },
+            })
+        })
+        .collect()
+}
+
+fn page_ref(rec: &PageRecord) -> PageRef {
+    PageRef {
+        path: rec.path.clone(),
+        slug: rec.slug.clone(),
+        title: rec.title.clone(),
+        page_type: rec.page_type.clone(),
+        tags: rec.tags.clone(),
+        updated: rec.updated.clone(),
+        created: rec.created.clone(),
+        mtime: rec.mtime,
+    }
+}
+
+fn type_order(page_type: &str) -> (usize, &str) {
+    const ORDER: &[&str] = &[
+        "entities",
+        "concepts",
+        "sources",
+        "queries",
+        "synthesis",
+        "comparisons",
+    ];
+    (
+        ORDER
+            .iter()
+            .position(|candidate| *candidate == page_type)
+            .unwrap_or(ORDER.len()),
+        page_type,
+    )
+}
+
+fn preview(body: &str, width: usize) -> String {
+    let text = to_plain_text(body);
+    if text.len() <= width {
+        text
+    } else {
+        let mut end = width.min(text.len());
+        while end > 0 && !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}…", &text[..end])
+    }
+}
+
+fn path_label(path: &std::path::Path) -> String {
+    path.to_string_lossy().into_owned()
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct WikiInfo {
+    key: String,
+    name: String,
+    description: String,
+    default: bool,
+    page_count: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct WikiConfigInfo {
+    key: String,
+    name: String,
+    description: String,
+    default: bool,
+    page_count: usize,
+    root_dir: String,
+    wiki_dir: String,
+    raw_dir: String,
+    assets_dir: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct TreeNode {
+    #[serde(rename = "type")]
+    page_type: String,
+    count: usize,
+    pages: Vec<PageRef>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PageRef {
+    path: String,
+    slug: String,
+    title: String,
+    #[serde(rename = "type")]
+    page_type: String,
+    tags: Vec<String>,
+    updated: Option<String>,
+    created: Option<String>,
+    mtime: Option<f64>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct LinkRef {
+    target: Option<String>,
+    label: String,
+    broken: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Page {
+    wiki: String,
+    path: String,
+    slug: String,
+    title: String,
+    #[serde(rename = "type")]
+    page_type: String,
+    frontmatter: BTreeMap<String, serde_json::Value>,
+    body: String,
+    outgoing_links: Vec<LinkRef>,
+    backlinks: Vec<PageRef>,
+    sources: Vec<String>,
+    tags: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ServerConfigInfo {
+    port: u16,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ShareConfigInfo {
+    relay_connected: bool,
+    online_url: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ServerConfigUpdate {
+    port: u16,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ServerConfigUpdateResult {
+    port: u16,
+    restart_required: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct RestartResult {
+    ok: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct AutostartConfigInfo {
+    supported: bool,
+    enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct AutostartUpdate {
+    enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQuery {
+    #[serde(rename = "type")]
+    page_type: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct GraphNode {
+    id: String,
+    title: String,
+    #[serde(rename = "type")]
+    page_type: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct GraphEdge {
+    source: String,
+    target: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct GraphResponse {
+    nodes: Vec<GraphNode>,
+    edges: Vec<GraphEdge>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SearchQuery {
+    #[serde(default)]
+    q: String,
+    #[serde(rename = "type")]
+    page_type: Option<String>,
+    tag: Option<String>,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SearchHit {
+    path: String,
+    slug: String,
+    title: String,
+    #[serde(rename = "type")]
+    page_type: String,
+    snippet: String,
+    score: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SearchResponse {
+    query: String,
+    total: usize,
+    hits: Vec<SearchHit>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ReviewResponse {
+    wiki: String,
+    /// 该 wiki 的仓库根路径，供前端拼进给 agent 的提示词。
+    root: String,
+    count: usize,
+    open_count: usize,
+    /// review 项原样透传（schema 在 App 与 skill 间略有差异，前端按需容错取字段）。
+    items: Vec<serde_json::Value>,
+}
+
+#[derive(Debug)]
+struct ApiError {
+    status: StatusCode,
+    message: &'static str,
+}
+
+impl ApiError {
+    fn not_found(message: &'static str) -> Self {
+        Self {
+            status: StatusCode::NOT_FOUND,
+            message,
+        }
+    }
+
+    fn bad_request(message: &'static str) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message,
+        }
+    }
+
+    fn internal(message: &'static str) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message,
+        }
+    }
+
+    fn not_supported(message: &'static str) -> Self {
+        Self {
+            status: StatusCode::NOT_IMPLEMENTED,
+            message,
+        }
+    }
+
+    fn unauthorized() -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            message: "令牌无效或缺失。",
+        }
+    }
+}
+
+impl axum::response::IntoResponse for ApiError {
+    fn into_response(self) -> axum::response::Response {
+        let mut response = (
+            self.status,
+            Json(serde_json::json!({ "detail": self.message })),
+        )
+            .into_response();
+        if self.status == StatusCode::UNAUTHORIZED {
+            response.headers_mut().insert(
+                header::WWW_AUTHENTICATE,
+                header::HeaderValue::from_static("Bearer"),
+            );
+        }
+        response
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::{Body, to_bytes};
+    use axum::http::{Request, StatusCode};
+    use llm_wiki_core::{IndexManager, WikiEntry};
+    use std::fs;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn serves_wikis_tree_and_page() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("demo");
+        let wiki_dir = root.join("wiki");
+        fs::create_dir_all(wiki_dir.join("entities")).unwrap();
+        fs::write(
+            wiki_dir.join("entities").join("claude.md"),
+            "---\ntitle: Claude\ntype: entities\n---\nhello",
+        )
+        .unwrap();
+        fs::write(
+            wiki_dir.join("mcp.md"),
+            "---\ntitle: MCP\n---\nsee [[entities/claude|Claude]]",
+        )
+        .unwrap();
+
+        let entry = WikiEntry {
+            key: "demo".to_string(),
+            name: "Demo".to_string(),
+            description: Some("desc".to_string()),
+            root_dir: root.clone(),
+            wiki_dir,
+            raw_dir: root.join("raw"),
+            assets_dir: root.join("raw").join("assets"),
+            default: true,
+        };
+        let manager = IndexManager::build([entry]).unwrap();
+        let searcher = FullTextSearcher::in_memory().unwrap();
+        for idx in manager.wikis.values() {
+            searcher
+                .reindex_wiki(&idx.entry.key, &idx.search_docs())
+                .unwrap();
+        }
+        let app = build_router(ServerConfig {
+            frontend_dist: None,
+            index_manager: manager,
+            searcher,
+            auth_token: String::new(),
+            watch_wikis: false,
+            registry_config: None,
+            port: 8800,
+            control: None,
+            share_url: None,
+        });
+
+        let wikis: Vec<WikiInfo> = get_json(&app, "/api/v1/wikis").await;
+        assert_eq!(wikis[0].key, "demo");
+        assert_eq!(wikis[0].page_count, 2);
+
+        let config_wikis: Vec<WikiConfigInfo> = get_json(&app, "/api/v1/config/wikis").await;
+        assert_eq!(config_wikis[0].key, "demo");
+        assert!(config_wikis[0].wiki_dir.ends_with("wiki"));
+
+        let tree: Vec<TreeNode> = get_json(&app, "/api/v1/wikis/demo/tree").await;
+        assert!(tree.iter().any(|node| node.page_type == "entities"));
+
+        let page: Page = get_json(&app, "/api/v1/wikis/demo/pages/mcp").await;
+        assert_eq!(page.title, "MCP");
+        assert!(page.body.contains("[Claude](/w/demo/page/entities/claude)"));
+
+        let results: SearchResponse = get_json(&app, "/api/v1/wikis/demo/search?q=Claude").await;
+        assert!(results.hits.iter().any(|hit| hit.path == "mcp"));
+
+        let graph: GraphResponse = get_json(&app, "/api/v1/wikis/demo/graph").await;
+        assert_eq!(graph.nodes.len(), 2);
+        // mcp 通过 [[entities/claude]] 链接到 claude
+        assert!(
+            graph
+                .edges
+                .iter()
+                .any(|edge| edge.source == "mcp" && edge.target == "entities/claude")
+        );
+
+        // 按 type 过滤后只剩 entities/claude，跨类目的边被裁掉
+        let filtered: GraphResponse =
+            get_json(&app, "/api/v1/wikis/demo/graph?type=entities").await;
+        assert_eq!(filtered.nodes.len(), 1);
+        assert_eq!(filtered.nodes[0].id, "entities/claude");
+        assert!(filtered.edges.is_empty());
+    }
+
+    #[tokio::test]
+    async fn serves_raw_source_and_asset() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("demo");
+        let wiki_dir = root.join("wiki");
+        let raw_dir = root.join("raw");
+        let assets_dir = raw_dir.join("assets");
+        fs::create_dir_all(&wiki_dir).unwrap();
+        fs::create_dir_all(raw_dir.join("sources").join("video")).unwrap();
+        fs::create_dir_all(&assets_dir).unwrap();
+        fs::write(
+            raw_dir.join("sources").join("video").join("launch.md"),
+            "---\ntitle: 衛星上網簡史\nsource_type: video\nsource_url: https://example.com/v\ntags: [space, video]\n---\n正文 ![cover](../../assets/pic.png)",
+        )
+        .unwrap();
+        fs::write(assets_dir.join("pic.png"), b"\x89PNG\r\n\x1a\n").unwrap();
+
+        let entry = WikiEntry {
+            key: "demo".to_string(),
+            name: "Demo".to_string(),
+            description: None,
+            root_dir: root.clone(),
+            wiki_dir,
+            raw_dir,
+            assets_dir,
+            default: true,
+        };
+        let manager = IndexManager::build([entry]).unwrap();
+        let app = build_router(ServerConfig {
+            frontend_dist: None,
+            index_manager: manager,
+            searcher: FullTextSearcher::in_memory().unwrap(),
+            auth_token: String::new(),
+            watch_wikis: false,
+            registry_config: None,
+            port: 8800,
+            control: None,
+            share_url: None,
+        });
+
+        // 无扩展名（wikilink 风格）也能解析到 .md
+        let raw: Page = get_json(&app, "/api/v1/wikis/demo/raw/sources/video/launch").await;
+        assert_eq!(raw.title, "衛星上網簡史");
+        assert_eq!(raw.page_type, "video");
+        assert_eq!(raw.path, "raw/sources/video/launch.md");
+        assert_eq!(
+            raw.frontmatter.get("source_url").and_then(|v| v.as_str()),
+            Some("https://example.com/v")
+        );
+        assert!(raw.tags.contains(&"space".to_string()));
+        // 图片被重写到 assets 接口
+        assert!(raw.body.contains("/api/v1/wikis/demo/assets/pic.png"));
+
+        // assets 接口返回图片
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/wikis/demo/assets/pic.png")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("image/png")
+        );
+    }
+
+    /// 与 serves_wikis_tree_and_page 相同的两页 demo 库，供 MCP 测试复用。
+    fn demo_app(auth_token: &str) -> (tempfile::TempDir, Router) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("demo");
+        let wiki_dir = root.join("wiki");
+        let raw_dir = root.join("raw");
+        fs::create_dir_all(wiki_dir.join("entities")).unwrap();
+        fs::create_dir_all(raw_dir.join("sources")).unwrap();
+        fs::write(
+            wiki_dir.join("entities").join("claude.md"),
+            "---\ntitle: Claude\ntype: entities\n---\nhello",
+        )
+        .unwrap();
+        fs::write(
+            wiki_dir.join("mcp.md"),
+            "---\ntitle: MCP\n---\nsee [[entities/claude|Claude]]",
+        )
+        .unwrap();
+        fs::write(
+            raw_dir.join("sources").join("origin.md"),
+            "---\ntitle: Origin\n---\nraw body",
+        )
+        .unwrap();
+
+        let entry = WikiEntry {
+            key: "demo".to_string(),
+            name: "Demo".to_string(),
+            description: Some("desc".to_string()),
+            root_dir: root.clone(),
+            wiki_dir,
+            raw_dir,
+            assets_dir: root.join("raw").join("assets"),
+            default: true,
+        };
+        let manager = IndexManager::build([entry]).unwrap();
+        let searcher = FullTextSearcher::in_memory().unwrap();
+        for idx in manager.wikis.values() {
+            searcher
+                .reindex_wiki(&idx.entry.key, &idx.search_docs())
+                .unwrap();
+        }
+        let app = build_router(ServerConfig {
+            frontend_dist: None,
+            index_manager: manager,
+            searcher,
+            auth_token: auth_token.to_string(),
+            watch_wikis: false,
+            registry_config: None,
+            port: 8800,
+            control: None,
+            share_url: None,
+        });
+        (tmp, app)
+    }
+
+    async fn mcp_post_raw(app: &Router, token: Option<&str>, body: serde_json::Value) -> Response {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri("/mcp/")
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(token) = token {
+            builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        app.clone()
+            .oneshot(builder.body(Body::from(body.to_string())).expect("request"))
+            .await
+            .expect("response")
+    }
+
+    async fn mcp_rpc(app: &Router, token: Option<&str>, body: serde_json::Value) -> serde_json::Value {
+        let response = mcp_post_raw(app, token, body).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    /// tools/call 结果里的 text 载荷（本实现固定单条 text content）。
+    fn tool_text(reply: &serde_json::Value) -> String {
+        reply["result"]["content"][0]["text"]
+            .as_str()
+            .expect("text content")
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn mcp_endpoint_handshake_and_tools() {
+        let (_tmp, app) = demo_app("");
+
+        // initialize：回显受支持的版本，声明 tools 能力
+        let reply = mcp_rpc(
+            &app,
+            None,
+            serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+                "protocolVersion":"2025-03-26","capabilities":{},
+                "clientInfo":{"name":"test","version":"0"}}}),
+        )
+        .await;
+        assert_eq!(reply["result"]["protocolVersion"], "2025-03-26");
+        assert!(reply["result"]["capabilities"]["tools"].is_object());
+
+        // 通知（无 id）→ 202
+        let response = mcp_post_raw(
+            &app,
+            None,
+            serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+        // tools/list → 契约层的 5 个工具
+        let reply = mcp_rpc(
+            &app,
+            None,
+            serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
+        )
+        .await;
+        let tools = reply["result"]["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 5);
+        assert!(tools.iter().any(|tool| tool["name"] == "search_wiki"));
+
+        // list_wikis
+        let reply = mcp_rpc(
+            &app,
+            None,
+            serde_json::json!({"jsonrpc":"2.0","id":3,"method":"tools/call",
+                "params":{"name":"list_wikis","arguments":{}}}),
+        )
+        .await;
+        assert_eq!(reply["result"]["isError"], false);
+        assert!(tool_text(&reply).contains("\"demo\""));
+
+        // search_wiki → 命中 mcp 页
+        let reply = mcp_rpc(
+            &app,
+            None,
+            serde_json::json!({"jsonrpc":"2.0","id":4,"method":"tools/call",
+                "params":{"name":"search_wiki","arguments":{"wiki":"demo","query":"Claude"}}}),
+        )
+        .await;
+        assert!(tool_text(&reply).contains("mcp"));
+
+        // search_wiki 省略 wiki → 跨库检索，命中带 wiki 归属，scope=all
+        let reply = mcp_rpc(
+            &app,
+            None,
+            serde_json::json!({"jsonrpc":"2.0","id":41,"method":"tools/call",
+                "params":{"name":"search_wiki","arguments":{"query":"Claude"}}}),
+        )
+        .await;
+        let text = tool_text(&reply);
+        assert!(text.contains("\"scope\": \"all\""));
+        assert!(text.contains("\"wiki\": \"demo\""));
+
+        // read_page → 原文正文，wikilink 不被改写
+        let reply = mcp_rpc(
+            &app,
+            None,
+            serde_json::json!({"jsonrpc":"2.0","id":5,"method":"tools/call",
+                "params":{"name":"read_page","arguments":{"wiki":"demo","path":"mcp"}}}),
+        )
+        .await;
+        let text = tool_text(&reply);
+        assert!(text.contains("[[entities/claude|Claude]]"));
+        assert!(text.contains("entities/claude")); // outgoingLinks 已解析
+
+        // read_raw → raw 层原文（无扩展名也可解析）
+        let reply = mcp_rpc(
+            &app,
+            None,
+            serde_json::json!({"jsonrpc":"2.0","id":6,"method":"tools/call",
+                "params":{"name":"read_raw","arguments":{"wiki":"demo","path":"sources/origin"}}}),
+        )
+        .await;
+        assert!(tool_text(&reply).contains("raw body"));
+
+        // list_wiki_tree → 类目分组
+        let reply = mcp_rpc(
+            &app,
+            None,
+            serde_json::json!({"jsonrpc":"2.0","id":7,"method":"tools/call",
+                "params":{"name":"list_wiki_tree","arguments":{"wiki":"demo"}}}),
+        )
+        .await;
+        assert!(tool_text(&reply).contains("entities"));
+
+        // 执行层错误 → isError 工具结果而非协议错误
+        let reply = mcp_rpc(
+            &app,
+            None,
+            serde_json::json!({"jsonrpc":"2.0","id":8,"method":"tools/call",
+                "params":{"name":"read_page","arguments":{"wiki":"nope","path":"x"}}}),
+        )
+        .await;
+        assert_eq!(reply["result"]["isError"], true);
+
+        // 协议层错误：未知方法 / 未知工具
+        let reply = mcp_rpc(
+            &app,
+            None,
+            serde_json::json!({"jsonrpc":"2.0","id":9,"method":"resources/list"}),
+        )
+        .await;
+        assert_eq!(reply["error"]["code"], -32601);
+        let reply = mcp_rpc(
+            &app,
+            None,
+            serde_json::json!({"jsonrpc":"2.0","id":10,"method":"tools/call",
+                "params":{"name":"nope","arguments":{}}}),
+        )
+        .await;
+        assert_eq!(reply["error"]["code"], -32602);
+
+        // GET → 405 + Allow: POST
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/mcp/")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::ALLOW)
+                .and_then(|value| value.to_str().ok()),
+            Some("POST")
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_endpoint_requires_auth_token() {
+        let (_tmp, app) = demo_app("secret");
+        let ping = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"ping"});
+
+        // 无令牌 / 错令牌 → 401
+        let response = mcp_post_raw(&app, None, ping.clone()).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let response = mcp_post_raw(&app, Some("wrong"), ping.clone()).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        // 正确令牌（不带尾斜杠的 /mcp 也通）
+        let reply = mcp_rpc(&app, Some("secret"), ping.clone()).await;
+        assert!(reply["result"].is_object());
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::AUTHORIZATION, "Bearer secret")
+                    .body(Body::from(ping.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn serves_review_queue_with_open_count() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("demo");
+        let wiki_dir = root.join("wiki");
+        fs::create_dir_all(&wiki_dir).unwrap();
+        fs::create_dir_all(root.join(".llm-wiki")).unwrap();
+        fs::write(
+            root.join(".llm-wiki").join("review.json"),
+            r#"{"items":[
+                {"type":"suggestion","title":"A","status":"open"},
+                {"type":"contradiction","title":"B","resolved":true},
+                {"type":"suggestion","title":"C","status":"researched"}
+            ]}"#,
+        )
+        .unwrap();
+
+        let entry = WikiEntry {
+            key: "demo".to_string(),
+            name: "Demo".to_string(),
+            description: None,
+            root_dir: root.clone(),
+            wiki_dir,
+            raw_dir: root.join("raw"),
+            assets_dir: root.join("raw").join("assets"),
+            default: true,
+        };
+        let manager = IndexManager::build([entry]).unwrap();
+        let app = build_router(ServerConfig {
+            frontend_dist: None,
+            index_manager: manager,
+            searcher: FullTextSearcher::in_memory().unwrap(),
+            auth_token: String::new(),
+            watch_wikis: false,
+            registry_config: None,
+            port: 8800,
+            control: None,
+            share_url: None,
+        });
+
+        let review: ReviewResponse = get_json(&app, "/api/v1/wikis/demo/review").await;
+        assert_eq!(review.count, 3);
+        // 仅第一条 open：resolved:true 与 status=researched 均视为已处理。
+        assert_eq!(review.open_count, 1);
+        assert_eq!(review.items[0]["title"], "A");
+    }
+
+    #[tokio::test]
+    async fn serves_review_queue_top_level_array() {
+        // skill 写法：顶层直接是数组（无 items 包裹）。
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("demo");
+        fs::create_dir_all(root.join("wiki")).unwrap();
+        fs::create_dir_all(root.join(".llm-wiki")).unwrap();
+        fs::write(
+            root.join(".llm-wiki").join("review.json"),
+            r#"[
+                {"type":"suggestion","title":"A","resolved":false},
+                {"type":"suggestion","title":"B","resolved":true}
+            ]"#,
+        )
+        .unwrap();
+
+        let entry = WikiEntry {
+            key: "demo".to_string(),
+            name: "Demo".to_string(),
+            description: None,
+            root_dir: root.clone(),
+            wiki_dir: root.join("wiki"),
+            raw_dir: root.join("raw"),
+            assets_dir: root.join("raw").join("assets"),
+            default: true,
+        };
+        let manager = IndexManager::build([entry]).unwrap();
+        let app = build_router(ServerConfig {
+            frontend_dist: None,
+            index_manager: manager,
+            searcher: FullTextSearcher::in_memory().unwrap(),
+            auth_token: String::new(),
+            watch_wikis: false,
+            registry_config: None,
+            port: 8800,
+            control: None,
+            share_url: None,
+        });
+        let review: ReviewResponse = get_json(&app, "/api/v1/wikis/demo/review").await;
+        assert_eq!(review.count, 2);
+        assert_eq!(review.open_count, 1);
+        assert_eq!(review.items[0]["title"], "A");
+    }
+
+    #[tokio::test]
+    async fn review_queue_empty_when_file_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("demo");
+        fs::create_dir_all(root.join("wiki")).unwrap();
+        let entry = WikiEntry {
+            key: "demo".to_string(),
+            name: "Demo".to_string(),
+            description: None,
+            root_dir: root.clone(),
+            wiki_dir: root.join("wiki"),
+            raw_dir: root.join("raw"),
+            assets_dir: root.join("raw").join("assets"),
+            default: true,
+        };
+        let manager = IndexManager::build([entry]).unwrap();
+        let app = build_router(ServerConfig {
+            frontend_dist: None,
+            index_manager: manager,
+            searcher: FullTextSearcher::in_memory().unwrap(),
+            auth_token: String::new(),
+            watch_wikis: false,
+            registry_config: None,
+            port: 8800,
+            control: None,
+            share_url: None,
+        });
+        let review: ReviewResponse = get_json(&app, "/api/v1/wikis/demo/review").await;
+        assert_eq!(review.count, 0);
+        assert_eq!(review.open_count, 0);
+    }
+
+    #[test]
+    fn refresh_wiki_index_picks_up_new_markdown_and_search_docs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("demo");
+        let wiki_dir = root.join("wiki");
+        fs::create_dir_all(wiki_dir.join("sources")).unwrap();
+        fs::write(
+            wiki_dir.join("sources").join("old.md"),
+            "---\ntitle: Old\n---\nold body",
+        )
+        .unwrap();
+
+        let entry = WikiEntry {
+            key: "demo".to_string(),
+            name: "Demo".to_string(),
+            description: None,
+            root_dir: root.clone(),
+            wiki_dir: wiki_dir.clone(),
+            raw_dir: root.join("raw"),
+            assets_dir: root.join("raw").join("assets"),
+            default: true,
+        };
+        let manager = Arc::new(RwLock::new(IndexManager::build([entry]).unwrap()));
+        let searcher = Arc::new(Mutex::new(FullTextSearcher::in_memory().unwrap()));
+        {
+            let manager = manager.read().unwrap();
+            for idx in manager.wikis.values() {
+                searcher
+                    .lock()
+                    .unwrap()
+                    .reindex_wiki(&idx.entry.key, &idx.search_docs())
+                    .unwrap();
+            }
+        }
+
+        fs::write(
+            wiki_dir.join("sources").join("new.md"),
+            "---\ntitle: New\n---\nnew body with needle",
+        )
+        .unwrap();
+        refresh_wiki_index("demo", &manager, &searcher).unwrap();
+
+        let manager = manager.read().unwrap();
+        let idx = manager.get("demo").unwrap();
+        assert!(idx.pages.contains_key("sources/new"));
+        assert_eq!(idx.pages.len(), 2);
+        drop(manager);
+
+        let hits = searcher
+            .lock()
+            .unwrap()
+            .search(Some("demo"), "needle", None, None, 10)
+            .unwrap();
+        assert!(hits.iter().any(|hit| hit.path == "sources/new"));
+    }
+
+    #[test]
+    fn reload_registry_index_adds_and_removes_wikis_and_search_docs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let alpha = tmp.path().join("alpha");
+        let beta = tmp.path().join("beta");
+        fs::create_dir_all(alpha.join("wiki").join("sources")).unwrap();
+        fs::create_dir_all(beta.join("wiki").join("sources")).unwrap();
+        fs::write(
+            alpha.join("wiki").join("sources").join("old.md"),
+            "---\ntitle: Alpha\n---\nold alpha needle",
+        )
+        .unwrap();
+        fs::write(
+            beta.join("wiki").join("sources").join("new.md"),
+            "---\ntitle: Beta\n---\nnew beta needle",
+        )
+        .unwrap();
+        let registry = tmp.path().join("wikis.json");
+        fs::write(
+            &registry,
+            format!(r#"{{"wikis":[{{"path":"{}"}}]}}"#, alpha.display()),
+        )
+        .unwrap();
+        let config = CoreConfig {
+            registry_path: registry.clone(),
+            wiki_dirs: Vec::new(),
+            cache_dir: tmp.path().join(".cache"),
+        };
+        let entries = load_registry(&config).unwrap();
+        let manager = Arc::new(RwLock::new(
+            IndexManager::build(entries.into_values()).unwrap(),
+        ));
+        let searcher = Arc::new(Mutex::new(FullTextSearcher::in_memory().unwrap()));
+        {
+            let manager = manager.read().unwrap();
+            let docs_by_wiki = manager
+                .wikis
+                .values()
+                .map(|idx| (idx.entry.key.clone(), idx.search_docs()))
+                .collect::<Vec<_>>();
+            searcher
+                .lock()
+                .unwrap()
+                .reindex_all(
+                    docs_by_wiki
+                        .iter()
+                        .map(|(key, docs)| (key.as_str(), docs.as_slice())),
+                )
+                .unwrap();
+        }
+
+        fs::write(
+            &registry,
+            format!(r#"{{"wikis":[{{"path":"{}"}}]}}"#, beta.display()),
+        )
+        .unwrap();
+        reload_registry_index(&config, &manager, &searcher).unwrap();
+
+        let manager = manager.read().unwrap();
+        assert!(!manager.wikis.contains_key("alpha"));
+        assert!(manager.wikis.contains_key("beta"));
+        drop(manager);
+
+        let searcher = searcher.lock().unwrap();
+        assert!(
+            searcher
+                .search(Some("alpha"), "needle", None, None, 10)
+                .unwrap()
+                .is_empty()
+        );
+        let hits = searcher
+            .search(Some("beta"), "needle", None, None, 10)
+            .unwrap();
+        assert!(hits.iter().any(|hit| hit.path == "sources/new"));
+    }
+
+    #[test]
+    fn safe_join_rejects_traversal_and_absolute() {
+        let root = Path::new("/wiki/raw");
+        assert_eq!(
+            safe_join(root, "sources/a.md"),
+            Some(PathBuf::from("/wiki/raw/sources/a.md"))
+        );
+        assert_eq!(
+            safe_join(root, "./sources/a.md"),
+            Some(PathBuf::from("/wiki/raw/sources/a.md"))
+        );
+        assert_eq!(safe_join(root, "../../etc/passwd"), None);
+        assert_eq!(safe_join(root, "sources/../../escape"), None);
+        assert_eq!(safe_join(root, "/etc/passwd"), None);
+    }
+
+    #[tokio::test]
+    async fn serves_frontend_shell_for_deep_links() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = tmp.path().join("dist");
+        fs::create_dir_all(&dist).unwrap();
+        fs::write(
+            dist.join("index.html"),
+            "<!doctype html><title>shell</title>",
+        )
+        .unwrap();
+
+        let manager = IndexManager::build(std::iter::empty::<WikiEntry>()).unwrap();
+        let app = build_router(ServerConfig {
+            frontend_dist: Some(dist),
+            index_manager: manager,
+            searcher: FullTextSearcher::in_memory().unwrap(),
+            auth_token: String::new(),
+            watch_wikis: false,
+            registry_config: None,
+            port: 8800,
+            control: None,
+            share_url: None,
+        });
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/w/llm-wiki/browse/queries")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert!(std::str::from_utf8(&body).unwrap().contains("shell"));
+    }
+
+    #[tokio::test]
+    async fn server_config_get_put_and_restart() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let persisted = Arc::new(Mutex::new(None::<u16>));
+        let restarted = Arc::new(AtomicBool::new(false));
+        let persist_target = persisted.clone();
+        let restart_target = restarted.clone();
+        let control = ServerControl {
+            persist_port: Arc::new(move |port| {
+                *persist_target.lock().unwrap() = Some(port);
+                Ok(())
+            }),
+            restart: Arc::new(move || restart_target.store(true, Ordering::SeqCst)),
+            autostart: None,
+        };
+        let app = build_router(ServerConfig {
+            frontend_dist: None,
+            index_manager: IndexManager::build(std::iter::empty::<WikiEntry>()).unwrap(),
+            searcher: FullTextSearcher::in_memory().unwrap(),
+            auth_token: String::new(),
+            watch_wikis: false,
+            registry_config: None,
+            port: 8800,
+            control: Some(control),
+            share_url: None,
+        });
+
+        let info: ServerConfigInfo = get_json(&app, "/api/v1/config/server").await;
+        assert_eq!(info.port, 8800);
+
+        let put = |body: &'static str| {
+            app.clone().oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/v1/config/server")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body))
+                    .expect("request"),
+            )
+        };
+
+        let ok = put(r#"{"port":9000}"#).await.expect("response");
+        assert_eq!(ok.status(), StatusCode::OK);
+        assert_eq!(*persisted.lock().unwrap(), Some(9000));
+
+        let bad = put(r#"{"port":80}"#).await.expect("response");
+        assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+
+        let restart = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/config/restart")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(restart.status(), StatusCode::OK);
+        assert!(restarted.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn autostart_config_get_and_put() {
+        let enabled = Arc::new(Mutex::new(false));
+        let read_target = enabled.clone();
+        let write_target = enabled.clone();
+        let control = ServerControl {
+            persist_port: Arc::new(|_| Ok(())),
+            restart: Arc::new(|| {}),
+            autostart: Some(AutostartControl {
+                is_enabled: Arc::new(move || Ok(*read_target.lock().unwrap())),
+                set_enabled: Arc::new(move |value| {
+                    *write_target.lock().unwrap() = value;
+                    Ok(())
+                }),
+            }),
+        };
+        let app = build_router(ServerConfig {
+            frontend_dist: None,
+            index_manager: IndexManager::build(std::iter::empty::<WikiEntry>()).unwrap(),
+            searcher: FullTextSearcher::in_memory().unwrap(),
+            auth_token: String::new(),
+            watch_wikis: false,
+            registry_config: None,
+            port: 8800,
+            control: Some(control),
+            share_url: None,
+        });
+
+        let info: AutostartConfigInfo = get_json(&app, "/api/v1/config/autostart").await;
+        assert!(info.supported);
+        assert!(!info.enabled);
+
+        let put = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/v1/config/autostart")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"enabled":true}"#))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(put.status(), StatusCode::OK);
+        assert!(*enabled.lock().unwrap());
+
+        let info: AutostartConfigInfo = get_json(&app, "/api/v1/config/autostart").await;
+        assert!(info.enabled);
+    }
+
+    #[tokio::test]
+    async fn autostart_config_reports_unsupported_without_hooks() {
+        let app = build_router(ServerConfig {
+            frontend_dist: None,
+            index_manager: IndexManager::build(std::iter::empty::<WikiEntry>()).unwrap(),
+            searcher: FullTextSearcher::in_memory().unwrap(),
+            auth_token: String::new(),
+            watch_wikis: false,
+            registry_config: None,
+            port: 8800,
+            control: None,
+            share_url: None,
+        });
+
+        let info: AutostartConfigInfo = get_json(&app, "/api/v1/config/autostart").await;
+        assert!(!info.supported);
+
+        let put = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/v1/config/autostart")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"enabled":true}"#))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_ne!(put.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn share_config_reports_online_url_when_relay_connected() {
+        let online_url = Arc::new(Mutex::new(Some(
+            "https://wiki.example/demo/?token=secret".to_string(),
+        )));
+        let provider_url = online_url.clone();
+        let app = build_router(ServerConfig {
+            frontend_dist: None,
+            index_manager: IndexManager::build(std::iter::empty::<WikiEntry>()).unwrap(),
+            searcher: FullTextSearcher::in_memory().unwrap(),
+            auth_token: String::new(),
+            watch_wikis: false,
+            registry_config: None,
+            port: 8800,
+            control: None,
+            share_url: Some(Arc::new(move || {
+                provider_url.lock().ok().and_then(|guard| guard.clone())
+            })),
+        });
+
+        let share: ShareConfigInfo = get_json(&app, "/api/v1/config/share").await;
+        assert!(share.relay_connected);
+        assert_eq!(
+            share.online_url.as_deref(),
+            Some("https://wiki.example/demo/?token=secret")
+        );
+
+        *online_url.lock().unwrap() = None;
+        let share: ShareConfigInfo = get_json(&app, "/api/v1/config/share").await;
+        assert!(!share.relay_connected);
+        assert_eq!(share.online_url, None);
+    }
+
+    #[tokio::test]
+    async fn api_requires_token_when_configured() {
+        let app = empty_app(Some("secret"));
+
+        assert_eq!(
+            status(&app, "/api/v1/healthz").await,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            status_with_auth(&app, "/api/v1/healthz", "Bearer wrong").await,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            status_with_auth(&app, "/api/v1/healthz", "Bearer secret").await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            status(&app, "/api/v1/healthz?token=secret").await,
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn relay_requests_are_rejected_without_token() {
+        let app = empty_app(None);
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/healthz")
+                    .header("x-llm-wiki-relay", "1")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    fn empty_app(auth_token: Option<&str>) -> Router {
+        build_router(ServerConfig {
+            frontend_dist: None,
+            index_manager: IndexManager::build(std::iter::empty::<WikiEntry>()).unwrap(),
+            searcher: FullTextSearcher::in_memory().unwrap(),
+            auth_token: auth_token.unwrap_or_default().to_string(),
+            watch_wikis: false,
+            registry_config: None,
+            port: 8800,
+            control: None,
+            share_url: None,
+        })
+    }
+
+    async fn status(app: &Router, uri: &str) -> StatusCode {
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response")
+            .status()
+    }
+
+    async fn status_with_auth(app: &Router, uri: &str, authorization: &str) -> StatusCode {
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .header(header::AUTHORIZATION, authorization)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response")
+            .status()
+    }
+
+    async fn get_json<T>(app: &Router, uri: &str) -> T
+    where
+        T: for<'de> serde::Deserialize<'de>,
+    {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+}
