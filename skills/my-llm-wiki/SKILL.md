@@ -4,8 +4,9 @@ description: >-
   Ingest external content into the immutable RAW layer of an LLM-WIKI knowledge
   base: fetch a source, convert it to self-contained Markdown, and download its
   images locally so the result is a faithful, archivable original (not a summary).
-  A pluggable fetch adapter does the fetching — opencli is the bundled default but
-  is NOT required; a no-opencli profile is provided. Use this whenever the user
+  Fetching is delegated to whatever tools the machine has (opencli, agent-reach,
+  yt-dlp, WebFetch, …) — this skill carries the scenario SOPs and the acceptance
+  contract, not the fetchers. Use this whenever the user
   wants to save / archive / clip / capture / "沉淀" a link into their wiki /
   knowledge base — a WeChat 公众号 article (mp.weixin.qq.com), an X/Twitter post, a
   小红书 note, or any web page; to batch-sync X/Twitter bookmarks (收藏/bookmarks)
@@ -37,12 +38,14 @@ RAW files are originals the wiki reads from but never edits — so the goal is a
 faithful, self-contained capture (text + local media), **not a summary**.
 
 A **fetch adapter** does the heavy lifting (fetch a page → Markdown, download
-images, rewrite links); the bundled default is `opencli` (web/social) + `markitdown`
-(local docs). This skill's core is **adapter-agnostic** — it **routes** a source to
-the right wiki, **normalizes** the output into the RAW contract, and **composes**
-the cases the default adapter only half-covers (single X posts, batch bookmarks,
-video). Swapping fetch tools = satisfying `references/adapter-contract.md`; the
-engine only consumes a fixed on-disk shape, it never calls a scraper.
+images, rewrite links) — but this skill **does not ship or maintain fetchers**.
+It carries the **scenario SOPs** (how to capture each kind of source well, with
+whatever tools are installed: opencli, agent-reach, yt-dlp, markitdown, the
+agent's own WebFetch) plus the core that's tool-independent: it **routes** a
+source to the right wiki, **normalizes** the output into the RAW contract, and
+**composes** multi-step cases (single X posts, batch bookmarks, video). Any tool
+satisfying `references/adapter-contract.md` plugs in; the engine only consumes a
+fixed on-disk shape, it never calls a scraper.
 
 **Every capture follows the same spine:** resolve the wiki (§1) → fetch to a temp
 dir (§2) → normalize into RAW (§4) → optionally hand off to synthesis (§7). Pick the
@@ -109,52 +112,54 @@ Fetch into a **temp** dir (e.g. `/tmp/llmwiki-<x>`) with media as local files, i
 shape of the **Adapter Contract** (`references/adapter-contract.md`) — then §4
 normalizes it into RAW. Temp-first keeps half-finished fetches out of RAW.
 
-**Probe what's installed first** (especially on a fresh machine, or if the skill was
-distributed to someone without opencli):
+**Probe what's installed first, then take the best available recipe.** This skill
+ships no fetchers — the machine's own tools do the fetching, and which tool is
+best differs per machine:
 
 ```bash
-python3 <skill>/scripts/preflight.py
+python3 <skill>/scripts/preflight.py        # per-source-type capability map
+agent-reach doctor --json 2>/dev/null       # per-platform availability, if installed
 ```
 
-Its `adapters:` map reports, per source type, the best available path (`ok` → go;
-`degraded` → works with a caveat; `unavailable` → relay its `install` hint). It never
-installs anything. A bare machine can still capture web text, X, and notes —
-opencli/markitdown/yt-dlp only *upgrade* coverage.
+`preflight.py`'s `adapters:` map reports, per source type, the best available
+path (`ok` → go; `degraded` → works with a caveat; `unavailable` → relay its
+`install` hint). It never installs anything. A bare machine can still capture
+web text, X, and notes — opencli/agent-reach/yt-dlp/markitdown only *upgrade*
+coverage. **When the recommended tool for the user's scenario is missing, guide
+the install instead of silently degrading**: say what the tool would improve for
+this capture, and give the install command *with the project's home URL*
+(preflight's recommendations and the stack table in `sources.md` carry both) so
+the user can vet the source before installing.
 
-**opencli is the default adapter, not a dependency.** If it's missing (or the user
-runs a different stack), `references/adapters-without-opencli.md` is a complete
-no-opencli profile for every source type.
+### Scenario index
 
-### Default-adapter quick reference
+Per-scenario SOPs (acceptance shape + recipes per available tool) are in
+`references/sources.md`. Match on the host:
 
-Match on the host. Dedicated adapters give cleaner captures; `web read` is the
-universal fallback for **any** site. If a tool isn't found, run the Preflight in
-`references/sources.md` first (same shell block as the command).
-
-| Source | Command | Notes |
+| Source | Scenario SOP | source_type |
 |------|---------|-------|
-| `mp.weixin.qq.com` | `opencli weixin download --url <url> --output <tmp> --download-images true -f yaml` | `wechat`. If `images/` is empty (newer 图文 hide images in a JS gallery), redo with `web read` — see `references/sources.md`. |
-| `x.com` / `twitter.com` (single post) | compose — see §3 | `x` |
-| anything else (小红书, web, …) | `opencli web read --url <url> --output <tmp> --download-images true -f yaml` | `xiaohongshu` for xhs, else `web` |
-| **online video** (YouTube, Bilibili, …) | see §8 | `video` — transcript, never the file |
-| **local document** (PDF, docx, …) | `markitdown <file> -o <tmp>/doc.md` | `doc`. Normalize with `--md <tmp>/doc.md` **and `--source-file <file>`** (markitdown text is lossy). See `references/sources.md`. |
+| `mp.weixin.qq.com` | `sources.md` → WeChat | `wechat` |
+| `x.com` / `twitter.com` (single post) | compose — §3 + `sources.md` → X | `x` |
+| **online video** (YouTube, Bilibili, …) | §8 + `references/video-capture-sop.md` | `video` — transcript, never the file |
+| **local document** (PDF, docx, …) | `sources.md` → Local documents | `doc` — pass `--source-file` |
+| anything else (小红书, web, …) | `sources.md` → Any web page | `xiaohongshu` for xhs, else `web` |
 
-Always capture into a **temp** dir. `-f yaml` reports the `saved:` folder and the
-title. If an opencli command hits a login/auth wall, tell the user to run the
-adapter's `login` once (e.g. `opencli twitter login`) — don't scrape around auth.
+Always capture into a **temp** dir. On a login/auth wall, surface the tool's
+login step (e.g. `opencli twitter login`) — don't scrape around auth.
 
 ---
 
-## §3 — Single X/Twitter post (default adapter)
+## §3 — Single X/Twitter post
 
 An X post needs composing, not one command. The rule that matters: **don't build the
-capture from the `twitter bookmarks` listing fields** — that listing's `text` is lossy
+capture from a bookmarks-listing's fields** — that listing's `text` is lossy
 (a long-form tweet can show as a bare `t.co` link) and `has_media` can be wrong. Fetch
-per tweet — `opencli web read` for full text + images, `opencli twitter download` only
-when the post has video — then normalize with `--from`. Exact commands:
-`references/sources.md` → "X / Twitter — single post"; no-opencli fallback:
-`references/x-fallback-capture.md`. Long-form/article posts come back as
-`title: untitled` (fix before normalizing) — see `references/x-article-pitfalls.md`.
+per tweet — a rendered-page fetch for full text + images, a separate video download
+only when the post has video — then normalize with `--from`. Recipes per tool
+(opencli / the fxtwitter API): `references/sources.md` → "X / Twitter"; the
+browser-free fxtwitter path in detail: `references/x-fallback-capture.md`.
+Long-form/article posts come back as `title: untitled` (fix before normalizing) —
+see `references/x-article-pitfalls.md`.
 
 ---
 
@@ -195,10 +200,11 @@ and any videos left as links. Then check **§7** for the synthesis handoff.
 
 ---
 
-## §5 — Bookmark-sync mode (batch X, default adapter)
+## §5 — Bookmark-sync mode (batch X)
 
-Pulling X bookmarks into RAW in bulk is a stateful, incremental job (uses `opencli
-twitter`). Two rules drive it: **dedupe by tweet id before downloading** (listing is
+Pulling X bookmarks into RAW in bulk is a stateful, incremental job. It needs a
+tool that can list the logged-in user's bookmarks (`opencli twitter` is the
+documented recipe). Two rules drive it: **dedupe by tweet id before downloading** (listing is
 cheap, media download is expensive and per-tweet — get captured ids with
 `scripts/captured_ids.py --wiki <root> --source x`, subtract, download only the new
 ones, which also makes runs resumable); and **first sync needs a big `--limit`,
@@ -286,84 +292,32 @@ media never stored. The transcript is **timestamped**: each ~30s chunk is prefix
 a clickable `**[MM:SS](…&t=NNNs)**` deep link, so the wiki can answer *"a point was made
 somewhere in some video — where?"* Preserve these anchors through every step.
 
-Built on `scripts/fetch_video.py` (YouTube + Bilibili first-class via opencli; other
-hosts via yt-dlp). **opencli is optional** — it degrades automatically to yt-dlp +
-local ASR. Zero API cost: captions are free; the no-caption fallback transcribes
-audio with a **local** backend (Whisper, or SenseVoice for Chinese via `--asr auto`).
-Full recipe, quality levers, and audio-fallback gotchas: `references/sources.md` →
-"Online video"; no-opencli stack: `references/adapters-without-opencli.md`. **Live
-failure modes** (wrong-video resolution, stale temp dir, orphan Whisper, partial
-download, the Hermes `nohup` ban, post-normalize title fixes, the manual Bilibili
-pipeline): `references/video-capture-pitfalls.md` — read it before a Bilibili / ASR
-capture.
+1. **Produce the transcript** per **`references/video-capture-sop.md`** — the
+   complete scenario SOP: the acceptance shape (`transcript.md` + `images/cover.jpg`
+   in a fresh temp dir), captions first (free, seconds) → else audio-only download +
+   **local, language-routed ASR** (zh → SenseVoice, else faster-whisper; audio deleted
+   after), the cue→anchor assembly recipe, and the Bilibili/ASR pitfall list. Two
+   rules that survive any tooling:
+   - **Long ASR runs go in the background; poll a status file yourself** — never a
+     blocking foreground call (command timeouts kill it mid-transcribe), and never
+     "wait to be notified" (a documented way to sit idle long after completion).
+   - **Verify before ingesting** — metadata matches the requested video, audio
+     duration matches video duration, char count is plausible. `status: error` or a
+     failed check → surface the reason, don't ingest a stub.
 
-1. **Fetch the transcript — background it, then actively POLL `--status-file`.**
-   Captions return in seconds, but the no-caption Whisper pass takes **minutes to tens
-   of minutes** on CPU and **exceeds single-command timeouts** (e.g. hermes kills any
-   one command at 300 s), so a blocking foreground call gets killed mid-transcribe.
-
-   The **universal contract** (works in any runtime): start `fetch_video.py` as a
-   **non-blocking** job that writes `--status-file`, then **poll that file yourself**
-   with short commands until it appears. **Do not rely on the runtime to notify you on
-   completion** — `--status-file` polling is the only portable, reliable signal; a
-   background job whose completion you wait to be *told* about can leave you idle long
-   after it finished. Poll, don't wait.
-
-   *How you background it is environment-specific; the polling is not:*
-   - **Plain shell** → `nohup … &` (shown below).
-   - **Hermes** (rejects `nohup`/`&`) → `terminal(background=true)` **without**
-     `notify_on_complete`, then poll `status.yaml`. Setting `notify_on_complete=true`
-     here is worse than useless: the status file is written before the process exits,
-     so you always finish the workflow first and the exit notification lands *after*
-     your final reply as a stale `[IMPORTANT: Background process … exited]` message
-     that re-wakes the session for nothing.
-   - **Other agents** → whatever their non-blocking exec primitive is; the
-     `--status-file` + poll contract is unchanged.
-
-   Use a **fresh** temp dir per capture — a reused `/tmp/llmwiki-vid` can serve a
-   previous run's stale transcript.
-   ```bash
-   # plain-shell form; swap the launch for your runtime's non-blocking exec:
-   mkdir -p /tmp/llmwiki-vid
-   nohup python3 <skill>/scripts/fetch_video.py --url "<video url>" \
-     --output /tmp/llmwiki-vid --status-file /tmp/llmwiki-vid/status.yaml \
-     > /tmp/llmwiki-vid/run.log 2>&1 &
-   # key flags: --whisper-model medium (turbo/large-v3 = better) · --asr auto (LEAVE
-   #   at auto — routes Chinese → SenseVoice; only override with a specific reason) ·
-   #   --browser chrome (cookies for the audio fallback) · --lang en (force lang)
-   ```
-   ```bash
-   # poll in a separate short command, repeat until status.yaml exists:
-   test -f /tmp/llmwiki-vid/status.yaml && cat /tmp/llmwiki-vid/status.yaml \
-     || { echo "still transcribing…"; tail -2 /tmp/llmwiki-vid/run.log; }
-   ```
-   Captions finish on the first poll or two; the Whisper path needs more (poll every
-   ~30–60 s; a long video legitimately takes 10–25 min). The background mechanism does
-   not affect transcription speed — only how promptly you *notice* it finished, which
-   is why you poll. The script tries captions
-   first, else downloads audio-only → local ASR → **deletes the audio**, lays down
-   `transcript.md` in the `--from` shape, and writes a YAML summary
-   (`transcript_source`, `has_timestamps`, `needs_translation`, `title`/`author`/
-   `original_id`/`publish_time`, `warnings`, …) to both `run.log` and `--status-file`.
-   - **`status: error`** → surface the reason, don't ingest a stub (common: a YouTube
-     auth wall → `opencli youtube login`; the audio fallback needing browser cookies).
-   - **`audio download incomplete` / SenseVoice / torch errors** → see the
-     audio-fallback gotchas in `references/sources.md` (the fix is usually adding
-     `--browser`, keeping `--asr auto`; never debug torch with the system `python3`).
-
-2. **Polish + translate** — *your* job, editing `/tmp/llmwiki-vid/transcript.md` in
+2. **Polish + translate** — *your* job, editing the temp dir's `transcript.md` in
    place. Light, content-preserving polish of the `## 文字转写` body (paragraph breaks,
    punctuation, fix obvious ASR mishearings) — don't rewrite/summarize/drop, same
    "faithful repair" spirit as `clean_md.py`, and **keep every `**[MM:SS](…&t=…)**`
-   anchor exactly where it is** (edit only the prose after it). **If
-   `needs_translation: true`** (a non-Chinese video), append a `## 中文译文` section
-   below the original with a full Chinese translation, carrying the same anchors.
+   anchor exactly where it is** (edit only the prose after it). **If the video is
+   non-Chinese**, append a `## 中文译文` section below the original with a full
+   Chinese translation, carrying the same anchors.
 
 3. **Route to the right wiki (§1)** from the title + channel + transcript.
 
-4. **Normalize into RAW** (pass the summary's metadata as flags):
+4. **Normalize into RAW** (pass the collected metadata as flags):
    ```bash
-   python3 <skill>/scripts/normalize_raw.py --from /tmp/llmwiki-vid \
+   python3 <skill>/scripts/normalize_raw.py --from <tmp dir> \
      --source-type video --wiki <wiki from §1> \
      --source-url "<video url>" --original-id "<videoId>" \
      --author "<channel>" --publish-time "<publishDate>" \
@@ -373,9 +327,9 @@ capture.
    `video` is a deliberately-not-downloaded source — adds **no** "can't download"
    callout (the transcript *is* the capture). **Verify after:** the title/slug default
    to `transcript` (from the `transcript.md` filename) — patch them to the real video
-   title and confirm the cover landed. See `references/video-capture-pitfalls.md`.
+   title and confirm the cover landed (`video-capture-sop.md` §5).
 
-5. **Report** concisely: wiki, path, transcript source (captions vs `whisper(model)`),
+5. **Report** concisely: wiki, path, transcript source (captions vs `<asr>(model)`),
    that it's timestamped with jump-back links, whether you added a translation, the
    cover. Then check **§7** for the synthesis handoff.
 
@@ -395,13 +349,12 @@ capture.
 ## Reference map
 
 - `references/routing.md` — multi-wiki registry & topic classification (§0, §1)
-- `references/sources.md` — default-adapter recipes, Preflight, video, docs (§2, §3, §8)
+- `references/sources.md` — per-scenario capture SOPs & tool recipes (§2, §3)
 - `references/adapter-contract.md` — the on-disk shape any fetch tool must satisfy
-- `references/adapters-without-opencli.md` — complete no-opencli / no-browser profile
 - `references/raw-contract.md` — frontmatter schema, layout, readability, notes (§4, §6)
+- `references/video-capture-sop.md` — the video scenario: acceptance contract, recipes, pitfalls (§8)
 - `references/x-bookmarks.md` — batch bookmark-sync procedure (§5)
-- `references/x-fallback-capture.md` — X capture without opencli (§3)
+- `references/x-fallback-capture.md` — browser-free X capture via fxtwitter (§3)
 - `references/routing-pitfalls.md` — genre/topic mis-routing traps (§1)
-- `references/video-capture-pitfalls.md` — live video/ASR failure modes & verification (§8)
 - `references/x-article-pitfalls.md` — X long-form `untitled` fix (§3)
 - `data/` — per-corpus content data (e.g. ASR glossaries); runtime-generated, not shipped, not loaded as guidance

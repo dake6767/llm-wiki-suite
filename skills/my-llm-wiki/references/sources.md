@@ -1,359 +1,140 @@
-# Default adapter: opencli (web/social) + markitdown (docs)
+# Source capture SOPs — probe first, then the best available recipe
 
-This is the skill's **bundled default** fetch/convert adapter — one
-implementation of the tool-agnostic `references/adapter-contract.md`. The wiki
-core (`scripts/normalize_raw.py`) does **not** depend on opencli; it only
-consumes the contract's on-disk shape, so this whole file can be replaced by any
-tool that produces that shape. Use it when opencli is what you have (the common
-case); swap it out when adapting the skill to a different scraper.
+This skill owns the **RAW contract**, not the fetchers. Every scenario below is
+one job: lay the source down in a temp dir in the `adapter-contract.md` shape
+(markdown + local media), then hand off to `normalize_raw.py`. *Which tool does
+the fetching is a property of the machine, not of this skill* — so each scenario
+starts from a capability probe and lists recipes per tool, best first. Any tool
+that produces the shape is a valid adapter; when tools disagree with this file,
+trust their `--help` and note the drift.
 
-How to capture each kind of source with opencli/markitdown, and how their output
-maps onto the RAW contract. The universal fallback is `web read` — it handles any
-site, so an unknown host is never a blocker.
-
-General rules:
-- `opencli` is an **npm** CLI (`@jackwener/opencli`), not a Python package. If a
-  shell can't find it (agents that don't load the user's nvm/profile), resolve the
-  absolute path — see the **Preflight** section just below. Never `pip`/`pipx
-  install opencli`.
-- Always capture into a **temp** dir, then run `normalize_raw.py` to commit.
-- Use `-f yaml` so you can read the `saved:` path and `title:` programmatically.
-- opencli adapters drive a real browser. On a login/auth wall, surface the
-  adapter's `login` subcommand to the user — don't scrape around it.
-- Discover flags with `opencli <adapter> <cmd> --help`. Adapters evolve; trust
-  `--help` over this file if they disagree, and note the drift to the user.
-
----
-
-## Preflight — make the tools callable (don't reinstall blindly)
-
-Both tools are frequently *installed but not on a sandboxed agent's `PATH`*
-(agents often don't load the user's nvm/profile). Resolve the path first; install
-only if genuinely absent. This is the classic time-sink — do it once, here.
-
-### opencli (the web/social adapter)
-
-`opencli` is an **npm** global CLI (`@jackwener/opencli`) — **not** a Python
-package. Never `pip`/`pipx install opencli`; that fails fatally (wrong ecosystem).
-opencli is a Node script, so it needs its sibling `node` too, and both live in the
-same bin dir — **put that bin dir on `PATH`** (resolving only opencli's absolute
-path isn't enough — it'll fail with `env: node: No such file or directory`):
+**Probe before fetching** (once per session; especially on a fresh machine):
 
 ```bash
-OPENCLI="$(command -v opencli || true)"
-if [ -n "$OPENCLI" ]; then BIN="$(dirname "$OPENCLI")"; else
-  for d in "$HOME"/.nvm/versions/node/*/bin /opt/homebrew/bin /usr/local/bin "$HOME"/.local/bin; do
-    [ -x "$d/opencli" ] && BIN="$d" && break
-  done
-fi
-[ -n "$BIN" ] && export PATH="$BIN:$PATH"
-command -v opencli >/dev/null && opencli --version || echo "opencli NOT found"
+python3 <skill>/scripts/preflight.py        # per-source-type capability map
+agent-reach doctor --json 2>/dev/null       # per-platform availability, if installed
 ```
 
-A `PATH` export does **not** persist across separate shell invocations, so run
-this resolution in the **same** command block as your opencli calls (prepend it).
-Only if opencli is genuinely absent, install with **npm** (needs Node.js):
-`npm install -g @jackwener/opencli` — or tell the user. Do not fall back to pip.
+Common fetch stacks, in rough order of capture cleanliness:
 
-### markitdown (the local-document converter)
+| Stack | Install / home | What it gives you | Watch out |
+|------|------|--------------------|-----------|
+| **opencli** | `npm i -g @jackwener/opencli` · [npm](https://www.npmjs.com/package/@jackwener/opencli) | real logged-in browser: JS pages, auth-gated content, auto image download | an **npm** CLI — never pip-install it; needs its sibling `node` on PATH (put its bin dir on PATH, not just the binary) |
+| **agent-reach** | [github.com/Panniantong/agent-reach](https://github.com/Panniantong/agent-reach) (one-line agent install in its README) | maintained per-platform access (X, Reddit, YouTube, 小红书, …) with `doctor` self-check | output is text/markdown — images usually stay remote URLs; localize them yourself |
+| **bare CLIs** | [yt-dlp](https://github.com/yt-dlp/yt-dlp) · [ffmpeg](https://ffmpeg.org) · [markitdown](https://github.com/microsoft/markitdown) (`brew` / `pipx`) | video/audio/subtitles, docs | compose the shape yourself |
+| **agent built-ins** (WebFetch / tavily-extract) | none needed | zero-install text extraction for any URL | text-mostly; images stay remote; JS/auth pages weaker |
 
-`markitdown` (Microsoft's doc→Markdown converter) is a **pip/pipx** CLI — same
-trap, opposite ecosystem. Resolve it first; install once only if truly absent:
+**When a scenario's best tool is missing, don't silently degrade** — tell the
+user what the recommended tool is, what it would improve for *this* capture, and
+give the install command **with the project's home URL** (above) so they can vet
+it. Then proceed with the best available path (or wait, their call).
 
-```bash
-MD="$(command -v markitdown || true)"
-if [ -z "$MD" ]; then
-  for d in "$HOME"/.pyenv/shims "$HOME"/.local/bin "$HOME"/Library/Python/*/bin \
-           /opt/homebrew/bin /usr/local/bin "$HOME"/.local/pipx/venvs/markitdown/bin \
-           "$HOME"/.asdf/shims; do
-    [ -x "$d/markitdown" ] && export PATH="$d:$PATH" && MD="$d/markitdown" && break
-  done
-fi
-command -v markitdown >/dev/null && markitdown --version || echo "markitdown NOT found"
-```
+General rules, every scenario:
 
-Run it in the **same** block as your `markitdown` call. If genuinely absent,
-install **once** with `pipx install markitdown` (or `pip install 'markitdown[all]'`)
-or tell the user — don't auto-install repeatedly, and don't `npm`-flail.
+- **Temp dir first** (`/tmp/llmwiki-<x>`), then `normalize_raw.py` commits. A
+  failed fetch never touches RAW.
+- **Media must end up local.** The core does not download remote media — a
+  capture whose images are still `https://` links is degraded (the core flags it
+  via `capture_health`, but localizing is the fetch step's job).
+- **Don't fight auth.** Login walls → surface the tool's login step
+  (`opencli twitter login`, browser login for cookie-based tools). Never scrape
+  around auth.
+- **PATH gotcha:** tools are frequently installed but missing from a sandboxed
+  agent's PATH (nvm/Homebrew/pipx bins). Resolve the absolute path in the *same*
+  shell block as the call; install only if genuinely absent — and in the right
+  ecosystem (opencli = npm; markitdown = pip/pipx).
 
 ---
 
 ## WeChat 公众号 — `mp.weixin.qq.com`
 
-```bash
-opencli weixin download --url "<url>" --output /tmp/llmwiki-wx --download-images true -f yaml
-```
+source_type `wechat` · `original_id` = the `/s/<token>` URL segment.
 
-Output: `<tmp>/<title>/<title>.md` + `<title>/images/`. The md has a `>`-style
-header (`公众号:` / `发布时间:` / `原文链接:`) and relative image links — exactly
-what `normalize_raw.py --from <that folder>` expects. source_type = `wechat`.
-`original_id` = the `/s/<token>` segment of the URL.
+- **opencli** (best — localizes images):
+  ```bash
+  opencli weixin download --url "<url>" --output /tmp/llmwiki-wx --download-images true -f yaml
+  ```
+  Output folder is exactly the `--from` shape, with a `>`-header (`公众号:` /
+  `发布时间:` / `原文链接:`) the core parses. **Verify `images/`:** newer 图文
+  (image-text) posts keep images in a JS gallery `weixin download` doesn't see —
+  full text, empty images. Then redo with the generic reader
+  (`opencli web read --url … --download-images true --wait 5`) and normalize
+  from that folder instead, carrying `--author` / `--publish-time` from the
+  first pass (web read's header lacks them).
+- **No browser tool:** WebFetch / tavily-extract → save markdown to
+  `/tmp/llmwiki-wx/page.md`, download the visible images into the dir, rewrite
+  to relative links, pass metadata via flags. mp.weixin pages are largely
+  static, so text comes through well.
 
-For a traditional article this localizes images cleanly. Video is a 腾讯视频
-iframe → not downloadable; the script keeps the link and flags `has_video`.
-
-**Verify images, and fall back to `web read` for the newer 图文 (image-text)
-posts.** WeChat now also publishes 小红书-style image-text posts whose images live
-in a JS-rendered gallery that `weixin download` does NOT extract — it returns the
-full text but an empty/missing `images/` folder. So after `weixin download`,
-check the `images/` folder: if it's empty even though the post clearly carries
-images (an image-text post, an infographic, etc.), redo the capture with the
-generic reader, which renders the gallery:
-
-```bash
-opencli web read --url "<url>" --download-images true --wait 5 --output /tmp/llmwiki-wx2 -f yaml
-```
-
-Then normalize from the web-read folder instead (still `--source-type wechat`).
-web read's page header lacks the `公众号:` / `发布时间:` lines, so author and
-publish_time get lost on the fallback — but the first `weixin download` pass
-*did* capture them. Carry them over explicitly:
-
-```bash
-python3 <skill>/scripts/normalize_raw.py --from /tmp/llmwiki-wx2/<folder> \
-  --source-type wechat --source-url "<url>" --original-id "<token>" \
-  --author "<from weixin download>" --publish-time "<from weixin download>" \
-  --captured-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-```
-
-web read also pulls in a little extra chrome (author avatar, 打赏/赞赏 UI text) —
-trim the obvious boilerplate if easy, but RAW favors faithful over tidy. A
-pure-text article legitimately has no images; a web-read retry on it is harmless
-(same text, still no images), so when in doubt, retry.
+A pure-text article legitimately has no images; when in doubt a web-read retry
+is harmless. web read pulls a little chrome (avatar, 打赏 UI) — trim the obvious
+boilerplate if easy; RAW favors faithful over tidy.
 
 ---
 
-## Any web page (incl. 小红书, blogs, news, docs) — fallback
+## Any web page (incl. 小红书, blogs, news) — the universal fallback
 
-```bash
-opencli web read --url "<url>" --output /tmp/llmwiki-web --download-images true -f yaml
-```
+source_type: `xiaohongshu` for xiaohongshu.com, else `web`.
 
-Same output shape as weixin (folder + md + images/, relative links), so
-normalize the same way. Useful flags when a page renders slowly or via JS:
-- `--wait-until networkidle` and/or `--wait <seconds>` for lazy content
-- `--wait-for "<css selector>"` to block until the main content exists
-- `--frames all-same-origin` if the article lives in an iframe
+- **opencli**:
+  ```bash
+  opencli web read --url "<url>" --output /tmp/llmwiki-web --download-images true -f yaml
+  ```
+  Slow/JS pages: `--wait-until networkidle`, `--wait <s>`,
+  `--wait-for "<css>"`, `--frames all-same-origin` for iframe articles.
+- **agent-reach / WebFetch / tavily-extract**: get clean markdown → write to
+  `/tmp/llmwiki-web/page.md` → download must-keep images into the dir and
+  rewrite to relative links (or accept text-only; the core will flag it) →
+  `normalize_raw.py --md … --source-type web` with metadata flags.
 
-source_type: use `xiaohongshu` for `xiaohongshu.com`, else `web`. 小红书 notes
-are image-centric — confirm the images came through; if the note is gated, the
-user may need `opencli xiaohongshu login` first.
-
----
-
-## X / Twitter — single post — `x.com` / `twitter.com`
-
-**Treat an X post like the generic web path for content.** Do NOT build the
-capture from `twitter bookmarks` fields — that listing's `text` is lossy (often
-just a `t.co` link, truncated, or empty, even for long-form posts) and its
-`has_media` can be wrong. The reliable content source is a per-tweet fetch:
-
-1. **Full text + images** — the primary capture:
-   ```bash
-   opencli web read --url "<tweet-url>" --download-images true --output /tmp/llmwiki-x -f yaml
-   ```
-   This renders the whole post (long-form tweets included) and localizes its
-   images into `images/` — the exact folder shape `normalize_raw.py --from`
-   wants. Verified: a long-form tweet that the bookmarks listing reduced to a
-   bare `t.co` link comes back here with its full body + all images.
-
-2. **Video (web read can't get it)** — X video is a `blob:` source that
-   `web read` leaves as a placeholder. If the post has video:
-   ```bash
-   opencli twitter download --tweet-url "<url>" --output /tmp/llmwiki-xv
-   ```
-   then move the downloaded `.mp4` into the web-read folder's `images/` and add a
-   line `![video](images/<file>.mp4)` to that folder's `.md`, so normalization
-   carries the file into the shared `raw/assets/` and links it locally.
-
-3. **Normalize** from the web-read folder:
-   ```bash
-   python3 <skill>/scripts/normalize_raw.py \
-     --from /tmp/llmwiki-x/<web-read folder> \
-     --source-type x --source-url "<tweet-url>" --original-id "<status id>" \
-     --captured-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-   ```
-
-`original_id` = the numeric `/status/<id>`. On an auth wall: `opencli twitter login`.
-
-Note: web read also captures a little page chrome (author avatar, engagement
-counts). RAW favors faithful over tidy, so that's an acceptable trade for never
-losing the body text.
-
-**Fallback when opencli is unavailable or fails:** use `references/x-fallback-capture.md`.
-It documents how to assemble a long-form/article tweet from the fxtwitter status
-API, including downloading article images and the best mp4 variant before running
-`normalize_raw.py --md ... --assets ...`. This is a fallback recipe, not a
-replacement for the preferred opencli path.
-
-`original_id` = the numeric status id from the URL (`/status/<id>`).
-If any X command hits auth, have the user run `opencli twitter login` once.
+小红书 notes are image-centric and often login-gated — without a logged-in
+browser you may only get text + cover. Say so rather than pretending the
+capture is complete.
 
 ---
 
-## Online video (YouTube, …) — `scripts/fetch_video.py`
+## X / Twitter — single post
 
-Goal: distill a video's **content** into RAW and keep the link — **never** store
-the video file (the user collects many videos and has no disk for them). The
-faithful "original" is the URL; the body is a **transcript** (a lossy text
-extraction, like a `doc`'s markitdown text). source_type = `video`.
+source_type `x` · `original_id` = the numeric `/status/<id>`. An X post needs
+**composing**, not one command — the full rules (don't trust bookmark-listing
+text, video assembly, long-form `untitled` fix) are the scenario SOP regardless
+of tool:
 
-The bundled `scripts/fetch_video.py` is the adapter; it does only the
-deterministic fetch and lays down the `--from` folder shape. The agent then
-light-polishes and (for a foreign video) translates the transcript before
-normalizing — see SKILL.md §8. Two transcript paths, cheapest first, **zero API
-cost**:
+1. **Full text + images**: a per-tweet fetch of the rendered page —
+   `opencli web read --url "<tweet-url>" --download-images true` (best), or the
+   **fxtwitter API** (no browser needed): `references/x-fallback-capture.md`.
+   Never build the capture from a bookmarks-listing `text` field — it's lossy
+   (long-form posts show as a bare `t.co` link).
+2. **Video**: rendered-page fetchers leave X video as a `blob:` placeholder.
+   Download the mp4 separately (`opencli twitter download --tweet-url …`, or
+   fxtwitter's best mp4 variant), move it into the folder's `images/`, add a
+   `![video](images/<file>.mp4)` line to the md.
+3. **Normalize** with `--from <folder>` (or `--md tweet.md --assets <dir>` when
+   you composed the file yourself).
 
-1. **Captions** — free, no download. **YouTube** uses `opencli youtube transcript`
-   and **Bilibili** uses `opencli bilibili subtitle` (including B 站's AI-generated
-   `ai-zh` track) — both drive the logged-in browser, so they sidestep yt-dlp's
-   "Sign in to confirm you're not a bot" wall; other hosts try yt-dlp's subtitle
-   tracks. (Metadata likewise: `opencli youtube video` / `opencli bilibili video`,
-   else `yt-dlp --dump-single-json`.)
-2. **Audio + local ASR** — the no-caption fallback. Download audio-only with
-   yt-dlp, transcribe with a **local** ASR backend (Whisper / faster-whisper),
-   then **delete the audio**.
+Long-form/article posts can come back `title: untitled` — fix before
+normalizing: `references/x-article-pitfalls.md`.
 
-**The transcript is timestamped.** Every path above carries per-segment start
-times — opencli/Bilibili cue timestamps, yt-dlp VTT cues, or Whisper emitting
-**SRT** instead of plain text — and the script keeps them. The body renders each
-~30s chunk with a clickable `**[MM:SS](…&t=NNNs)**` deep link to that exact
-moment (`--segment-seconds` tunes the spacing; default 30). This is what makes
-the wiki answer *"I remember a point was made somewhere in some video — where?"*:
-a search hit carries both the passage and a one-click jump back to the source
-moment. The summary reports `has_timestamps` / `segment_count`.
+---
 
-**opencli is optional here.** `fetch_video.py` uses opencli only for the *cleaner*
-caption + metadata path on YouTube/Bilibili; if opencli isn't installed it
-**degrades automatically** to yt-dlp for metadata, yt-dlp subtitles for captions,
-and the audio + local-ASR fallback otherwise. So the script needs only
-`yt-dlp` + `ffmpeg` + an ASR backend to work end-to-end without opencli (the audio
-path on YouTube reads browser cookies via `--browser` to get past the bot wall).
+## Online video (YouTube, Bilibili, …) — transcript, never the file
 
-```bash
-python3 <skill>/scripts/fetch_video.py --url "<video url>" --output /tmp/llmwiki-vid
-```
+source_type `video`. The whole scenario — acceptance shape (timestamped
+`**[MM:SS](…&t=NNNs)**` anchors), captions-first decision order, language-routed
+local ASR (zh → SenseVoice, else faster-whisper), the anchor assembly recipe,
+background+poll discipline, and the Bilibili pitfall list — lives in
+**`references/video-capture-sop.md`**. Read it before any video capture.
 
-Options: `--whisper-model medium` (default; `base`/`small` are faster + rougher,
-`medium`/`large-v3` slower + better, `turbo` = large-v3-turbo is fast *and*
-accurate — a long video on CPU can take many minutes), `--asr auto|whisper|
-faster-whisper` (ASR backend, default auto), `--browser chrome` (which browser's
-cookies yt-dlp reads for the audio fallback), `--lang en` (force a caption / ASR
-language; omit to auto-select the original track), `--prompt "..."` (override the
-term hint), `--status-file <path>` (write the final summary there atomically),
-`--keep-audio` (debug).
+The short version: probe → captions if they exist (free, seconds) → else
+audio-only download + local ASR → assemble the anchored transcript → verify
+duration/char-count → polish (SKILL.md §8) → normalize.
 
-> **Long-running fallback → run it in the background and poll.** Captions return
-> in seconds, but the no-caption Whisper pass takes **minutes to tens of minutes**
-> on CPU and **exceeds short single-command timeouts** (e.g. hermes kills any one
-> terminal command at 300 s). Don't call it as a blocking foreground command for a
-> video that might lack captions — launch it detached with `--status-file` and a
-> `run.log`, then poll the status file with short commands until it appears. The
-> exact recipe is in SKILL.md §8 step 1. Installing **faster-whisper**
-> (`pip install whisper-ctranslate2`, auto-picked) and/or `--whisper-model turbo`
-> shortens the pass; background+poll is what makes even a slow pass safe.
-
-**Transcription quality (the no-caption Whisper path).** Whisper mis-decodes
-code-switching and domain terms on small models — a mixed Chinese/English tech
-talk turns "token" into "偷肯", "GPT" into "吉皮提". Two levers, both applied
-automatically:
-- **Model size is the biggest lever.** `base` is rough; `medium`/`large-v3`/`turbo`
-  fix most code-switching errors. The default is `medium`; bump to `large-v3` or
-  `turbo` for term-dense tech/finance content. The **ASR backend is pluggable**
-  (`--asr`): install faster-whisper (`pip install whisper-ctranslate2`) to afford
-  `large-v3` at a fraction of the time — it's auto-picked when present. See
-  `references/adapters-without-opencli.md` for adding other backends (e.g.
-  SenseVoice for stronger Chinese ASR).
-- **Term priming from the video's own metadata.** `fetch_video.py` auto-builds a
-  Whisper `--initial_prompt` from the video's **title + keywords + description**
-  (YouTube `keywords`, Bilibili `tag`, yt-dlp `tags`) and carries it across every
-  window (`--carry_initial_prompt`), so the decoder spells the video's own jargon
-  right. Pass `--prompt "token, API, RAG, ..."` to hand-tune the term list when a
-  specific word keeps coming out wrong.
-- **The agent's §8 polish is the backstop.** Whatever the ASR still gets wrong, the
-  light-polish step fixes in context — a reader instantly knows "你这偷肯保真吗" is
-  "你这 token 保真吗". Captions (YouTube/Bilibili) skip all of this — they're clean.
-
-It prints a YAML summary — read these and pass them to `normalize_raw.py` as flags:
-
-| summary field | use |
-|------|------|
-| `source_url` / `original_id` | `--source-url` / `--original-id` (originalId = the videoId) |
-| `author` / `publish_time` | `--author` / `--publish-time` |
-| `transcript_source` | `captions` or `<backend>(<model>)` (e.g. `whisper(medium)`, `faster-whisper(large-v3)`) — report which to the user |
-| `has_timestamps` / `segment_count` | `true` is the norm — the body carries `**[MM:SS](…&t=…)**` jump-back anchors; preserve them when polishing |
-| `needs_translation` | `true` → append a `## 中文译文` to `transcript.md` before normalizing (carry the same anchors into it) |
-| `warnings` | surface to the user (e.g. cover failed, whisper warning) |
-| `status: error` | do **not** ingest — show the message (auth/login/cookie issue) |
-
-Then normalize the folder (the cover image is carried into `raw/assets/`):
-
-```bash
-python3 <skill>/scripts/normalize_raw.py --from /tmp/llmwiki-vid \
-  --source-type video --source-url "<url>" --original-id "<videoId>" \
-  --author "<channel>" --publish-time "<publishDate>" \
-  --captured-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-```
-
-`normalize_raw.py` knows `video` is a deliberately-not-downloaded source, so it
-does **not** stamp `has_video` / `video_links` / the "can't download" callout the
-way it does for an undownloadable WeChat/X video — here the transcript *is* the
-capture.
-
-### Preflight — yt-dlp + whisper (the fallback path)
-
-`fetch_video.py` resolves tool paths itself (it searches the nvm + Homebrew bins),
-so you normally don't prep anything. The caption path needs only `opencli`
-(already the skill's default — see the opencli Preflight above). The **audio
-fallback** additionally needs `yt-dlp`, `ffmpeg`, and the `whisper` CLI; if a
-capture errors with one missing, install the absent one **once** (don't reinstall
-blindly):
-
-```bash
-brew install yt-dlp ffmpeg          # audio download + decode
-brew install openai-whisper         # local, free transcription (CPU)
-# optional, recommended for long/term-dense videos — same models, much faster,
-# auto-picked by --asr auto when present:
-pip install whisper-ctranslate2     # faster-whisper backend
-```
-
-The audio fallback reads cookies from your browser (`--browser`, default chrome)
-to get past YouTube's bot wall — so be logged into YouTube in that browser. If a
-video genuinely has no captions *and* the audio download hits auth, the script
-reports `status: error`; relay it rather than landing a stub.
-
-### Audio-fallback gotchas (the no-caption path)
-
-- **`audio download incomplete …` (a preview/试看 clip behind a cookie wall)** →
-  retry the **same command with ONLY `--browser <your-browser>` added**. Do **not**
-  also switch ASR backends: the download was the problem, not the transcriber.
-  **Keep `--asr auto`** so Chinese still routes to SenseVoice — forcing
-  `--asr whisper` here is a common mistake that makes a zh video slow and worse for
-  no reason.
-- **`ModuleNotFoundError: No module named 'torch'` / "SenseVoice isn't working"** →
-  SenseVoice's `torch`/`funasr` live in a **dedicated venv**
-  (`~/.local/share/llm-wiki/asr-venv`), NOT in the system Python. The script finds
-  that interpreter automatically (`_funasr_python`), so you almost never need to
-  touch it. **Never debug this by running `python3 -c "import torch"`** — the system
-  `python3` has no torch and will falsely report it missing, sending you down a
-  rabbit hole. To check ASR deps authoritatively, run
-  `python3 <skill>/scripts/preflight.py` (its `sensevoice:` line shows the exact
-  interpreter and confirms `funasr+torch ✓`), or use that venv's python directly.
-- **It looks like a broken backend but isn't** → remember transcription must run
-  **backgrounded** (SKILL.md §8 step 1). A foreground SenseVoice/Whisper call gets
-  killed by the command timeout, which can masquerade as a dead backend.
+---
 
 ## Local documents (PDF, docx, pptx, xlsx, epub, …) — `markitdown`
 
-opencli is for the web; it doesn't convert office/document files. For a local
-document the user wants to archive into RAW, use Microsoft's **markitdown** —
-it turns PDF/Word/PowerPoint/Excel/EPUB/HTML/CSV and more into Markdown with a
-much better structure-preserving converter than a generic HTML scrape.
-
-First make `markitdown` callable — run the **markitdown Preflight** above (the
-Preflight section near the top of this file; it's a pip/pipx CLI, often installed
-but missing from a sandboxed agent's PATH; resolve it, install once only if truly
-absent). Then, in the same shell block:
+source_type `doc`. markitdown (pip/pipx, **not** npm) converts office/document
+files to structure-preserving Markdown:
 
 ```bash
 markitdown "/path/to/file.pdf" -o /tmp/llmwiki-doc/doc.md
@@ -369,28 +150,20 @@ python3 <skill>/scripts/normalize_raw.py \
   --captured-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 ```
 
-Notes:
-- **Always pass `--source-file`** — markitdown's Markdown is a *lossy text
-  extraction* (it drops embedded figures, layout, tables-as-images). `--source-file`
-  archives the **real original** into `raw/assets/` and records `source_file:` in
-  the frontmatter, so RAW keeps the faithful source next to its searchable text.
-- markitdown extracts **text structure**, not embedded images — a text-heavy
-  document (report, paper, slides' text) comes through well; a scanned/image-only
-  PDF yields little text. Because the original is archived via `--source-file`,
-  `normalize_raw.py` does **not** false-flag a sparse extraction as a failed
-  capture — the original is right there to fall back on.
-- `source_url` uses a `file://` URI (or pass the document's real origin URL if it
-  came from somewhere online). `original_id` = a content hash so the same file
-  isn't captured twice (and its archived original isn't re-copied).
-- Readability cleanup also runs here, so the extracted Markdown is tidy.
+- **Always pass `--source-file`** — markitdown's text is a lossy extraction;
+  the flag archives the real original into `raw/assets/` next to its searchable
+  text, and stops the core from false-flagging a sparse extraction.
+- A scanned/image-only PDF yields little text — that's expected; the original
+  is archived.
+- `source_url` is a `file://` URI unless the doc has a real online origin.
+
+---
 
 ## Choosing source_type
 
-`source_type` becomes the `raw/sources/<source_type>/` bucket and the frontmatter field.
-Keep it short and stable: `wechat`, `x`, `xiaohongshu`, `web`, `doc` (local
-documents via markitdown), `video` (online-video transcripts via
-`fetch_video.py`). Add new buckets
-(e.g. `zhihu`, `bloomberg`) when a source recurs enough to deserve its own shelf —
-opencli has dedicated adapters for many (`zhihu download`, `bloomberg news`,
-`36kr article`, …); check `opencli list` and prefer a dedicated adapter over
-`web read` when one exists, since it yields a cleaner capture.
+`source_type` = the `raw/sources/<source_type>/` bucket + frontmatter field.
+Canonical buckets: `wechat` · `x` · `xiaohongshu` · `web` · `doc` · `video` ·
+`note`. Add a new bucket (`zhihu`, `bloomberg`, …) only when a source recurs
+enough to deserve its own shelf — and prefer a dedicated adapter/channel over
+the generic web path when the installed tools have one (`opencli list`,
+`agent-reach doctor`), since it yields a cleaner capture.

@@ -118,7 +118,8 @@ tags: [inbox]
 ---
 ```
 
-The body, produced by `scripts/fetch_video.py` + the agent, is:
+The body, produced by the capture pipeline (`references/video-capture-sop.md`)
++ the agent, is:
 
 1. a localized cover image (`![](../../assets/<date>-<slug>--cover.jpg)`),
 2. a one-line provenance note — `*时长 15:48 · 转写来源：官方字幕 · 含可跳转时间戳*`
@@ -139,8 +140,8 @@ This is the contract that lets the wiki answer "where, in which video, was this
 said?" — a retrieval hit carries both the passage and a one-click jump to the
 source moment. The anchors are plain inline Markdown links, so `clean_md.py`
 leaves them intact and the deep-link URLs are *not* treated as un-downloadable
-videos (the `video` special-case, below, suppresses that). `fetch_video.py`
-reports `has_timestamps` / `segment_count`; a translation, when present, carries
+videos (the `video` special-case, below, suppresses that). The capture pipeline
+tracks `has_timestamps` / `segment_count`; a translation, when present, carries
 the same anchors so the Chinese is equally jumpable.
 
 **No `has_video` / `video_links` / "can't download" callout.** Unlike a WeChat or
@@ -156,7 +157,7 @@ extraction whose faithful original is the **URL** — structurally identical to 
 `doc` (lossy markitdown text + an archived original file), except the original is
 a link rather than a stored file. The light polish is content-preserving (same
 spirit as `clean_md.py`); the translation is additive, never replacing the
-original. See my-llm-wiki SKILL.md §8 and `references/sources.md` → "Online video".
+original. See my-llm-wiki SKILL.md §8 and `references/video-capture-sop.md`.
 
 ## First-party notes (`source_type: note`)
 
