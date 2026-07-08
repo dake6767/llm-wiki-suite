@@ -1,19 +1,15 @@
 # The adapter contract — bring your own fetch tool
 
-This skill ships with a default fetch/convert adapter (opencli + markitdown, see
-`references/sources.md`), but the **wiki core does not depend on it**. The engine
-(`scripts/normalize_raw.py`) never calls a scraper — it only consumes a fixed
-*shape* on disk. So **any tool** that can produce that shape plugs in: a
-different CLI, a browser extension's export, a Python scraper, even hand-written
-files. This file is the contract that decoupling rests on.
+This skill ships **no fetchers**, and the **wiki core depends on none**. The
+engine (`scripts/normalize_raw.py`) never calls a scraper — it only consumes a
+fixed *shape* on disk. So **any tool** that can produce that shape plugs in:
+opencli, agent-reach, yt-dlp, a browser extension's export, a Python scraper,
+even hand-written files. This file is the contract that decoupling rests on.
 
-If you're adapting this skill to a tool other than opencli, this is the only file
-you need to satisfy. Everything in `sources.md` is just *one* implementation of it
-(the opencli default). For a ready-made alternative that uses **no opencli and no
-browser** — yt-dlp + local ASR for video, `tavily-extract`/WebFetch for web pages,
-the fxtwitter fallback for X, markitdown for docs — see
-`references/adapters-without-opencli.md`. opencli is the default adapter, never a
-hard dependency.
+Whatever you fetch with, this is the only file to satisfy. The per-scenario SOPs
+in `references/sources.md` give concrete recipes per common tool (opencli /
+agent-reach / bare CLIs / the agent's own WebFetch) — all implementations of
+this contract.
 
 ---
 
@@ -173,13 +169,13 @@ Keep it short and stable. The buckets the skill uses today:
 shelf. `note` and `doc` get slightly relaxed health checks (a short note isn't a
 failed fetch; a sparse doc extraction is fine because its original is archived).
 
-`video` is the online-video bucket (`scripts/fetch_video.py` is its adapter). Its
-faithful "original" is the **URL**, not a stored file — the video is deliberately
-never downloaded; the body is a **transcript** (a lossy text extraction, exactly
-like a `doc`'s markitdown text). So the core suppresses its `has_video` /
-"can't download" video machinery for this type: a video source URL isn't a
-missing-media gap, it's the whole point. Captions or a local-Whisper pass produce
-the transcript; the only stored media is the cover thumbnail.
+`video` is the online-video bucket (`references/video-capture-sop.md` is its
+scenario SOP). Its faithful "original" is the **URL**, not a stored file — the
+video is deliberately never downloaded; the body is a **transcript** (a lossy
+text extraction, exactly like a `doc`'s markitdown text). So the core suppresses
+its `has_video` / "can't download" video machinery for this type: a video source
+URL isn't a missing-media gap, it's the whole point. Captions or a local-ASR
+pass produce the transcript; the only stored media is the cover thumbnail.
 
 ---
 

@@ -40,8 +40,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 BOOTSTRAP = REPO_ROOT / "registry" / "bootstrap.json"
 SKILLS_REGISTRY = REPO_ROOT / "registry" / "skills.json"
 
-# Capture adapters my-llm-wiki uses. All optional — the skill degrades without
-# them (see references/adapters-without-opencli.md), so absence is warn, never error.
+# Capture adapters my-llm-wiki's scenario SOPs can use. All optional — every
+# scenario has recipes per available tool (see references/sources.md), so
+# absence is warn, never error.
 ADAPTERS = [
     ("opencli", "default web/social fetch adapter"),
     ("yt-dlp", "video download fallback (no-caption path)"),

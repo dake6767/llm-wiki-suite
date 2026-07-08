@@ -1,11 +1,11 @@
 {
   "version": 1,
-  "updated_at": "2026-06-23",
+  "updated_at": "2026-07-08",
   "skills": [
     {
       "slug": "my-llm-wiki",
       "title": "my-llm-wiki — RAW 知识库内容沉淀",
-      "summary": "把外部内容（公众号 / X / 小红书 / 网页 / 在线视频 / 个人想法）抓取并转换为自包含 Markdown、图片本地化，沉淀进 LLM-WIKI 知识库不可变的 RAW 层；可插拔 fetch 适配器，opencli 为可选默认。",
+      "summary": "把外部内容（公众号 / X / 小红书 / 网页 / 在线视频 / 个人想法）抓取并转换为自包含 Markdown、图片本地化，沉淀进 LLM-WIKI 知识库不可变的 RAW 层；只定义场景 SOP 与产物验收契约，抓取委托给机器上现有工具（opencli / agent-reach / yt-dlp / WebFetch 等），能力探测优先。",
       "source_local_path": "~/.claude/skills/my-llm-wiki",
       "collection_path": "skills/my-llm-wiki",
       "lifecycle": "active",
@@ -15,7 +15,7 @@
       "license": "MIT",
       "tags": ["knowledge-base", "rag", "archive", "raw", "wiki", "content-ingestion", "opencli"],
       "last_synced_at": "2026-06-23",
-      "updated_at": "2026-06-23"
+      "updated_at": "2026-07-08"
     },
     {
       "slug": "my-llm-wiki-maintainer",
@@ -30,7 +30,7 @@
       "license": "MIT",
       "tags": ["knowledge-base", "wiki", "compile", "review", "deep-research", "lint", "dedup", "citations"],
       "last_synced_at": "2026-06-24",
-      "updated_at": "2026-06-24"
+      "updated_at": "2026-07-08"
     }
   ]
 }

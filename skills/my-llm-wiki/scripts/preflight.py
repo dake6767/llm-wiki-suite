@@ -1,51 +1,133 @@
 #!/usr/bin/env python3
-"""Capability probe — what can this machine capture, and with which adapter?
+"""Capability probe — what can this machine capture, and with which tools?
 
-The skill is adapter-agnostic (see references/adapter-contract.md) and opencli is
-only the *default* adapter. So on any given machine the best available path per
-source type depends on what's installed. This script probes the toolchain once and
-reports, per source type, the recommended adapter and whether it's fully capable,
-degraded, or unavailable — so the agent picks the best existing path and only asks
-the user to install something when a source they actually want has *no* path.
+The skill ships no fetchers (see references/adapter-contract.md): every capture
+scenario is an SOP with recipes per available tool. So on any given machine the
+best path per source type depends on what's installed. This script probes the
+toolchain once and reports, per source type, the recommended path and whether
+it's fully capable, degraded, or unavailable — so the agent picks the best
+existing recipe and only asks the user to install something when a source they
+actually want has *no* path.
 
 Run it at the start of a capture session (especially the first time on a new
-machine, or when distributing the skill to someone who may not have opencli):
+machine):
 
     python3 <skill>/scripts/preflight.py            # human-readable YAML
     python3 <skill>/scripts/preflight.py --quiet     # same, machine-friendly
 
 It NEVER installs anything — it only reports. Install hints are suggestions for
-the user/agent to act on deliberately.
+the user/agent to act on deliberately. `agent-reach doctor --json` (when
+agent-reach is installed) complements this with per-platform availability.
 
 Capability model (cheapest viable path always exists for web/x/note; video/doc
 can be genuinely blocked):
   web/公众号/小红书 — opencli `web read` (browser, localizes images) → best;
-                       else the agent's own tavily-extract / WebFetch (text-mostly).
-  x               — opencli `twitter` → best; else the fxtwitter fallback (network only).
-  video           — opencli captions + yt-dlp → best; minimal = yt-dlp + ffmpeg +
-                       an ASR backend. The no-caption ASR is language-routed:
-                       Chinese → SenseVoice (funasr), else faster-whisper/whisper.
-                       Degraded if only captions are reachable (no-caption videos
-                       would fail).
-  doc             — markitdown (no opencli needed). Blocked without it.
+                       else agent-reach / the agent's own WebFetch (text-mostly).
+  x               — opencli `twitter` / agent-reach → best; else the fxtwitter
+                       fallback (network only).
+  video           — captions via opencli or yt-dlp → best; no-caption fallback
+                       needs yt-dlp + ffmpeg + a local ASR backend, language-
+                       routed: Chinese → SenseVoice (funasr), else
+                       faster-whisper/whisper. See references/video-capture-sop.md.
+  doc             — markitdown (no browser needed). Blocked without it.
   note            — no tool needed.
 """
 
 from __future__ import annotations
 
 import argparse
+import functools
+import glob
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from fetch_video import (  # noqa: E402  (sibling module — shared resolvers)
-    find_tool, sensevoice_available, _funasr_python,
-)
+# ---------------------------------------------------------------------------
+# Tool resolution — tools are frequently installed but missing from a sandboxed
+# agent's PATH (npm CLIs in an nvm bin; yt-dlp/ffmpeg in Homebrew; pip CLIs in
+# ~/.local/bin). Probe the usual bin dirs, not just PATH.
+# ---------------------------------------------------------------------------
+
+
+def _candidate_dirs() -> list[str]:
+    home = str(Path.home())
+    dirs = glob.glob(f"{home}/.nvm/versions/node/*/bin")
+    dirs += [
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        f"{home}/.local/bin",
+        f"{home}/Library/Python/3.*/bin",
+    ]
+    out = []
+    for d in dirs:
+        out += glob.glob(d) if "*" in d else [d]
+    return out
+
+
+def find_tool(name: str) -> str | None:
+    p = shutil.which(name)
+    if p:
+        return p
+    for d in _candidate_dirs():
+        cand = Path(d) / name
+        if cand.is_file() and os.access(cand, os.X_OK):
+            return str(cand)
+    return None
+
+
+# Conventional home for a dedicated SenseVoice venv, so a user can install funasr
+# off to the side (it's a heavy, optional dep) and the probe finds it with no env
+# var: `python3 -m venv <here> && <here>/bin/pip install funasr torch torchaudio`.
+SENSEVOICE_VENV_PYTHON = Path.home() / ".local" / "share" / "llm-wiki" / "asr-venv" / "bin" / "python"
+
+
+@functools.lru_cache(maxsize=1)
+def _funasr_python() -> str:
+    """An interpreter that can import funasr (SenseVoice's backend), or '' if none.
+    SenseVoice may live in a different env than this script's python, so we probe,
+    in order: an explicit LLM_WIKI_ASR_PYTHON override, our own interpreter, a plain
+    python3, then the conventional dedicated venv (SENSEVOICE_VENV_PYTHON)."""
+    cands = [os.environ.get("LLM_WIKI_ASR_PYTHON", ""), sys.executable, "python3",
+             str(SENSEVOICE_VENV_PYTHON)]
+    seen = set()
+    for c in cands:
+        if not c or c in seen:
+            continue
+        seen.add(c)
+        try:
+            r = subprocess.run(
+                [c, "-c", "import importlib.util as u,sys; sys.exit(0 if u.find_spec('funasr') else 1)"],
+                capture_output=True, timeout=30)
+            if r.returncode == 0:
+                return c
+        except Exception:
+            pass
+    return ""
+
+
+def sensevoice_available() -> bool:
+    return bool(_funasr_python())
+
+
+# Where each tool lives — cite these when recommending an install, so the user
+# can vet the source instead of blind-running a pip/npm/brew line.
+TOOL_HOMES = {
+    "opencli": "https://www.npmjs.com/package/@jackwener/opencli",
+    "agent-reach": "https://github.com/Panniantong/agent-reach",
+    "yt-dlp": "https://github.com/yt-dlp/yt-dlp",
+    "ffmpeg": "https://ffmpeg.org",
+    "whisper": "https://github.com/openai/whisper",
+    "whisper-ctranslate2": "https://github.com/Softcatala/whisper-ctranslate2",
+    "sensevoice": "https://github.com/FunAudioLLM/SenseVoice (via FunASR: https://github.com/modelscope/FunASR)",
+    "markitdown": "https://github.com/microsoft/markitdown",
+}
 
 # Tools we probe. Value = a short note on what it's for.
 TOOLS = {
-    "opencli": "default web/social/video adapter (real browser)",
+    "opencli": "web/social fetch (real logged-in browser, localizes images)",
+    "agent-reach": "multi-platform fetch routing (X/Reddit/YouTube/小红书/…; has its own doctor)",
     "yt-dlp": "video/audio download + subtitles (no browser)",
     "ffmpeg": "audio decode for local transcription",
     "whisper": "openai-whisper ASR (local, free)",
@@ -77,7 +159,7 @@ def probe() -> dict:
     out = {}
     for name in TOOLS:
         if name == "sensevoice":
-            out[name] = _funasr_python() if sensevoice_available() else ""
+            out[name] = _funasr_python()
         else:
             out[name] = find_tool(name) or ""
     # Confirm torch in the funasr interpreter, so the report can tell the agent
@@ -107,16 +189,23 @@ def assess(tools: dict) -> tuple[dict, list[str]]:
     if have["opencli"]:
         cap["web"] = {"status": "ok", "via": "opencli web read",
                       "note": "browser render + auto image localization"}
+    elif have["agent-reach"]:
+        cap["web"] = {"status": "degraded", "via": "agent-reach (check `agent-reach doctor`)",
+                      "note": "text-mostly; localize images yourself for a faithful capture"}
     else:
-        cap["web"] = {"status": "degraded", "via": "agent tavily-extract / WebFetch",
+        cap["web"] = {"status": "degraded", "via": "agent WebFetch / tavily-extract",
                       "note": "text-mostly; images not auto-localized; JS/auth pages weaker"}
         recs.append("install opencli for cleaner web/公众号/小红书 captures with images: "
-                    "`npm install -g @jackwener/opencli` (optional)")
+                    f"`npm install -g @jackwener/opencli` (optional; {TOOL_HOMES['opencli']})")
 
     # x / twitter — never blocked (fxtwitter needs only network).
-    cap["x"] = ({"status": "ok", "via": "opencli twitter"} if have["opencli"]
-                else {"status": "ok", "via": "fxtwitter fallback",
-                      "note": "see references/x-fallback-capture.md"})
+    if have["opencli"]:
+        cap["x"] = {"status": "ok", "via": "opencli twitter"}
+    elif have["agent-reach"]:
+        cap["x"] = {"status": "ok", "via": "agent-reach (twitter channel)"}
+    else:
+        cap["x"] = {"status": "ok", "via": "fxtwitter fallback",
+                    "note": "see references/x-fallback-capture.md"}
 
     # doc — needs markitdown.
     if have["markitdown"]:
@@ -124,17 +213,19 @@ def assess(tools: dict) -> tuple[dict, list[str]]:
     else:
         cap["doc"] = {"status": "unavailable", "via": "", "install": "pipx install markitdown"}
         recs.append("install markitdown to capture local documents (PDF/docx/…): "
-                    "`pipx install markitdown`")
+                    f"`pipx install markitdown` ({TOOL_HOMES['markitdown']})")
 
-    # video — opencli captions and/or yt-dlp; audio fallback needs yt-dlp+ffmpeg+ASR.
+    # video — captions via opencli/yt-dlp; the no-caption fallback needs
+    # yt-dlp + ffmpeg + a local ASR backend (see references/video-capture-sop.md).
     caption_path = have["opencli"] or have["yt-dlp"]
     audio_fallback = have["yt-dlp"] and have["ffmpeg"] and asr_any
     if not caption_path:
         cap["video"] = {"status": "unavailable", "via": "", "asr": asr_desc,
-                        "install": "brew install yt-dlp ffmpeg openai-whisper "
-                                   "(or `npm i -g @jackwener/opencli` for captions)"}
+                        "install": "brew install yt-dlp ffmpeg "
+                                   "(+ an ASR backend for no-caption videos)"}
         recs.append("install yt-dlp + ffmpeg + an ASR backend to capture video: "
-                    "`brew install yt-dlp ffmpeg openai-whisper`")
+                    f"`brew install yt-dlp ffmpeg` ({TOOL_HOMES['yt-dlp']}) "
+                    "+ see the ASR hints below")
     elif audio_fallback:
         via = ("opencli captions + yt-dlp/ASR fallback" if have["opencli"]
                else "yt-dlp subtitles + ASR fallback")
@@ -147,25 +238,28 @@ def assess(tools: dict) -> tuple[dict, list[str]]:
         if not have["ffmpeg"]:
             missing.append("ffmpeg")
         if not asr_any:
-            missing.append("an ASR backend (whisper-ctranslate2 / openai-whisper / funasr)")
+            missing.append("an ASR backend (funasr for zh / whisper-ctranslate2 / openai-whisper)")
         cap["video"] = {"status": "degraded",
                         "via": ("opencli captions only" if have["opencli"]
                                 else "yt-dlp subtitles only"),
                         "asr": asr_desc,
                         "note": "captioned videos work; no-caption videos will fail",
                         "install": "add " + " + ".join(missing)}
-        recs.append("for videos without captions, install: " + " + ".join(missing)
-                    + " (e.g. `brew install yt-dlp ffmpeg openai-whisper`)")
+        recs.append("for videos without captions, install: " + " + ".join(missing))
 
-    if not have["whisper-ctranslate2"] and (have["whisper"] or have["yt-dlp"]):
-        recs.append("optional: `pip install whisper-ctranslate2` (faster-whisper) for "
-                    "faster, higher-quality NON-Chinese video transcription (--asr auto picks it up)")
+    # ASR hints, Chinese-first: this skill's corpora are mostly zh, and SenseVoice
+    # is both faster and better there — recommend it before the whisper family.
     if not have["sensevoice"] and caption_path:
-        recs.append("optional: SenseVoice for CHINESE video (much faster & more accurate; "
-                    "--asr auto routes zh→SenseVoice). Install into the auto-discovered venv: "
+        recs.append("recommended for CHINESE video (much faster & more accurate; route "
+                    "zh audio here): install SenseVoice into the auto-discovered venv: "
                     "`python3 -m venv ~/.local/share/llm-wiki/asr-venv && "
                     "~/.local/share/llm-wiki/asr-venv/bin/pip install funasr torch torchaudio` "
-                    "(or set LLM_WIKI_ASR_PYTHON to any python that has funasr).")
+                    "(or set LLM_WIKI_ASR_PYTHON to any python that has funasr; "
+                    f"{TOOL_HOMES['sensevoice']}).")
+    if not have["whisper-ctranslate2"] and (have["whisper"] or have["yt-dlp"]):
+        recs.append("optional: `pip install whisper-ctranslate2` (faster-whisper) for "
+                    "faster, higher-quality NON-Chinese video transcription "
+                    f"({TOOL_HOMES['whisper-ctranslate2']})")
 
     cap["note"] = {"status": "ok", "via": "no tool needed"}
     return cap, recs

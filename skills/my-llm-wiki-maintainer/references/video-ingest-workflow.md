@@ -8,7 +8,7 @@ batch sessions (6+ videos in one session). Combines `my-llm-wiki` §8 capture wi
 
 ```
 0. Pre-flight: check if video already captured (source-page + ingest cache)
-1. Background fetch (fetch_video.py) → wait → check status.yaml
+1. Background capture (per my-llm-wiki's video-capture-sop.md) → poll status.yaml
 2. Polish transcript (ASR fixes, paragraph breaks, punctuation)
 3. Clean transcript trailing content
 4. Normalize into RAW (normalize_raw.py)
@@ -47,18 +47,15 @@ new transcript reveals content the original missed.
 
 ## Step Details
 
-### 1. Background Fetch
+### 1. Background Capture
 
-Always use `terminal(background=true, notify_on_complete=true)`:
-
-```bash
-mkdir -p /tmp/llmwiki-vidN
-python3 <skill>/scripts/fetch_video.py --url "<url>" \
-  --output /tmp/llmwiki-vidN --status-file /tmp/llmwiki-vidN/status.yaml \
-  > /tmp/llmwiki-vidN/run.log 2>&1
-```
-
-Then `process(action='wait', timeout=60)`. Captions finish in seconds.
+The capture itself is the `my-llm-wiki` skill's job — follow its
+`references/video-capture-sop.md` (probe tools → captions first → else
+audio + local ASR → assemble the anchored transcript). The contract that
+matters here: run the long step as a **non-blocking background job** that
+writes a `status.yaml` into a **fresh** temp dir (`/tmp/llmwiki-vidN`) as its
+last act, then **poll that file yourself** — don't wait to be notified.
+Captions finish in seconds; an ASR pass takes minutes to tens of minutes.
 
 **Pitfall: unique temp dir per video.** When processing multiple videos in one session,
 use `/tmp/llmwiki-vid`, `/tmp/llmwiki-vid2`, `/tmp/llmwiki-vid3`, etc. Reusing the same
@@ -78,8 +75,8 @@ mkdir -p "$TMPDIR"
 rm -rf /tmp/llmwiki-vid && mkdir -p /tmp/llmwiki-vid
 ```
 After the background process completes, verify `status.yaml`'s `source_url` matches
-the URL you requested. See `my-llm-wiki` skill's `references/video-capture-pitfalls.md`
-for the full incident report.
+the URL you requested. See `my-llm-wiki` skill's `references/video-capture-sop.md`
+(§4, background + poll discipline) for the full incident report.
 
 **Pitfall: Bilibili silent partial download.** Without `--browser chrome`, yt-dlp
 silently downloads only a fraction of Bilibili audio (e.g. 2.5 min of 25 min).
@@ -98,7 +95,7 @@ is a red flag. If truncated, re-run with `--browser chrome`.
 The `status.yaml` file is the completion signal. If it doesn't exist, shows a different
 video URL/ID than expected, or the process is still running — do NOT read `transcript.md`.
 Reading stale data from a previous capture and polishing it is a real, documented pitfall
-(see `my-llm-wiki` skill's `references/video-capture-pitfalls.md`).
+(see `my-llm-wiki` skill's `references/video-capture-sop.md` §4).
 
 When `transcript_source: whisper(...)` or `sensevoice(...)`, the raw output has no
 punctuation, no paragraph breaks, and frequent ASR errors — especially for proper
@@ -109,8 +106,8 @@ SenseVoice mis-transcribe the same names differently, and the right corrections 
 entirely on the wiki's subject — do not hard-code a name table in this reference. Keep a
 correction table scoped to the corpus: `data/asr-corrections-zh-history.md` ships the
 Chinese-history (Qing/Ming) table accumulated from real sessions; start an analogous one
-per wiki. The upstream `my-llm-wiki` skill's `references/video-capture-pitfalls.md` holds
-the fuller table.
+per wiki. The upstream `my-llm-wiki` skill's `references/video-capture-sop.md` (§5)
+describes how to build corrections from the full transcript.
 
 **Polish steps:**
 1. Fix ASR errors (historical names, place names, technical terms)
@@ -122,8 +119,8 @@ the fuller table.
 
 ### 3. Clean Transcript Trailing Content
 
-`fetch_video.py` consistently appends repeated content from the video description at the
-end of the transcript. This isn't markdown-structural damage (so `clean_md.py` won't catch
+Caption/description-based pipelines often append repeated content from the video
+description at the end of the transcript. This isn't markdown-structural damage (so `clean_md.py` won't catch
 it) — it's content-level duplication. Clean it:
 
 ```python
