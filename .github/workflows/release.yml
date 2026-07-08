@@ -1,0 +1,87 @@
+name: release
+
+# 打 tag（v* ）时构建各平台安装包并发到 GitHub Release（草稿，需手动发布）。
+# 也可在 Actions 页手动触发（workflow_dispatch）做一次冒烟构建。
+#
+# 本仓库是 monorepo：Tauri 工程在 apps/my-llm-wiki-browser/desktop（内含 src-tauri），
+# 前端在 apps/my-llm-wiki-browser/frontend。tauri.conf.json 的 beforeBuildCommand
+# 会 `cd ../frontend && npm run build`，所以下面预先在 frontend 里 `npm ci` 装依赖。
+#
+# 未做签名：macOS 未做 Developer ID 签名/公证，Windows 未做代码签名，用户首次运行
+# 需手动放行。要签名时在仓库 Secrets 加证书，再给 tauri-action 传对应 env（见 tauri
+# 官方 “App Signing” 文档），无需改动矩阵结构。
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    permissions:
+      contents: write # tauri-action 创建 Release / 上传产物需要
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest   # Apple Silicon
+            args: '--target aarch64-apple-darwin'
+          - platform: macos-latest   # Intel（macos-latest 交叉编译到 x86_64）
+            args: '--target x86_64-apple-darwin'
+          - platform: ubuntu-22.04
+            args: ''
+          - platform: windows-latest
+            args: ''
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies (Tauri v2)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            build-essential \
+            libxdo-dev \
+            libssl-dev
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/my-llm-wiki-browser/frontend/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: apps/my-llm-wiki-browser -> target
+
+      - name: Install frontend dependencies
+        working-directory: apps/my-llm-wiki-browser/frontend
+        run: npm ci
+
+      - name: Build and release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: apps/my-llm-wiki-browser/desktop
+          tagName: ${{ github.ref_name }}
+          releaseName: 'My LLM Wiki Browser ${{ github.ref_name }}'
+          releaseBody: '下载对应平台的安装包。未签名版本首次运行需手动放行（macOS 右键打开 / Windows SmartScreen 仍要运行）。'
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
