@@ -14,7 +14,11 @@ use llm_wiki_server::{AutostartControl, ServerConfig, ServerControl, serve};
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{ActivationPolicy, Manager, Url, WindowEvent};
+use tauri::{Manager, Url, WindowEvent};
+// macOS 专属：控制 Dock 图标与激活策略（Accessory=托盘常驻不占 Dock）。
+// 其它平台没有这个概念，相关调用一并 cfg 掉。
+#[cfg(target_os = "macos")]
+use tauri::ActivationPolicy;
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as _};
 
 const DEFAULT_PORT: u16 = 8800;
@@ -100,6 +104,7 @@ fn main() {
             }
             let connector_config = connector_config();
             let tray = build_tray(app.handle(), local_url.clone(), online_wiki_url.clone())?;
+            #[cfg(target_os = "macos")]
             let _ = app.set_activation_policy(ActivationPolicy::Accessory);
             let relay_runtime = RelayRuntime::new(connector_config, tray, online_wiki_url);
             // 中继默认关闭，仅当用户上次手动开启过才自动连接。
@@ -124,6 +129,7 @@ fn main() {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let _ = window.hide();
+                #[cfg(target_os = "macos")]
                 let _ = window
                     .app_handle()
                     .set_activation_policy(ActivationPolicy::Accessory);
@@ -505,6 +511,7 @@ fn build_tray(
         .show_menu_on_left_click(true)
         .on_menu_event(move |app, event| match event.id().as_ref() {
             "show_window" => {
+                #[cfg(target_os = "macos")]
                 let _ = app.set_activation_policy(ActivationPolicy::Regular);
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.show();
