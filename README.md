@@ -64,6 +64,22 @@ python3 scripts/doctor.py --json     # 机器可读（供脚本 / watch 用）
 
 每项报 `ok`/`warn`/`error`/`skip`，仅 `error`（skills 未软链进任何 agent 目录）时进程非零退出。
 
+### 抓取工具链（强烈建议装齐）
+
+skills 自己不带 fetcher，抓取质量取决于本机工具。其中三件对流畅使用**接近必装**
+（缺哪件、装什么，`doctor.py` 的 adapters 一节会直接给出命令和项目主页）：
+
+| 工具 | 安装 | 缺了会怎样 |
+| --- | --- | --- |
+| **opencli** | `npm i -g @jackwener/opencli` | 公众号图片不本地化；小红书/抖音直接抓不了（登录墙）；X 降级 |
+| **yt-dlp** | `brew install yt-dlp` | 视频→转写整条路不通（字幕和音频都走它） |
+| **ffmpeg** | `brew install ffmpeg` | 视频路径没法提音频/封面 |
+
+机器可读清单在 `registry/bootstrap.json` → `capture_toolchain`；agent 安装时的
+推荐话术见 [`AGENTS.md`](AGENTS.md) 第 3 步（原则：大声推荐、附主页链接供甄别，
+但装不装由用户拍板，绝不静默安装）。npm 全局 bin 记得同时导出到 `~/.profile`
+（守护进程型 agent 只读 bash 登录文件，不读 `~/.zprofile`）。
+
 ## 新增 / 更新一个 skill
 
 简版流程：

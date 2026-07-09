@@ -43,7 +43,36 @@ scripts/install.sh \
 
 Skip targets that do not exist only if the user clearly does not use that agent.
 
-## 3. Initialize A Wiki
+## 3. Install The Capture Toolchain (strongly recommend it)
+
+The skills ship no fetchers — capture quality is gated on the machine's tools,
+and two of them are **near-mandatory** for a smooth flow. Probe first
+(`which opencli yt-dlp ffmpeg`, or `python3 scripts/doctor.py` after step 2),
+then for anything missing, **strongly recommend the install to the user** —
+say concretely what breaks without it, give the command *with the project home
+URL* so they can vet it, and get their go-ahead. Never install silently: a
+toolchain install is the user's call.
+
+| Tool | Install | Without it |
+|------|---------|------------|
+| **opencli** | `npm i -g @jackwener/opencli` · [npm](https://www.npmjs.com/package/@jackwener/opencli) | 公众号 images stay remote; 小红书/抖音 captures fail outright (login-walled); X degrades |
+| **yt-dlp** | `brew install yt-dlp` · [github.com/yt-dlp/yt-dlp](https://github.com/yt-dlp/yt-dlp) | no video→transcript path at all (captions and audio both come through it) |
+| **ffmpeg** | `brew install ffmpeg` · [ffmpeg.org](https://ffmpeg.org) | no audio extraction / covers for the video path |
+
+(`registry/bootstrap.json` → `capture_toolchain` carries the same list
+machine-readable. `markitdown` is optional — only needed for local PDF/docx.)
+
+Two follow-ups that bite later if skipped now:
+
+- **PATH for daemon agents**: npm global bins usually get exported only in
+  `~/.zprofile`, but daemon-launched agents snapshot a `bash -l` env, which
+  reads `~/.profile` / `~/.bash_profile` — export the npm-global bin dir there
+  too, or opencli will look "not installed" to those agents.
+- **opencli logins are per-platform and one-time** (`opencli xiaohongshu login`,
+  `opencli douyin login`, …). Don't front-load them all — surface the login
+  step when a capture first needs that platform.
+
+## 4. Initialize A Wiki
 
 If the user does not already have a wiki registry (`~/.my-llm-wiki/wikis.json`),
 initialize a first wiki under the default root from `registry/bootstrap.json`:
@@ -55,7 +84,7 @@ initialize a first wiki under the default root from `registry/bootstrap.json`:
 Use the `my-llm-wiki` / `my-llm-wiki-maintainer` scripts already installed from
 this repo to create the wiki scaffold and register it.
 
-## 4. Install Browser: Release First
+## 5. Install Browser: Release First
 
 Always prefer release artifacts over source builds:
 
@@ -77,7 +106,7 @@ Fallback command:
 python3 scripts/install-browser.py --fallback-source
 ```
 
-## 5. Verify The Whole Suite
+## 6. Verify The Whole Suite
 
 Run the suite-level health check — one shot covering skills linkage, the wiki
 registry, Browser reachability, and capture adapters:
@@ -103,7 +132,7 @@ use the port doctor prints:
 curl -s "http://127.0.0.1:$(cat ~/.my-llm-wiki/connector/server-port 2>/dev/null || echo 8800)/api/v1/healthz"
 ```
 
-## 6. Guide First Capture
+## 7. Guide First Capture
 
 Do not stop after installation. Ask the user for one URL or note to save, then
 walk the first successful loop:
@@ -119,7 +148,7 @@ Send me one article, webpage, video, or note you want to preserve. I will save i
 to RAW, compile it into your wiki, and show where to view it in My LLM Wiki Browser.
 ```
 
-## 7. MCP Setup
+## 8. MCP Setup
 
 Once Browser exposes `/mcp/`, generate a client config for the user's current
 agent. Prefer `Authorization: Bearer <token>` over putting long-lived tokens in
