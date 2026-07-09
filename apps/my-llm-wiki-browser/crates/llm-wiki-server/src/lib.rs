@@ -55,6 +55,8 @@ pub struct ServerControl {
     pub restart: Arc<dyn Fn() + Send + Sync>,
     /// 开机自启控制；宿主不支持（如纯浏览器场景）时为 `None`。
     pub autostart: Option<AutostartControl>,
+    /// 应用更新控制；宿主不支持（如纯浏览器场景）时为 `None`。
+    pub update: Option<UpdateControl>,
 }
 
 /// 开机自启的读写钩子，由桌面外壳注入（错误以文案形式透传给设置页）。
@@ -62,6 +64,36 @@ pub struct ServerControl {
 pub struct AutostartControl {
     pub is_enabled: Arc<dyn Fn() -> Result<bool, String> + Send + Sync>,
     pub set_enabled: Arc<dyn Fn(bool) -> Result<(), String> + Send + Sync>,
+}
+
+/// 应用更新钩子，由桌面外壳注入。检查/下载是异步长任务，这里不阻塞 HTTP 层：
+/// `check`/`install` 只是触发后台任务，进展一律通过 `status` 快照轮询。
+#[derive(Clone)]
+pub struct UpdateControl {
+    pub status: Arc<dyn Fn() -> UpdateStatus + Send + Sync>,
+    pub check: Arc<dyn Fn() + Send + Sync>,
+    /// 仅在 `available` 态可触发；其余状态返回 Err（文案透传给设置页）。
+    pub install: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
+}
+
+/// 更新状态快照。`state` 取值：
+/// `idle` | `checking` | `up-to-date` | `available` | `downloading` |
+/// `ready-to-restart` | `portable` | `error`。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateStatus {
+    pub current_version: String,
+    pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+    /// 下载进度（downloading 态）；`total` 未知时为 None。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub downloaded: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Clone)]
@@ -110,6 +142,9 @@ pub fn build_router(config: ServerConfig) -> Router {
             "/config/autostart",
             get(get_autostart_config).put(put_autostart_config),
         )
+        .route("/config/update", get(get_update_config))
+        .route("/config/update/check", post(post_update_check))
+        .route("/config/update/install", post(post_update_install))
         .route("/config/restart", post(restart_server))
         .route("/wikis/{wiki}/tree", get(wiki_tree))
         .route("/wikis/{wiki}/pages/{*path}", get(get_page))
@@ -924,6 +959,54 @@ async fn put_autostart_config(
     }))
 }
 
+/// 读取更新状态。宿主未注入钩子（纯浏览器/portable 之外的 web-only 场景）时
+/// `supported: false`，设置页据此隐藏更新面板。
+async fn get_update_config(State(state): State<AppState>) -> Json<UpdateConfigInfo> {
+    let Some(update) = state.control.as_ref().and_then(|c| c.update.as_ref()) else {
+        return Json(UpdateConfigInfo {
+            supported: false,
+            status: None,
+        });
+    };
+    Json(UpdateConfigInfo {
+        supported: true,
+        status: Some((update.status)()),
+    })
+}
+
+/// 触发一次后台更新检查（幂等：检查/下载进行中时宿主自行忽略），随后轮询 GET。
+async fn post_update_check(
+    State(state): State<AppState>,
+) -> Result<Json<UpdateConfigInfo>, ApiError> {
+    let update = state
+        .control
+        .as_ref()
+        .and_then(|c| c.update.as_ref())
+        .ok_or(ApiError::not_supported("当前环境不支持应用更新"))?;
+    (update.check)();
+    Ok(Json(UpdateConfigInfo {
+        supported: true,
+        status: Some((update.status)()),
+    }))
+}
+
+/// 触发下载并安装（仅 available 态）。完成后状态变为 ready-to-restart，
+/// 由设置页引导用户调 /config/restart。
+async fn post_update_install(
+    State(state): State<AppState>,
+) -> Result<Json<UpdateConfigInfo>, ApiError> {
+    let update = state
+        .control
+        .as_ref()
+        .and_then(|c| c.update.as_ref())
+        .ok_or(ApiError::not_supported("当前环境不支持应用更新"))?;
+    (update.install)().map_err(|_| ApiError::bad_request("当前没有可安装的更新"))?;
+    Ok(Json(UpdateConfigInfo {
+        supported: true,
+        status: Some((update.status)()),
+    }))
+}
+
 /// 重启宿主进程，使新端口生效。
 async fn restart_server(State(state): State<AppState>) -> Result<Json<RestartResult>, ApiError> {
     let control = state
@@ -1524,6 +1607,13 @@ struct AutostartConfigInfo {
 #[derive(Debug, Deserialize)]
 struct AutostartUpdate {
     enabled: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct UpdateConfigInfo {
+    supported: bool,
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    status: Option<UpdateStatus>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2493,6 +2583,7 @@ mod tests {
             }),
             restart: Arc::new(move || restart_target.store(true, Ordering::SeqCst)),
             autostart: None,
+            update: None,
         };
         let app = build_router(ServerConfig {
             frontend_dist: None,
@@ -2557,6 +2648,7 @@ mod tests {
                     Ok(())
                 }),
             }),
+            update: None,
         };
         let app = build_router(ServerConfig {
             frontend_dist: None,
@@ -2591,6 +2683,113 @@ mod tests {
 
         let info: AutostartConfigInfo = get_json(&app, "/api/v1/config/autostart").await;
         assert!(info.enabled);
+    }
+
+    #[tokio::test]
+    async fn update_config_get_check_and_install() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        let checked = Arc::new(AtomicUsize::new(0));
+        let installed = Arc::new(AtomicBool::new(false));
+        let check_target = checked.clone();
+        let install_state = installed.clone();
+        let status_state = installed.clone();
+        let control = ServerControl {
+            persist_port: Arc::new(|_| Ok(())),
+            restart: Arc::new(|| {}),
+            autostart: None,
+            update: Some(UpdateControl {
+                status: Arc::new(move || UpdateStatus {
+                    current_version: "1.0.3".into(),
+                    state: if status_state.load(Ordering::SeqCst) {
+                        "ready-to-restart".into()
+                    } else {
+                        "available".into()
+                    },
+                    latest_version: Some("1.0.4".into()),
+                    notes: None,
+                    downloaded: None,
+                    total: None,
+                    error: None,
+                }),
+                check: Arc::new(move || {
+                    check_target.fetch_add(1, Ordering::SeqCst);
+                }),
+                install: Arc::new(move || {
+                    install_state.store(true, Ordering::SeqCst);
+                    Ok(())
+                }),
+            }),
+        };
+        let app = build_router(ServerConfig {
+            frontend_dist: None,
+            index_manager: IndexManager::build(std::iter::empty::<WikiEntry>()).unwrap(),
+            searcher: FullTextSearcher::in_memory().unwrap(),
+            auth_token: String::new(),
+            watch_wikis: false,
+            registry_config: None,
+            port: 8800,
+            control: Some(control),
+            share_url: None,
+        });
+
+        let info: serde_json::Value = get_json(&app, "/api/v1/config/update").await;
+        assert_eq!(info["supported"], true);
+        assert_eq!(info["current_version"], "1.0.3");
+        assert_eq!(info["state"], "available");
+        assert_eq!(info["latest_version"], "1.0.4");
+
+        let post = |uri: &'static str| {
+            app.clone().oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+        };
+
+        let check = post("/api/v1/config/update/check").await.expect("response");
+        assert_eq!(check.status(), StatusCode::OK);
+        assert_eq!(checked.load(Ordering::SeqCst), 1);
+
+        let install = post("/api/v1/config/update/install")
+            .await
+            .expect("response");
+        assert_eq!(install.status(), StatusCode::OK);
+        assert!(installed.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn update_config_reports_unsupported_without_hooks() {
+        let app = build_router(ServerConfig {
+            frontend_dist: None,
+            index_manager: IndexManager::build(std::iter::empty::<WikiEntry>()).unwrap(),
+            searcher: FullTextSearcher::in_memory().unwrap(),
+            auth_token: String::new(),
+            watch_wikis: false,
+            registry_config: None,
+            port: 8800,
+            control: None,
+            share_url: None,
+        });
+
+        let info: serde_json::Value = get_json(&app, "/api/v1/config/update").await;
+        assert_eq!(info["supported"], false);
+        assert!(info.get("state").is_none());
+
+        let check = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/config/update/check")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(check.status(), StatusCode::NOT_IMPLEMENTED);
     }
 
     #[tokio::test]

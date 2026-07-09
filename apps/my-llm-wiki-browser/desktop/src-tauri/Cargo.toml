@@ -15,9 +15,12 @@ llm-wiki-core = { path = "../../crates/llm-wiki-core" }
 llm-wiki-connector = { path = "../../crates/llm-wiki-connector" }
 llm-wiki-server = { path = "../../crates/llm-wiki-server" }
 open.workspace = true
+# tauri::generate_context! 为 plugins.updater 配置生成的代码引用 crate 根的 serde_json
+serde_json.workspace = true
 tauri = { workspace = true, features = ["tray-icon", "image-png"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-notification = "2"
+tauri-plugin-updater = "2"
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

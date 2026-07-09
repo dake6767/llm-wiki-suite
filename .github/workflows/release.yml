@@ -120,6 +120,10 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # updater 产物签名（minisign）：createUpdaterArtifacts 开启后必须提供私钥，
+          # tauri-action 会把各平台 .sig 汇总成 latest.json 一并传到 Release。
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
         with:
           projectPath: apps/my-llm-wiki-browser/desktop
           # 空 releaseId（冒烟构建）时 tauri-action 只构建不上传。
@@ -150,6 +154,9 @@ jobs:
           New-Item -ItemType Directory -Force -Path $portable | Out-Null
           Copy-Item $exe (Join-Path $portable 'My LLM Wiki Browser.exe')
           Copy-Item -Recurse apps/my-llm-wiki-browser/frontend/dist (Join-Path $portable 'frontend')
+          # portable 标记：应用运行期据此判定便携模式，更新面板只提示新版本、不原地安装
+          # （portable 没有安装器，updater 的 NSIS 更新流程不适用）。
+          Set-Content -Path (Join-Path $portable 'portable.flag') -Value 'portable'
           $zip = "My-LLM-Wiki-Browser_$($conf.version)_x64-portable.zip"
           Compress-Archive -Path $portable -DestinationPath $zip -Force
           curl.exe -sSf -X POST `

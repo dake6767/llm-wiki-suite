@@ -14,7 +14,7 @@ use llm_wiki_connector::{ConnectorConfig, ConnectorEvent, run_connector_with_eve
 use llm_wiki_core::config::CoreConfig;
 use llm_wiki_core::registry::load_registry;
 use llm_wiki_core::{FullTextSearcher, IndexManager};
-use llm_wiki_server::{AutostartControl, ServerConfig, ServerControl, serve};
+use llm_wiki_server::{AutostartControl, ServerConfig, ServerControl, UpdateControl, serve};
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -24,6 +24,9 @@ use tauri::{Manager, Url, WindowEvent};
 #[cfg(target_os = "macos")]
 use tauri::ActivationPolicy;
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as _};
+
+mod update;
+use update::UpdateManager;
 
 const DEFAULT_PORT: u16 = 8800;
 const CONFIG_PATH: &str = "desktop/config";
@@ -82,13 +85,18 @@ fn main() {
             None,
         ))
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let local_url = local_base_url();
             let app_handle = app.handle().clone();
+            let update_manager = UpdateManager::new(app.handle().clone());
             let online_wiki_url = Arc::new(Mutex::new(None));
             match prepare_local_server(app.handle(), online_wiki_url.clone()) {
                 Ok(Some((std_listener, mut server_config))) => {
-                    server_config.control = Some(server_control(app.handle().clone()));
+                    server_config.control = Some(server_control(
+                        app.handle().clone(),
+                        update_manager.clone(),
+                    ));
                     tauri::async_runtime::spawn(async move {
                         let listener = match tokio::net::TcpListener::from_std(std_listener) {
                             Ok(listener) => listener,
@@ -126,10 +134,12 @@ fn main() {
             }
 
             tracing::info!("started {}", app.package_info().name);
+            update_manager.spawn_periodic_check();
             app_handle.manage(DesktopState {
                 local_url: local_url.clone(),
             });
             app_handle.manage(relay_runtime);
+            app_handle.manage(update_manager);
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -363,10 +373,13 @@ fn prepare_local_server(
     )))
 }
 
-/// 注入给 HTTP 层的运行期控制：持久化端口、延迟重启进程、开机自启。
-fn server_control(app: tauri::AppHandle) -> ServerControl {
+/// 注入给 HTTP 层的运行期控制：持久化端口、延迟重启进程、开机自启、应用更新。
+fn server_control(app: tauri::AppHandle, update_manager: UpdateManager) -> ServerControl {
     let restart_app = app.clone();
     let query_app = app.clone();
+    let status_manager = update_manager.clone();
+    let check_manager = update_manager.clone();
+    let install_manager = update_manager;
     ServerControl {
         persist_port: Arc::new(save_persisted_port),
         restart: Arc::new(move || {
@@ -399,6 +412,11 @@ fn server_control(app: tauri::AppHandle) -> ServerControl {
                 }
                 .map_err(|err| err.to_string())
             }),
+        }),
+        update: Some(UpdateControl {
+            status: Arc::new(move || status_manager.status()),
+            check: Arc::new(move || check_manager.check()),
+            install: Arc::new(move || install_manager.install()),
         }),
     }
 }
@@ -531,6 +549,7 @@ fn build_tray(
     let copy_share_link =
         MenuItem::with_id(app, "copy_share_link", "复制分享链接", false, None::<&str>)?;
     let relay_toggle = MenuItem::with_id(app, "relay_toggle", "连接中继服务", true, None::<&str>)?;
+    let check_update = MenuItem::with_id(app, "check_update", "检查更新…", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
     let menu = Menu::with_items(
@@ -543,6 +562,7 @@ fn build_tray(
             &copy_share_link,
             &relay_toggle,
             &show_window,
+            &check_update,
             &separator,
             &quit,
         ],
@@ -592,6 +612,21 @@ fn build_tray(
             "relay_toggle" => {
                 if let Some(relay_runtime) = app.try_state::<RelayRuntime>() {
                     relay_runtime.toggle();
+                }
+            }
+            // 触发一次检查并打开设置页——结果在设置页的更新面板里呈现。
+            "check_update" => {
+                if let Some(update_manager) = app.try_state::<UpdateManager>() {
+                    update_manager.check();
+                }
+                #[cfg(target_os = "macos")]
+                let _ = app.set_activation_policy(ActivationPolicy::Regular);
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                    if let Ok(url) = Url::parse(&config_url()) {
+                        let _ = window.navigate(url);
+                    }
                 }
             }
             "quit" => app.exit(0),
