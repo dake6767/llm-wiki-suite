@@ -53,10 +53,10 @@ jobs:
               repo: context.repo.repo,
               tag_name: tag,
               name: `My LLM Wiki Browser ${tag}`,
-              # macOS 产物是完整 ad-hoc 签名（无 Developer ID/公证），浏览器下载会带
-              # quarantine：Gatekeeper 提示「无法验证开发者」，需到系统设置里「仍要打开」；
-              # 右键打开对这种情况不适用（老文案误导，v1.0.5 起修正）。脚本/更新器下载
-              # 不带 quarantine，无此步。
+              // macOS 产物是完整 ad-hoc 签名（无 Developer ID/公证），浏览器下载会带
+              // quarantine：Gatekeeper 提示「无法验证开发者」，需到系统设置里「仍要打开」；
+              // 右键打开对这种情况不适用（老文案误导，v1.0.5 起修正）。脚本/更新器下载
+              // 不带 quarantine，无此步。
               body: '下载对应平台的安装包；Windows 另有免安装的 portable zip（解压即用，需系统已有 WebView2，Win10/11 自带）。产物未做 Apple 公证 / Windows 代码签名，浏览器下载后首次运行需手动放行：macOS 提示「无法验证开发者」时，到 系统设置 → 隐私与安全性 → 点「仍要打开」（用 install 脚本安装或应用内自动更新则无此步）；Windows SmartScreen 选「仍要运行」。',
               draft: true,
               prerelease: false,
