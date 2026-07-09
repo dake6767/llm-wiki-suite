@@ -87,9 +87,17 @@ source_type: `xiaohongshu` for xiaohongshu.com, else `web`.
   rewrite to relative links (or accept text-only; the core will flag it) →
   `normalize_raw.py --md … --source-type web` with metadata flags.
 
-小红书 notes are image-centric and often login-gated — without a logged-in
-browser you may only get text + cover. Say so rather than pretending the
-capture is complete.
+小红书 notes are image-centric and login-gated — a fresh session hits an
+"IP at risk" login wall before content renders, so the generic readers above
+usually fail. The working recipe is the dedicated adapter,
+`opencli xiaohongshu` (this is also what agent-reach's xiaohongshu backend
+delegates to): check `whoami`, then `note '<full signed URL with xsec_token>'`
+for text/metadata (resolve the `xhslink.com` short link with
+`curl -w '%{url_effective}'` to get one — a bare note id is rejected) and
+`download '<xhslink or signed URL>' --output <tmpdir>` for images/video.
+**Video notes** are a video capture — follow
+`references/video-capture-sop.md` §8. If none of that is available, you may
+only get text + cover; say so rather than pretending the capture is complete.
 
 ---
 
