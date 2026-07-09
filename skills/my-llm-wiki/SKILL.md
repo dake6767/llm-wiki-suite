@@ -296,8 +296,8 @@ somewhere in some video — where?"* Preserve these anchors through every step.
    complete scenario SOP: the acceptance shape (`transcript.md` + `images/cover.jpg`
    in a fresh temp dir), captions first (free, seconds) → else audio-only download +
    **local, language-routed ASR** (zh → SenseVoice, else faster-whisper; audio deleted
-   after), the cue→anchor assembly recipe, and the Bilibili/ASR pitfall list. Two
-   rules that survive any tooling:
+   after), cue→anchor assembly via `scripts/srt_to_anchors.py`, and the Bilibili/ASR
+   pitfall list. Two rules that survive any tooling:
    - **Long ASR runs go in the background; poll a status file yourself** — never a
      blocking foreground call (command timeouts kill it mid-transcribe), and never
      "wait to be notified" (a documented way to sit idle long after completion).

@@ -4,9 +4,10 @@ This skill does **not** ship a video fetcher. A video capture is an ordinary
 adapter job (`references/adapter-contract.md`): lay the acceptance shape below
 down in a temp dir with whatever tools this machine has, then hand off to
 `normalize_raw.py`. This file is the scenario SOP — the acceptance contract,
-the decision order, the two embedded code recipes (§2 VAD-first ASR
-timestamps, §3 anchor assembly), and the field-tested pitfalls. It is
-self-sufficient: everything a capture needs is on this page.
+the decision order, the §2 VAD-first ASR recipe, the §3 assembly script
+(`scripts/srt_to_anchors.py`, shipped — that step is deterministic and
+stack-independent), and the field-tested pitfalls. It is self-sufficient:
+everything a capture needs is on this page or in `scripts/`.
 
 The scenario: the user wants a video's **content** in RAW with the link kept —
 **never** the video file, and never the audio after transcription. The faithful
@@ -193,15 +194,27 @@ Notes that earn their keep:
   littered with them (also a live incident).
 - The `[[0, len(wav)//16]]` fallback covers VAD finding nothing (rare:
   music-only or very short clips) — you still get one honest cue.
-- The output is a standard SRT, so §3's assembly recipe consumes it unchanged.
+- The output is a standard SRT, so §3's `srt_to_anchors.py` consumes it
+  unchanged.
 - ~28× realtime on CPU: a 40-min video ≈ 2 min VAD+ASR. If it's taking tens of
   minutes, something is wrong — check you didn't feed the full file per cue.
 
 ---
 
-## 3. Cues → anchored transcript (the assembly recipe)
+## 3. Cues → anchored transcript (the assembly step)
 
-Don't hand-transcode cue lines token by token — run a small script. The rules:
+This step is **deterministic and stack-independent** — whatever produced the
+cues (captions or any ASR backend), it's the same text transform — so it ships
+as a script. Don't hand-transcode cue lines or rewrite the logic ad hoc:
+
+```bash
+python3 <skill>/scripts/srt_to_anchors.py subs.srt \
+  --url 'https://www.youtube.com/watch?v=<id>' > anchored.md   # or a .vtt
+```
+
+It handles both SRT and VTT, picks the deep-link form from the URL's host
+(§1 table), and applies the assembly rules — which are the contract, whether
+or not you use the script:
 
 - Parse SRT/VTT cue blocks: take the left side of each `START --> END` line as
   the segment start; strip inline `<tags>`.
@@ -211,41 +224,6 @@ Don't hand-transcode cue lines token by token — run a small script. The rules:
 - **CJK join rule:** joining cues with spaces corrupts Chinese text — join
   Chinese-dominant chunks with `""`, everything else with `" "`.
 - Render each chunk as `**[M:SS](<deeplink>)** <text>` (H:MM:SS past the hour).
-
-```python
-import re, sys
-def secs(ts):
-    p=[float(x) for x in ts.replace(",",".").split(":")]; s=0
-    for x in p: s=s*60+x
-    return s
-def label(t):
-    t=int(t); h,r=divmod(t,3600); m,s=divmod(r,60)
-    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
-segs=[]
-for block in re.split(r"\n\s*\n", open(sys.argv[1]).read().strip()):
-    lines=[l for l in block.splitlines() if l.strip()]
-    i=next((j for j,l in enumerate(lines) if "-->" in l), None)
-    if i is None: continue
-    text=re.sub(r"<[^>]+>","", " ".join(lines[i+1:])).strip()
-    if text: segs.append((secs(lines[i].split("-->")[0].strip().split()[0]), text))
-URL="https://www.youtube.com/watch?v=VIDEOID"   # adapt deeplink per host
-out,cur,start,last=[], [], None, None
-for sec,text in segs:
-    if text==last: continue
-    last=text
-    if start is not None and sec-start>=30 and cur:
-        t="".join(cur) if len(re.findall(r"[一-鿿]","".join(cur)))>len(re.findall(r"[A-Za-z]"," ".join(cur)))*0.3 else " ".join(cur)
-        out.append(f"**[{label(start)}]({URL}&t={int(start)}s)** {t}"); cur,start=[],None
-    if start is None: start=sec
-    cur.append(text)
-if cur:
-    t="".join(cur) if len(re.findall(r"[一-鿿]","".join(cur)))>len(re.findall(r"[A-Za-z]"," ".join(cur)))*0.3 else " ".join(cur)
-    out.append(f"**[{label(start)}]({URL}&t={int(start)}s)** {t}")
-print("\n\n".join(out))
-```
-
-(A doc-embedded recipe, not a shipped script — adapt freely; the contract is
-the *output shape*, not this code.)
 
 ---
 
