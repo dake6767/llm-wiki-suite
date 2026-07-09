@@ -4,7 +4,9 @@
 Default behavior:
 1. Infer the GitHub repo from --repo or git remote origin.
 2. Query the latest GitHub Release.
-3. Download the best matching Browser asset for this OS/arch.
+3. Download the best matching Browser asset for this OS/arch. On Windows the
+   portable zip is preferred over setup.exe and auto-extracted next to the
+   download — extraction is the whole install.
 4. Optionally open the downloaded installer on macOS.
 
 If no release or matching asset exists, the script exits with a clear message.
@@ -120,6 +122,29 @@ def download_asset(asset: dict, dest_dir: Path, dry_run: bool = False) -> Path:
     return dest
 
 
+def maybe_extract_zip(path: Path, dry_run: bool) -> Path | None:
+    """Extract a portable zip next to itself; returns the extraction dir.
+
+    Windows portable builds ship as `*-portable.zip` (exe + frontend/ inside a
+    top-level app folder). Extracting is the whole install — no setup.exe run.
+    """
+    if path.suffix.lower() != ".zip":
+        return None
+    dest = path.with_suffix("")
+    if dry_run:
+        print(f"[dry-run] extract {path} -> {dest}")
+        return dest
+    import zipfile
+
+    with zipfile.ZipFile(path) as archive:
+        archive.extractall(dest)
+    print(f"extracted: {dest}")
+    for exe in sorted(dest.rglob("*.exe")):
+        print(f"run this to start the app: {exe}")
+        break
+    return dest
+
+
 def maybe_open(path: Path, dry_run: bool) -> None:
     if platform.system().lower() != "darwin":
         return
@@ -184,6 +209,7 @@ def main() -> int:
             raise RuntimeError(f"No matching Browser asset for this platform. Release assets: {names}")
 
         dest = download_asset(asset, Path(args.download_dir).expanduser(), args.dry_run)
+        maybe_extract_zip(dest, args.dry_run)
         if args.open:
             maybe_open(dest, args.dry_run)
         return 0

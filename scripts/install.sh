@@ -34,6 +34,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$SCRIPT_DIR")"
 REGISTRY="$ROOT/registry/skills.json"
 
+# Windows（Git Bash / MSYS2）兼容开关。三个差异都在这个标志下处理：
+# - 原生 Windows Python 打不开 /c/Users 这类 MSYS 路径，传参前须 cygpath -m 转成 C:/Users;
+# - `ln -s` 默认静默降级为复制，须改用目录联接（mklink /J，无需管理员/开发者模式）;
+# - 一般只有 `python` 没有 `python3`，也没有 rsync。
+IS_WINDOWS=0
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) IS_WINDOWS=1 ;; esac
+
 MODE="link"
 FORCE=0
 DRY=0
@@ -62,10 +69,17 @@ fi
 # Backups go OUTSIDE any skills dir (a .bak left inside it gets loaded as a skill).
 BACKUP_ROOT="$HOME/.skill-install-backups"
 
+PY_BIN="$(command -v python3 || command -v python || true)"
+[ -n "$PY_BIN" ] || { echo "python3/python not found on PATH" >&2; exit 1; }
+
+PY_ROOT="$ROOT"
+if [ "$IS_WINDOWS" -eq 1 ]; then PY_ROOT="$(cygpath -m "$ROOT")"; fi
+
 # Emit "slug<TAB>abs_src" for each active skill (optionally filtered to WANT_SLUGS).
+# 输出统一用正斜杠：Git Bash 和原生 Windows 工具都认 C:/Users 这种混合式路径。
 ENTRIES=()
 while IFS= read -r line; do ENTRIES+=("$line"); done < <(
-  ROOT="$ROOT" python3 - ${WANT_SLUGS[@]+"${WANT_SLUGS[@]}"} <<'PY'
+  ROOT="$PY_ROOT" "$PY_BIN" - ${WANT_SLUGS[@]+"${WANT_SLUGS[@]}"} <<'PY'
 import json, os, sys
 root = os.environ["ROOT"]
 want = set(sys.argv[1:])
@@ -76,7 +90,7 @@ for s in data.get("skills", []):
     if want and s["slug"] not in want:
         continue
     src = os.path.join(root, s["collection_path"])
-    print(f"{s['slug']}\t{src}")
+    print(f"{s['slug']}\t{src.replace(os.sep, '/')}")
 PY
 )
 
@@ -84,6 +98,41 @@ PY
 
 ts() { date +%Y%m%d%H%M%S; }
 act() { if [ "$DRY" -eq 1 ]; then echo "  [dry-run] $*"; else eval "$@"; fi; }
+
+# Windows 上 `ln -s` 静默降级为复制，改用目录联接（junction）：语义等同目录
+# 符号链接（MSYS 的 -L/readlink/rm 都按符号链接处理它），创建无需特殊权限。
+make_link() {
+  if [ "$IS_WINDOWS" -eq 1 ]; then
+    cmd //c "mklink /J \"$(cygpath -w "$2")\" \"$(cygpath -w "$1")\"" >/dev/null
+  else
+    ln -s "$1" "$2"
+  fi
+}
+
+# dest 是否已是指向 src 的链接。Windows 上 readlink 返回 /c/Users 式路径，
+# 与仓库侧的 C:/Users 式不同形，两边都过 cygpath -m 归一化后再比较。
+links_to() {
+  [ -L "$1" ] || return 1
+  if [ "$IS_WINDOWS" -eq 1 ]; then
+    [ "$(cygpath -m "$(readlink "$1")")" = "$(cygpath -m "$2")" ]
+  else
+    [ "$(readlink "$1")" = "$2" ]
+  fi
+}
+
+do_copy() {
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -a --exclude '.git' --exclude '__pycache__' --exclude '.DS_Store' \
+      --exclude 'reports/' --exclude 'data/' "$1/" "$2/"
+  else
+    # Git Bash 没有 rsync：cp 后清掉运行期/系统产物（data/、reports/ 只在顶层）。
+    mkdir -p "$2"
+    cp -R "$1/." "$2/"
+    rm -rf "$2/.git" "$2/reports" "$2/data"
+    find "$2" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
+    find "$2" -name '.DS_Store' -delete 2>/dev/null || true
+  fi
+}
 
 echo "mode=$MODE  force=$FORCE  dry-run=$DRY"
 echo "skills: $(printf '%s ' "${ENTRIES[@]%%$'\t'*}")"
@@ -100,24 +149,24 @@ for target in "${TARGETS[@]}"; do
     if [ ! -e "$src" ]; then echo "  ✗ $slug: source missing ($src)"; n_skip=$((n_skip+1)); continue; fi
 
     if [ "$MODE" = "link" ]; then
-      if [ -L "$dest" ] && [ "$(readlink "$dest")" = "$src" ]; then
+      if links_to "$dest" "$src"; then
         echo "  = $slug (up to date)"; n_ok=$((n_ok+1)); continue
       fi
       if [ -L "$dest" ]; then
         echo "  ~ $slug: repointing symlink"
-        act "rm '$dest'"; act "ln -s '$src' '$dest'"; n_done=$((n_done+1)); continue
+        act "rm '$dest'"; act "make_link '$src' '$dest'"; n_done=$((n_done+1)); continue
       fi
       if [ -e "$dest" ]; then
         if [ "$FORCE" -eq 1 ]; then
           echo "  ! $slug: backing up real path → $BACKUP_ROOT/$tag, linking"
-          act "mkdir -p '$BACKUP_ROOT/$tag'"; act "mv '$dest' '$BACKUP_ROOT/$tag/$slug.bak-$(ts)'"; act "ln -s '$src' '$dest'"; n_done=$((n_done+1))
+          act "mkdir -p '$BACKUP_ROOT/$tag'"; act "mv '$dest' '$BACKUP_ROOT/$tag/$slug.bak-$(ts)'"; act "make_link '$src' '$dest'"; n_done=$((n_done+1))
         else
           echo "  ⏭ $slug: real dir exists (use --force to replace) — skipped"; n_skip=$((n_skip+1))
         fi
         continue
       fi
       echo "  + $slug: linking"
-      act "ln -s '$src' '$dest'"; n_done=$((n_done+1))
+      act "make_link '$src' '$dest'"; n_done=$((n_done+1))
     else  # copy
       if [ -e "$dest" ] || [ -L "$dest" ]; then
         if [ "$FORCE" -eq 1 ]; then
@@ -128,7 +177,7 @@ for target in "${TARGETS[@]}"; do
         fi
       fi
       echo "  + $slug: copying"
-      act "rsync -a --exclude '.git' --exclude '__pycache__' --exclude '.DS_Store' --exclude 'reports/' --exclude 'data/' '$src/' '$dest/'"
+      act "do_copy '$src' '$dest'"
       n_done=$((n_done+1))
     fi
   done

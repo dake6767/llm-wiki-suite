@@ -1,3 +1,7 @@
+// Windows 下必须声明 GUI 子系统，否则 exe 按控制台程序链接：启动即带一个常驻
+// cmd 窗口，用户关掉窗口进程就没了。debug 构建保留控制台以便看日志。
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use std::io::ErrorKind;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;

@@ -14,7 +14,8 @@
     "~/.codex/skills",
     "~/.claude/skills",
     "~/.hermes/skills",
-    "~/.agents/skills"
+    "~/.agents/skills",
+    "~/.workbuddy/skills"
   ],
   "default_wiki_root": "~/wikis/my-llm-wiki",
   "capture_toolchain": {
@@ -69,6 +70,8 @@
         "*macos*universal*.dmg"
       ],
       "windows-x64": [
+        "My-LLM-Wiki-Browser*_x64-portable.zip",
+        "My LLM Wiki Browser*_x64-portable.zip",
         "My LLM Wiki Browser*_x64-setup.exe",
         "My-LLM-Wiki-Browser*_x64-setup.exe",
         "My LLM Wiki Browser*_x64.msi",
