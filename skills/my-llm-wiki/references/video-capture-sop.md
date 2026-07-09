@@ -4,10 +4,9 @@ This skill does **not** ship a video fetcher. A video capture is an ordinary
 adapter job (`references/adapter-contract.md`): lay the acceptance shape below
 down in a temp dir with whatever tools this machine has, then hand off to
 `normalize_raw.py`. This file is the scenario SOP — the acceptance contract,
-the decision order, and the field-tested pitfalls — distilled from a reference
-implementation (`scripts/fetch_video.py`, ~1,100 lines) that used to ship with
-the skill; it lives in git history (`git log --diff-filter=D -- '*fetch_video.py'`)
-if you ever want to read working code for any step.
+the decision order, the two embedded code recipes (§2 VAD-first ASR
+timestamps, §3 anchor assembly), and the field-tested pitfalls. It is
+self-sufficient: everything a capture needs is on this page.
 
 The scenario: the user wants a video's **content** in RAW with the link kept —
 **never** the video file, and never the audio after transcription. The faithful
@@ -113,8 +112,11 @@ them, keep the **per-cue start times**:
      Whisper on CPU and far better on Chinese proper nouns. Install into a
      dedicated venv: `python3 -m venv ~/.local/share/llm-wiki/asr-venv &&
      ~/.local/share/llm-wiki/asr-venv/bin/pip install funasr torch torchaudio`.
-     It reads wav (not m4a — convert first, §6) and has no native timestamps —
-     derive them from a VAD pass or per-utterance offsets.
+     It reads wav (not m4a — convert first, §6) and has **no native
+     timestamps** — feeding it the whole file returns ONE cue stamped
+     `00:00:00,000 --> 00:00:00,000` (a documented incident re-ran a 40-min
+     ASR twice before noticing). Timestamps come from a **VAD-first** pass —
+     the recipe at the end of this section.
    - **Everything else → faster-whisper** (`pip install whisper-ctranslate2`,
      [github.com/Softcatala/whisper-ctranslate2](https://github.com/Softcatala/whisper-ctranslate2);
      same models ~3-5× faster, makes `large-v3` affordable on CPU) →
@@ -148,6 +150,52 @@ them, keep the **per-cue start times**:
    floor, `turbo`/`large-v3` for term-dense content.
 5. **Delete the audio when done.** Transcription is local and free; the media
    is never kept.
+
+### SenseVoice → timestamped SRT: the VAD-first recipe
+
+The order is the whole trick: **run VAD first, then recognise each speech
+segment separately — the cue time is the VAD segment's bounds.** Never hand
+SenseVoice the full audio and hope for cue times; it is non-autoregressive and
+will return a single untimed blob (see the bullet above). One pass, no re-runs:
+
+```python
+# <asr-venv-python> this_script.py audio.wav out.srt [zh|en|yue|ja|ko|auto]
+import re, sys, librosa
+from funasr import AutoModel
+from funasr.utils.postprocess_utils import rich_transcription_postprocess
+audio, out = sys.argv[1], sys.argv[2]
+lang = sys.argv[3] if len(sys.argv) > 3 else "zh"
+wav, _ = librosa.load(audio, sr=16000, mono=True)          # wav/mp3, not m4a (§6)
+vad = AutoModel(model="fsmn-vad", max_single_segment_time=30000, disable_update=True)
+spans = (vad.generate(input=audio) or [{}])[0].get("value") or [[0, len(wav)//16]]  # [[ms,ms],…]
+sv = AutoModel(model="iic/SenseVoiceSmall", disable_update=True)
+emoji = re.compile(r"[\U0001F000-\U0001FAFF☀-➿️]")          # SenseVoice injects 😊🎵 etc.
+def ts(sec):
+    ms=int(round(sec*1000)); h,ms=divmod(ms,3_600_000); m,ms=divmod(ms,60_000); s,ms=divmod(ms,1000)
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+cues = []
+for s_ms, e_ms in spans:
+    chunk = wav[int(s_ms*16):int(e_ms*16)]                  # 16 samples/ms @ 16 kHz
+    if len(chunk) < 160: continue                           # skip <10 ms slivers
+    r = sv.generate(input=chunk, cache={}, language=lang, use_itn=True)
+    text = emoji.sub("", rich_transcription_postprocess(r[0]["text"])).strip() if r else ""
+    if text: cues.append((s_ms/1000, e_ms/1000, text))
+open(out, "w").write("\n".join(f"{i}\n{ts(a)} --> {ts(b)}\n{t}\n" for i,(a,b,t) in enumerate(cues,1)))
+```
+
+Notes that earn their keep:
+
+- `max_single_segment_time=30000` caps VAD segments at 30 s — SenseVoice's
+  sweet spot, and conveniently the anchor granularity §3 wants.
+- `use_itn=True` gives punctuation + inverse text norm;
+  `rich_transcription_postprocess` + the emoji strip remove SenseVoice's
+  `<|zh|><|HAPPY|>` tags and 😊🎵 markers — without this the RAW body is
+  littered with them (also a live incident).
+- The `[[0, len(wav)//16]]` fallback covers VAD finding nothing (rare:
+  music-only or very short clips) — you still get one honest cue.
+- The output is a standard SRT, so §3's assembly recipe consumes it unchanged.
+- ~28× realtime on CPU: a 40-min video ≈ 2 min VAD+ASR. If it's taking tens of
+  minutes, something is wrong — check you didn't feed the full file per cue.
 
 ---
 
@@ -302,12 +350,3 @@ Earned from live captures; read before any Bilibili or ASR-fallback run.
   outro cutoff, where ASR simply emits nothing.)
 - **Auth walls:** don't scrape around them — surface the login step (browser
   login for cookie-based tools, `opencli youtube login` for opencli).
-
----
-
-*Reference implementations, preserved in git history of this repo:*
-`skills/my-llm-wiki/scripts/fetch_video.py` *(the full pipeline: caption
-fetching, language-routed ASR, anchor rendering, status-file contract) and*
-`scripts/asr_sensevoice.py` *(a whisper-CLI-compatible SenseVoice wrapper that
-derives SRT timestamps via VAD). Recover with*
-`git log --diff-filter=D --oneline -- 'skills/my-llm-wiki/scripts/fetch_video.py'`.
