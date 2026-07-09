@@ -236,6 +236,13 @@ needs frontmatter patching and a rename — a recurring live incident.
 `normalize_raw.py` now hard-refuses a title falling back to a generic working
 filename for exactly this reason.
 
+Related trap: with **multiple `.md` files in the `--from` dir**, "first by
+alphabet" would pick `anchored.md` over `transcript.md` (also a live
+incident — the unpolished intermediate got normalized while the deliverable
+sat beside it). The script now prefers `transcript.md`, skips known
+intermediate names, and refuses when still ambiguous — but keep the temp dir
+clean anyway: the §1 contract is *one* deliverable md per capture dir.
+
 ---
 
 ## 4. Long-run discipline: background + poll one status file
