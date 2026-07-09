@@ -523,7 +523,30 @@ def main() -> None:
         mds = sorted(src.glob("*.md"))
         if not mds:
             sys.exit(f"error: no .md found in {src}")
-        md_file = mds[0]
+        if len(mds) == 1:
+            md_file = mds[0]
+        else:
+            # Multiple .md files: the alphabetically-first one is NOT a safe
+            # pick — a video temp dir holds both anchored.md (unpolished
+            # srt_to_anchors.py intermediate) and transcript.md (the assembled
+            # deliverable), and "anchored" sorts first (live incident: the raw
+            # intermediate got normalized while the polished file sat beside
+            # it). Prefer the contract name, then drop known intermediates;
+            # if still ambiguous, refuse rather than guess.
+            intermediates = {"anchored", "anchors", "subs", "subtitles", "srt", "cues"}
+            named = [m for m in mds if m.stem.lower() == "transcript"]
+            candidates = named or [m for m in mds if m.stem.lower() not in intermediates]
+            if len(candidates) == 1:
+                md_file = candidates[0]
+                skipped = [m.name for m in mds if m != md_file]
+                print(f"note: {len(mds)} .md files in {src} — using {md_file.name}, "
+                      f"ignoring intermediate(s): {', '.join(skipped)}", file=sys.stderr)
+            else:
+                sys.exit(
+                    f"error: {len(mds)} .md files in {src} and no unambiguous "
+                    f"deliverable ({', '.join(m.name for m in mds)}) — pass the "
+                    f"right one via --md, or remove the extras from the folder."
+                )
         media_root = src
     else:
         md_file = Path(args.md).expanduser().resolve()
