@@ -1,12 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  checkUpdate,
   getAutostartConfig,
   getServerConfig,
+  getUpdateConfig,
+  installUpdate,
   listConfigWikis,
   restartServer,
   setAutostart,
   setDefaultWiki,
   updateServerPort,
+  type UpdateConfigInfo,
   type WikiConfigInfo,
 } from "../api/client";
 
@@ -237,6 +241,7 @@ function RuntimePanel() {
     <div className="grid gap-4">
       <ServerPortPanel />
       <AutostartPanel />
+      <UpdatePanel />
       <PanelMessage
         title="入口在托盘菜单"
         body="本地 WIKI 和线上 WIKI 已移动到系统托盘。这里后续会承载中继、索引、embedding 等配置。"
@@ -447,6 +452,171 @@ function AutostartPanel() {
             ].join(" ")}
           />
         </button>
+      </div>
+      {error ? <p className="mt-2 text-sm text-cinnabar">{error}</p> : null}
+    </div>
+  );
+}
+
+// 轮询间隔：downloading 态盯进度用 1s，其余（checking 等短暂态）2s。
+function updatePollInterval(state?: string) {
+  return state === "downloading" ? 1000 : 2000;
+}
+
+function UpdatePanel() {
+  const [info, setInfo] = useState<UpdateConfigInfo | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [restarting, setRestarting] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    getUpdateConfig()
+      .then((next) => {
+        if (!cancelled) setInfo(next);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled)
+          setError(err instanceof Error ? err.message : "更新状态读取失败");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // checking / downloading 是后台任务，处于这两个态时轮询到稳定态为止。
+  const polling = info?.state === "checking" || info?.state === "downloading";
+  useEffect(() => {
+    if (!polling) return;
+    const timer = window.setTimeout(() => {
+      getUpdateConfig()
+        .then(setInfo)
+        .catch(() => {
+          /* 瞬时失败下一轮再试 */
+        });
+    }, updatePollInterval(info?.state));
+    return () => window.clearTimeout(timer);
+  }, [polling, info]);
+
+  async function run(action: () => Promise<UpdateConfigInfo>) {
+    setError(null);
+    setBusy(true);
+    try {
+      // 返回的快照通常已是 checking/downloading，随后交给上面的轮询跟进。
+      setInfo(await action());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "操作失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function restart() {
+    setError(null);
+    setRestarting(true);
+    try {
+      await restartServer();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "重启失败");
+      setRestarting(false);
+    }
+  }
+
+  // 纯浏览器访问（非桌面外壳）拿不到更新钩子，整块隐藏。
+  if (info !== null && !info.supported) return null;
+
+  const state = info?.state ?? "idle";
+  const checking = state === "checking";
+  const downloading = state === "downloading";
+  const progress =
+    downloading && info?.total
+      ? Math.min(100, Math.round(((info.downloaded ?? 0) / info.total) * 100))
+      : null;
+
+  if (restarting) {
+    return (
+      <PanelMessage title="正在重启" body="应用将以新版本重新打开，请稍候…" />
+    );
+  }
+
+  return (
+    <div className="rounded-md border border-[var(--rule)] bg-paper-2/55 px-6 py-5">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div className="min-w-0">
+          <h3 className="font-display text-xl font-semibold">应用更新</h3>
+          <p className="mt-2 text-sm leading-6 text-ink-soft">
+            当前版本{" "}
+            <span className="font-mono">
+              {info?.current_version ? `v${info.current_version}` : "…"}
+            </span>
+            {state === "up-to-date" ? " · 已是最新版本" : null}
+            {state === "available" && info?.latest_version
+              ? ` · 发现新版本 v${info.latest_version}`
+              : null}
+            {state === "ready-to-restart" && info?.latest_version
+              ? ` · v${info.latest_version} 已就绪，重启后生效`
+              : null}
+            {state === "portable" &&
+              (info?.latest_version
+                ? ` · 发现新版本 v${info.latest_version}（便携版请手动下载替换）`
+                : " · 便携版不支持原地更新")}
+          </p>
+          {state === "available" && info?.notes ? (
+            <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-ink-faint">
+              {info.notes}
+            </p>
+          ) : null}
+          {downloading ? (
+            <div className="mt-3">
+              <div className="h-1.5 w-64 max-w-full overflow-hidden rounded-full bg-paper/80">
+                <div
+                  className="h-full rounded-full bg-cinnabar transition-all"
+                  style={{ width: `${progress ?? 12}%` }}
+                />
+              </div>
+              <p className="font-mono mt-1 text-xs text-ink-faint">
+                下载中{progress !== null ? ` ${progress}%` : "…"}
+              </p>
+            </div>
+          ) : null}
+          {state === "error" && info?.error ? (
+            <p className="mt-2 text-sm text-cinnabar">
+              检查更新失败：{info.error}
+            </p>
+          ) : null}
+        </div>
+
+        <div className="flex shrink-0 items-center gap-3">
+          {state === "available" ? (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void run(installUpdate)}
+              className="rounded-sm bg-cinnabar px-4 py-2 text-sm font-semibold text-paper transition hover:opacity-90 disabled:opacity-60"
+            >
+              下载并安装
+            </button>
+          ) : null}
+          {state === "ready-to-restart" ? (
+            <button
+              type="button"
+              onClick={() => void restart()}
+              className="rounded-sm bg-cinnabar px-4 py-2 text-sm font-semibold text-paper transition hover:opacity-90"
+            >
+              重启完成更新
+            </button>
+          ) : null}
+          {state !== "ready-to-restart" ? (
+            <button
+              type="button"
+              disabled={busy || checking || downloading}
+              onClick={() => void run(checkUpdate)}
+              className="rounded-sm border border-[var(--rule)] px-4 py-2 text-sm text-ink-soft transition hover:border-cinnabar hover:text-cinnabar disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {checking ? "检查中…" : "检查更新"}
+            </button>
+          ) : null}
+        </div>
       </div>
       {error ? <p className="mt-2 text-sm text-cinnabar">{error}</p> : null}
     </div>

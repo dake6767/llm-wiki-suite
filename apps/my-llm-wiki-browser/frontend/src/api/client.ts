@@ -181,6 +181,20 @@ export interface AutostartConfigInfo {
   enabled: boolean;
 }
 
+// supported=false 表示宿主没注入更新钩子（如纯浏览器访问），设置页隐藏更新面板。
+// state 取值见服务端注释：idle | checking | up-to-date | available |
+// downloading | ready-to-restart | portable | error。
+export interface UpdateConfigInfo {
+  supported: boolean;
+  current_version?: string;
+  state?: string;
+  latest_version?: string;
+  notes?: string;
+  downloaded?: number;
+  total?: number;
+  error?: string;
+}
+
 // review 项在 App 与 maintainer skill 之间字段略有出入，这里做并集容错。
 export interface ReviewItem {
   id?: string;
@@ -229,6 +243,14 @@ export const getAutostartConfig = () =>
 // 开关开机自启，立即生效，无需重启。
 export const setAutostart = (enabled: boolean) =>
   send<AutostartConfigInfo>("/api/v1/config/autostart", "PUT", { enabled });
+export const getUpdateConfig = () =>
+  api<UpdateConfigInfo>("/api/v1/config/update");
+// 触发后台更新检查，进展轮询 getUpdateConfig。
+export const checkUpdate = () =>
+  send<UpdateConfigInfo>("/api/v1/config/update/check", "POST");
+// 下载并安装（仅 available 态）；完成后 state 变为 ready-to-restart。
+export const installUpdate = () =>
+  send<UpdateConfigInfo>("/api/v1/config/update/install", "POST");
 export const getTree = (wiki: string) =>
   api<TreeNode[]>(`/api/v1/wikis/${wiki}/tree`);
 export const getPage = (wiki: string, path: string) =>
