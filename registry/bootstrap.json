@@ -17,6 +17,37 @@
     "~/.agents/skills"
   ],
   "default_wiki_root": "~/wikis/my-llm-wiki",
+  "capture_toolchain": {
+    "_note": "Fetchers the skills delegate to. `strongly_recommended` = near-mandatory for a smooth capture flow (AGENTS.md step 3): recommend loudly at install time with the home URL, but only install with the user's go-ahead. doctor.py reports these as core adapters.",
+    "strongly_recommended": [
+      {
+        "name": "opencli",
+        "install": "npm i -g @jackwener/opencli",
+        "home": "https://www.npmjs.com/package/@jackwener/opencli",
+        "without_it": "公众号 images stay remote; 小红书/抖音 captures fail (login-walled); X degrades"
+      },
+      {
+        "name": "yt-dlp",
+        "install": "brew install yt-dlp",
+        "home": "https://github.com/yt-dlp/yt-dlp",
+        "without_it": "no video→transcript path (captions and audio both come through it)"
+      },
+      {
+        "name": "ffmpeg",
+        "install": "brew install ffmpeg",
+        "home": "https://ffmpeg.org",
+        "without_it": "no audio extraction / covers for the video path"
+      }
+    ],
+    "optional": [
+      {
+        "name": "markitdown",
+        "install": "pipx install markitdown",
+        "home": "https://github.com/microsoft/markitdown",
+        "without_it": "no local PDF/docx/pptx conversion"
+      }
+    ]
+  },
   "browser": {
     "slug": "my-llm-wiki-browser",
     "collection_path": "apps/my-llm-wiki-browser",

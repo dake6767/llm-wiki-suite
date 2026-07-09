@@ -40,13 +40,23 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 BOOTSTRAP = REPO_ROOT / "registry" / "bootstrap.json"
 SKILLS_REGISTRY = REPO_ROOT / "registry" / "skills.json"
 
-# Capture adapters my-llm-wiki's scenario SOPs can use. All optional — every
-# scenario has recipes per available tool (see references/sources.md), so
-# absence is warn, never error.
+# Capture adapters my-llm-wiki's scenario SOPs can use. Absence never gates
+# the exit code (every scenario has a fallback recipe, see references/
+# sources.md) — but the `core` ones are near-mandatory for a smooth capture
+# flow: without opencli the CJK platforms (公众号图片本地化 / 小红书 / 抖音 /
+# X) degrade to text-only or fail outright, and without yt-dlp + ffmpeg there
+# is no video→transcript path at all. Their absence is reported loudly with
+# the install command + project home URL so the user can vet before installing.
+# Fields: (name, description, core, install_cmd, home_url)
 ADAPTERS = [
-    ("opencli", "default web/social fetch adapter"),
-    ("yt-dlp", "video download fallback (no-caption path)"),
-    ("markitdown", "local document (PDF/docx) conversion"),
+    ("opencli", "web/social fetch adapter (公众号图片/小红书/抖音/X 依赖它)", True,
+     "npm i -g @jackwener/opencli", "https://www.npmjs.com/package/@jackwener/opencli"),
+    ("yt-dlp", "video/audio download (the whole video→transcript path)", True,
+     "brew install yt-dlp", "https://github.com/yt-dlp/yt-dlp"),
+    ("ffmpeg", "audio extraction + covers for video captures", True,
+     "brew install ffmpeg", "https://ffmpeg.org"),
+    ("markitdown", "local document (PDF/docx) conversion", False,
+     "pipx install markitdown", "https://github.com/microsoft/markitdown"),
 ]
 
 
@@ -203,13 +213,25 @@ def check_browser(bootstrap: dict) -> dict:
 
 def check_adapters() -> dict:
     out = []
-    for name, desc in ADAPTERS:
+    core_missing = []
+    for name, desc, core, install, home in ADAPTERS:
         found = shutil.which(name)
+        if found:
+            detail = found
+        elif core:
+            detail = f"not found — {desc}. 强烈建议安装: `{install}` ({home})"
+            core_missing.append(name)
+        else:
+            detail = f"not found — {desc} (optional; skill degrades)"
         out.append({"name": name, "status": "ok" if found else "warn",
-                    "detail": (found or f"not found — {desc} (optional; skill degrades)")})
-    # Adapters never gate the exit code; report the best of them for the summary line.
-    status = "ok" if any(a["status"] == "ok" for a in out) else "warn"
-    return {"status": status, "adapters": out}
+                    "core": core, "detail": detail})
+    # Adapters never gate the exit code, but the summary is only `ok` when the
+    # core (near-mandatory) toolchain is complete.
+    status = "ok" if not core_missing else "warn"
+    result = {"status": status, "adapters": out}
+    if core_missing:
+        result["core_missing"] = core_missing
+    return result
 
 
 _ORDER = {"ok": 0, "skip": 0, "warn": 1, "error": 2}
