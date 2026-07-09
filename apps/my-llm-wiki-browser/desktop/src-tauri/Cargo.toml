@@ -17,6 +17,7 @@ llm-wiki-server = { path = "../../crates/llm-wiki-server" }
 open.workspace = true
 tauri = { workspace = true, features = ["tray-icon", "image-png"] }
 tauri-plugin-autostart = "2"
+tauri-plugin-notification = "2"
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

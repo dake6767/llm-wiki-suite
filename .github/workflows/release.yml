@@ -74,6 +74,7 @@ jobs:
         run: npm ci
 
       - name: Build and release
+        id: tauri
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -81,7 +82,39 @@ jobs:
           projectPath: apps/my-llm-wiki-browser/desktop
           tagName: ${{ github.ref_name }}
           releaseName: 'My LLM Wiki Browser ${{ github.ref_name }}'
-          releaseBody: '下载对应平台的安装包。未签名版本首次运行需手动放行（macOS 右键打开 / Windows SmartScreen 仍要运行）。'
+          releaseBody: '下载对应平台的安装包；Windows 另有免安装的 portable zip（解压即用，需系统已有 WebView2，Win10/11 自带）。未签名版本首次运行需手动放行（macOS 右键打开 / Windows SmartScreen 仍要运行）。'
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+      # Windows 免安装（portable）包：应用在磁盘上就是 exe + frontend/ 资源目录
+      # （tauri.conf.json bundle.resources 把 frontend/dist 装到 exe 旁的 frontend/，
+      # 运行期经 BaseDirectory::Resource 解析），所以把这两样打成 zip 即可免安装运行。
+      # 上传走 uploads.github.com + releaseId，因为草稿 Release 无法用 gh 按 tag 定位。
+      - name: Package and upload Windows portable zip
+        if: matrix.platform == 'windows-latest' && steps.tauri.outputs.releaseId != ''
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ steps.tauri.outputs.releaseId }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $conf = Get-Content apps/my-llm-wiki-browser/desktop/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          $release = 'apps/my-llm-wiki-browser/target/release'
+          # tauri v2 会把主二进制按 productName 改名；兜底用 crate 名。
+          $exe = @('My LLM Wiki Browser.exe', 'llm-wiki-desktop.exe') |
+            ForEach-Object { Join-Path $release $_ } |
+            Where-Object { Test-Path $_ } |
+            Select-Object -First 1
+          if (-not $exe) { throw "app exe not found under $release" }
+          $portable = Join-Path $release 'portable/My LLM Wiki Browser'
+          New-Item -ItemType Directory -Force -Path $portable | Out-Null
+          Copy-Item $exe (Join-Path $portable 'My LLM Wiki Browser.exe')
+          Copy-Item -Recurse apps/my-llm-wiki-browser/frontend/dist (Join-Path $portable 'frontend')
+          $zip = "My-LLM-Wiki-Browser_$($conf.version)_x64-portable.zip"
+          Compress-Archive -Path $portable -DestinationPath $zip -Force
+          curl.exe -sSf -X POST `
+            -H "Authorization: Bearer $env:GITHUB_TOKEN" `
+            -H "Content-Type: application/zip" `
+            --data-binary "@$zip" `
+            "https://uploads.github.com/repos/${{ github.repository }}/releases/$env:RELEASE_ID/assets?name=$zip"

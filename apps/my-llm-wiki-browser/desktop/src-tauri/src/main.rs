@@ -1,3 +1,7 @@
+// Windows 下必须声明 GUI 子系统，否则 exe 按控制台程序链接：启动即带一个常驻
+// cmd 窗口，用户关掉窗口进程就没了。debug 构建保留控制台以便看日志。
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use std::io::ErrorKind;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
@@ -77,6 +81,7 @@ fn main() {
             MacosLauncher::LaunchAgent,
             None,
         ))
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let local_url = local_base_url();
             let app_handle = app.handle().clone();
@@ -104,6 +109,8 @@ fn main() {
             }
             let connector_config = connector_config();
             let tray = build_tray(app.handle(), local_url.clone(), online_wiki_url.clone())?;
+            // 托盘建好后再提示，确保用户按提示去点时图标已经在了。
+            maybe_notify_first_launch(app.handle());
             #[cfg(target_os = "macos")]
             let _ = app.set_activation_policy(ActivationPolicy::Accessory);
             let relay_runtime = RelayRuntime::new(connector_config, tray, online_wiki_url);
@@ -231,6 +238,46 @@ impl RelayRuntime {
             self.start();
             save_relay_enabled(true);
         }
+    }
+}
+
+/// 首次启动弹一条系统通知：应用没有主窗口、常驻托盘，Windows 上托盘图标还常被
+/// 折叠进任务栏溢出区，不提示的话用户对"已启动"完全无感知。只弹一次——弹成功
+/// 才落盘标记，失败则留到下次启动再试。
+fn maybe_notify_first_launch(app: &tauri::AppHandle) {
+    use tauri_plugin_notification::NotificationExt;
+
+    let Some(marker) =
+        llm_wiki_core::paths::connector_dir().map(|dir| dir.join("first-launch-notified"))
+    else {
+        return;
+    };
+    if marker.exists() {
+        return;
+    }
+
+    #[cfg(target_os = "windows")]
+    let body = "已在后台运行。点击任务栏右下角的托盘图标（可能折叠在 ∧ 溢出区里）可打开本地 WIKI 和设置。";
+    #[cfg(target_os = "macos")]
+    let body = "已在后台运行。点击菜单栏右上角的托盘图标可打开本地 WIKI 和设置。";
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let body = "已在后台运行。点击系统托盘图标可打开本地 WIKI 和设置。";
+
+    if let Err(err) = app
+        .notification()
+        .builder()
+        .title("My LLM Wiki Browser 已启动")
+        .body(body)
+        .show()
+    {
+        tracing::warn!(error = ?err, "failed to show first-launch notification");
+        return;
+    }
+    if let Some(parent) = marker.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Err(err) = std::fs::write(&marker, "1\n") {
+        tracing::warn!(error = ?err, "failed to persist first-launch marker");
     }
 }
 

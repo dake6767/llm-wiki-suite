@@ -38,10 +38,16 @@ scripts/install.sh \
   --target ~/.codex/skills \
   --target ~/.claude/skills \
   --target ~/.hermes/skills \
-  --target ~/.agents/skills
+  --target ~/.agents/skills \
+  --target ~/.workbuddy/skills
 ```
 
 Skip targets that do not exist only if the user clearly does not use that agent.
+
+The script works on Windows under Git Bash: it converts paths for native
+Windows Python and installs links as directory junctions (`mklink /J`, no
+admin / Developer Mode needed) because Git Bash's `ln -s` silently degrades to
+a copy. Run it as-is — no manual path fixing.
 
 ## 3. Install The Capture Toolchain (strongly recommend it)
 
@@ -93,6 +99,12 @@ python3 scripts/install-browser.py --open
 ```
 
 If the repo is private or the release is private, set `GITHUB_TOKEN` first.
+
+On Windows the script prefers the portable zip over `*-setup.exe` and
+auto-extracts it — extraction IS the install; just run the exe inside (pin to
+taskbar / create a shortcut if the user wants one). It needs the WebView2
+runtime, which Windows 10/11 ships by default; only fall back to setup.exe on
+machines without WebView2 (the installer bootstraps it).
 
 Only fall back to local source build when:
 
