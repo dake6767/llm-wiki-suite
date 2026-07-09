@@ -141,6 +141,7 @@ python3 <skill>/scripts/normalize_raw.py \
   --from /tmp/llmwiki-vidN \
   --wiki /path/to/wiki \
   --source-type video \
+  --title "<video title>" \
   --source-url "<url>" \
   --original-id="-VIDEO_ID" \    # equals form for dash-prefixed IDs
   --author "<channel>" \
@@ -149,6 +150,14 @@ python3 <skill>/scripts/normalize_raw.py \
 ```
 
 Safe bare form for alphanumeric IDs: `--original-id y0IkFsoQVp0`
+
+**Pitfall: normalizing the bare `anchored.md`.** `srt_to_anchors.py` output is
+an intermediate — normalize the assembled `transcript.md` (real `# title` H1 +
+`>` header + cover) via `--from`, and/or pass `--title`. `normalize_raw.py`
+refuses a title falling back to a generic working filename (`anchored`,
+`transcript`, …); hitting that error means assemble first — never mint the RAW
+and then patch frontmatter + rename it (the old workflow, retired after it
+recurred in every capture one night).
 
 **Pitfall: `-v2` suffix on re-capture.** When a RAW file for the same video already exists,
 `normalize_raw.py` creates a `-v2.md` version instead of overwriting. This is correct

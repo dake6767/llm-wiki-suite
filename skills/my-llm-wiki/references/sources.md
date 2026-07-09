@@ -96,7 +96,8 @@ for text/metadata (resolve the `xhslink.com` short link with
 `curl -w '%{url_effective}'` to get one — a bare note id is rejected) and
 `download '<xhslink or signed URL>' --output <tmpdir>` for images/video.
 **Video notes** are a video capture — follow
-`references/video-capture-sop.md` §8. If none of that is available, you may
+`references/video-xiaohongshu.md` (+ the core `video-capture-sop.md` it plugs
+into). If none of that is available, you may
 only get text + cover; say so rather than pretending the capture is complete.
 
 ---
@@ -130,8 +131,9 @@ normalizing: `references/x-article-pitfalls.md`.
 source_type `video`. The whole scenario — acceptance shape (timestamped
 `**[MM:SS](…&t=NNNs)**` anchors), captions-first decision order, language-routed
 local ASR (zh → SenseVoice, else faster-whisper), the anchor assembly recipe,
-background+poll discipline, and the Bilibili pitfall list — lives in
-**`references/video-capture-sop.md`**. Read it before any video capture.
+and background+poll discipline — lives in
+**`references/video-capture-sop.md`**. Read it before any video capture; its §6
+indexes the per-platform files (Bilibili / 抖音 / 小红书 recipes and dead ends).
 
 The short version: probe → captions if they exist (free, seconds) → else
 audio-only download + local ASR → assemble the anchored transcript → verify
