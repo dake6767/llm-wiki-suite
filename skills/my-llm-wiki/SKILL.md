@@ -296,8 +296,9 @@ somewhere in some video — where?"* Preserve these anchors through every step.
    complete scenario SOP: the acceptance shape (`transcript.md` + `images/cover.jpg`
    in a fresh temp dir), captions first (free, seconds) → else audio-only download +
    **local, language-routed ASR** (zh → SenseVoice, else faster-whisper; audio deleted
-   after), cue→anchor assembly via `scripts/srt_to_anchors.py`, and the Bilibili/ASR
-   pitfall list. Two rules that survive any tooling:
+   after), cue→anchor assembly via `scripts/srt_to_anchors.py`, and an index (its §6)
+   of the per-platform recipe/pitfall files (Bilibili / 抖音 / 小红书). Two rules that
+   survive any tooling:
    - **Long ASR runs go in the background; poll a status file yourself** — never a
      blocking foreground call (command timeouts kill it mid-transcribe), and never
      "wait to be notified" (a documented way to sit idle long after completion).
@@ -319,15 +320,18 @@ somewhere in some video — where?"* Preserve these anchors through every step.
    ```bash
    python3 <skill>/scripts/normalize_raw.py --from <tmp dir> \
      --source-type video --wiki <wiki from §1> \
+     --title "<video title>" \
      --source-url "<video url>" --original-id "<videoId>" \
      --author "<channel>" --publish-time "<publishDate>" \
      --captured-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
    ```
    It writes `raw/sources/video/<date>-<slug>.md`, localizes the cover, and — because
    `video` is a deliberately-not-downloaded source — adds **no** "can't download"
-   callout (the transcript *is* the capture). **Verify after:** the title/slug default
-   to `transcript` (from the `transcript.md` filename) — patch them to the real video
-   title and confirm the cover landed (`video-capture-sop.md` §5).
+   callout (the transcript *is* the capture). The title/slug come from `--title` or
+   the `transcript.md` H1 — the script **refuses** a fallback to a generic working
+   filename (`transcript`, `anchored`, …); that error means step 1's assembly was
+   skipped, not that you should patch/rename afterwards. **Verify after:** the cover
+   landed (`assets:` ≥ 1 — a video capture with 0 is flagged; `video-capture-sop.md` §5).
 
 5. **Report** concisely: wiki, path, transcript source (captions vs `<asr>(model)`),
    that it's timestamped with jump-back links, whether you added a translation, the
@@ -352,7 +356,10 @@ somewhere in some video — where?"* Preserve these anchors through every step.
 - `references/sources.md` — per-scenario capture SOPs & tool recipes (§2, §3)
 - `references/adapter-contract.md` — the on-disk shape any fetch tool must satisfy
 - `references/raw-contract.md` — frontmatter schema, layout, readability, notes (§4, §6)
-- `references/video-capture-sop.md` — the video scenario: acceptance contract, recipes, pitfalls (§8)
+- `references/video-capture-sop.md` — the video scenario: acceptance contract, generic recipes, platform index (§8)
+- `references/video-bilibili-pitfalls.md` — Bilibili download/caption traps (§8)
+- `references/video-douyin.md` — 抖音 share-link capture recipes & dead ends (§8)
+- `references/video-xiaohongshu.md` — 小红书 video-note capture recipe & dead ends (§8)
 - `references/x-bookmarks.md` — batch bookmark-sync procedure (§5)
 - `references/x-fallback-capture.md` — browser-free X capture via fxtwitter (§3)
 - `references/routing-pitfalls.md` — genre/topic mis-routing traps (§1)

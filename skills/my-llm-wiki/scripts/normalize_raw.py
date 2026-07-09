@@ -237,9 +237,21 @@ def slugify(title: str) -> str:
 CHROME_MARKERS = re.compile(r"(微信扫一扫|赞赏作者|名称已清空|最低赞赏|喜欢作者|其它金额)")
 UNLOCALIZED_IMG = re.compile(r"(<img\b|data-src=|!\[[^\]]*\]\(https?://[^)]*\.(?:png|jpe?g|gif|webp))", re.I)
 
+# Working-file names a pipeline uses for its intermediates. When the title
+# would fall back to one of these (no --title, no H1), the capture step was
+# skipped — refuse instead of minting a RAW file titled "anchored"/"transcript"
+# that then needs frontmatter patching + a file rename (a recurring live
+# incident with video captures fed the bare srt_to_anchors.py output).
+GENERIC_STEMS = {
+    "transcript", "anchored", "anchors", "subs", "subtitles", "srt",
+    "output", "out", "result", "final", "temp", "tmp", "test",
+    "page", "capture", "untitled", "index", "content", "text",
+    "doc", "document", "article", "note", "notes", "audio", "video",
+}
+
 
 def assess_capture(body: str, asset_count: int, is_note: bool = False,
-                   has_source_file: bool = False) -> list[str]:
+                   has_source_file: bool = False, is_video: bool = False) -> list[str]:
     """Sanity-check a capture so failures and page-structure changes surface
     loudly instead of producing a silently degraded RAW. The site HTML (and the
     opencli adapter that parses it) will drift over time; these tripwires are how
@@ -268,6 +280,11 @@ def assess_capture(body: str, asset_count: int, is_note: bool = False,
         warnings.append(
             "capture looks dominated by page chrome (打赏/UI boilerplate) — main "
             "content extraction may be incomplete"
+        )
+    if is_video and asset_count == 0:
+        warnings.append(
+            "video capture localized no media — the acceptance contract expects a "
+            "cover (images/cover.jpg referenced from transcript.md)"
         )
     return warnings
 
@@ -517,7 +534,19 @@ def main() -> None:
     md_text = md_file.read_text(encoding="utf-8")
     parsed, body = parse_capture(md_text)
 
-    title = args.title or parsed.get("title") or md_file.stem
+    title = args.title or parsed.get("title") or ""
+    if not title:
+        stem = md_file.stem
+        if stem.lower() in GENERIC_STEMS:
+            sys.exit(
+                f"error: no --title and no H1 in the markdown — the title would "
+                f"default to the working filename '{stem}'. Pass --title \"<real "
+                f"title>\" or put a `# <title>` H1 in the file. For a video "
+                f"capture, assemble the full transcript.md (H1 + `>` header + "
+                f"cover) per video-capture-sop.md §1 — don't normalize the bare "
+                f"srt_to_anchors.py output."
+            )
+        title = stem
     source_url = args.source_url or parsed.get("source_url", "")
 
     # Correct a generic bucket when the host names a known platform (see above).
@@ -646,7 +675,8 @@ def main() -> None:
             fm["video_links"] = videos
 
     warnings = assess_capture(
-        new_body, asset_count, is_note=is_note, has_source_file=bool(source_file_rel)
+        new_body, asset_count, is_note=is_note,
+        has_source_file=bool(source_file_rel), is_video=is_video,
     )
     if warnings:
         fm["capture_health"] = "warn"

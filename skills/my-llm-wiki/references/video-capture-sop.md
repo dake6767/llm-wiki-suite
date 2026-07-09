@@ -6,8 +6,10 @@ down in a temp dir with whatever tools this machine has, then hand off to
 `normalize_raw.py`. This file is the scenario SOP — the acceptance contract,
 the decision order, the §2 VAD-first ASR recipe, the §3 assembly script
 (`scripts/srt_to_anchors.py`, shipped — that step is deterministic and
-stack-independent), and the field-tested pitfalls. It is self-sufficient:
-everything a capture needs is on this page or in `scripts/`.
+stack-independent), and the generic field-tested pitfalls. Platform-specific
+recipes and dead ends (Bilibili, 抖音, 小红书) live in sibling
+`references/video-*.md` files — the index is in §6. Everything a capture needs
+is on this page, in the platform file §6 points to, or in `scripts/`.
 
 The scenario: the user wants a video's **content** in RAW with the link kept —
 **never** the video file, and never the audio after transcription. The faithful
@@ -102,8 +104,8 @@ them, keep the **per-cue start times**:
 
 1. **Download audio only** with yt-dlp (never the video), e.g.
    `yt-dlp -x --audio-format mp3 -o "<tmp>/audio.%(ext)s" <url>` — but see the
-   Bilibili format trap in §6 (on Bilibili, list formats and pick the
-   audio-only stream id explicitly).
+   Bilibili format trap in `video-bilibili-pitfalls.md` (on Bilibili, list
+   formats and pick the audio-only stream id explicitly).
 2. **Route the ASR backend by language BEFORE transcribing.** Guess from the
    title/author (a title with ≥4 CJK chars and more CJK than latin ⇒ Chinese),
    or honor an explicit language:
@@ -225,6 +227,15 @@ or not you use the script:
   Chinese-dominant chunks with `""`, everything else with `" "`.
 - Render each chunk as `**[M:SS](<deeplink>)** <text>` (H:MM:SS past the hour).
 
+**The script's output is an intermediate, not the deliverable.** Assemble the
+§1 `transcript.md` around it — real `# <video title>` H1, the `>` 作者/发布时间/
+原文链接 header, the cover image line, the 简介 — and normalize the temp dir
+with `--from`. Feeding the bare `anchored.md` to `normalize_raw.py --md` mints
+a RAW file titled/slugged `anchored` with no cover (`assets: 0`), which then
+needs frontmatter patching and a rename — a recurring live incident.
+`normalize_raw.py` now hard-refuses a title falling back to a generic working
+filename for exactly this reason.
+
 ---
 
 ## 4. Long-run discipline: background + poll one status file
@@ -280,11 +291,16 @@ in the wiki's `data/`, not in this skill.
 
 **After normalizing:**
 
-1. **Title/slug** — `normalize_raw.py` derives them from the `.md` filename;
-   a file named `transcript.md` yields title/slug `transcript`. Patch the
-   frontmatter title and rename the RAW file to a real slug (renaming means
-   also renaming `raw/assets/<old-slug>--*` and the links in the body).
-2. **Cover** — confirm it landed in `raw/assets/`.
+1. **Title/slug** — set at normalize time, never patched after: the title
+   comes from `--title` or the markdown's H1, and `normalize_raw.py` refuses
+   to fall back to a generic working filename (`transcript`, `anchored`, …).
+   Hitting that refusal means the §3 assembly step was skipped — build the §1
+   `transcript.md` (or pass `--title`), don't rename the RAW file afterwards.
+   If a wrong title still lands, fixing means frontmatter + renaming the RAW
+   file **and** `raw/assets/<old-slug>--*` and the body links — expensive,
+   which is why prevention is the rule.
+2. **Cover** — confirm it landed in `raw/assets/` (the summary's `assets:`
+   count ≥ 1; a video capture with `assets: 0` is flagged `capture_health: warn`).
 3. `normalize_raw.py` special-cases `source_type: video`: no `has_video` /
    "can't download" callout — the transcript *is* the capture.
 4. Found ASR errors **after** normalizing? RAW is immutable — fix the temp-dir
@@ -293,215 +309,29 @@ in the wiki's `data/`, not in this skill.
 
 ---
 
-## 6. Field-tested pitfalls (mostly Bilibili)
+## 6. Field-tested pitfalls & the platform index
 
-Earned from live captures; read before any Bilibili or ASR-fallback run.
+Generic pitfalls, any platform:
 
-- **`-x` is not audio-only on Bilibili.** `yt-dlp -x` can pick a merged
-  video+audio DASH format (280 MiB, 30-min download) whose audio extraction
-  silently truncates to ~2 min. **List formats and force the audio stream id:**
-  `yt-dlp --cookies-from-browser chrome --list-formats <url> | grep audio` →
-  `yt-dlp -f <audio-id> …`. Always ffprobe the result against the expected
-  duration.
-- **Bilibili m4a AAC corruption → download with `--downloader aria2c`.**
-  yt-dlp's default HTTP downloader can produce m4a files whose AAC payload is
-  damaged mid-stream (ffmpeg truncates; macOS `afconvert` errors `'bada'`).
-  aria2c downloads are clean. Corruption can also be *transient* — one fresh
-  re-download is worth trying before switching formats.
 - **Convert m4a → wav for Python-API ASR backends** (librosa/soundfile can't
   read m4a): `afconvert -f WAVE -d LEI16@16000 audio.m4a audio.wav` (or the
   ffmpeg equivalent).
-- **HTTP 412 = Bilibili bot protection.** Wait a few minutes, retry with
-  `--cookies-from-browser chrome`. `--cookies-from-browser` itself can hang
-  10-30 s when Chrome holds many cookies — close Chrome or use another browser.
-- **Channel name:** `yt-dlp --print '%(channel)s'` returns "NA" on most
-  Bilibili videos; use the public API:
-  `curl -s "https://api.bilibili.com/x/web-interface/view?bvid=BV…"` →
-  `.data.owner.name`.
 - **Sponsor segments are spoken content** — ASR transcribes mid-video ad reads
   (1–3 min) as if they were lecture. Scan the built transcript for ad-indicator
   keyword clusters (product names, 评论区链接/专属福利/一键三连, 618/双11) and skip
   segments matching ≥2; log how many were skipped.
-- **AI-caption outro garbage:** Bilibili AI captions faithfully "transcribe"
-  outro music/jingles as nonsense text. Read the last 30-50 lines; truncate
-  after the last real sentence. (Distinct from the normal ~80-85 % non-speech
-  outro cutoff, where ASR simply emits nothing.)
 - **Auth walls:** don't scrape around them — surface the login step (browser
   login for cookie-based tools, `opencli youtube login` for opencli).
 
----
+**Platform-specific recipes and dead ends live in sibling files** — before
+capturing from one of these hosts, read its file first:
 
-## 7. Douyin (抖音) — share-link videos
+| Host | File | What it holds |
+|------|------|---------------|
+| Bilibili | `references/video-bilibili-pitfalls.md` | download/caption traps on top of Path A/B (`-x` trap, aria2c, HTTP 412, channel name, outro garbage) |
+| 抖音 `v.douyin.com` / `douyin.com` | `references/video-douyin.md` | share-link resolution, opencli + mobile-share-page recipes, dead ends |
+| 小红书 `xhslink.com` / `xiaohongshu.com` | `references/video-xiaohongshu.md` | opencli-only recipe (login-walled otherwise), dead ends |
 
-Field-tested on the same live video by two independent agents: with opencli the
-fetch took 4 commands; without it, ~14 approaches failed before the mobile
-share page worked. This section encodes both working recipes and the dead ends
-so the next capture is one straight line. Douyin has **no caption track** —
-it is always Path B (audio → ASR; the content is almost always zh → SenseVoice).
-
-**Step 0 — resolve the share link.** App shares look like
-`https://v.douyin.com/<code>/`:
-
-```bash
-curl -sIL -o /dev/null -w '%{url_effective}\n' 'https://v.douyin.com/<code>/'
-# → https://www.douyin.com/video/<aweme_id>?…      (aweme_id = the 19-digit id)
-```
-
-Canonical `source_url` is `https://www.douyin.com/video/<aweme_id>`;
-`original_id` is the aweme_id.
-
-### Recipe A — opencli (preferred when installed and logged in)
-
-The douyin adapter has **no fetch-by-URL command** — compose from what exists.
-Check `opencli douyin whoami` first; surface `opencli douyin login` if logged out.
-
-```bash
-opencli douyin search '<title keywords>' -f json
-#   confirm the video + author exist (search results carry NO play address)
-opencli web read --url 'https://www.douyin.com/video/<aweme_id>'
-#   → saves the page as markdown; grep the author block for /user/<sec_uid>
-#     (the same markdown also carries the publish time)
-opencli douyin user-videos '<sec_uid>' --with_comments false -f json
-#   → per item: aweme_id, title, duration (s), play_url (signed CDN mp4)
-```
-
-Match your aweme_id in the `user-videos` output and take its `play_url`.
-Caveats: `user-videos` returns the author's **latest ≤20** — an older video
-falls through to Recipe B; the `play_url` is signed and expires within
-minutes — download immediately.
-
-### Recipe B — mobile share page (no opencli, no login)
-
-The **mobile** share page embeds full metadata including an unsigned play
-address. Request it with an iPhone UA — a desktop UA gets an empty JS shell —
-and bypass proxies (China-domestic CDN):
-
-```python
-import json, re, requests
-aweme = "<aweme_id>"
-s = requests.Session(); s.trust_env = False            # drop any http(s)_proxy
-r = s.get(f"https://www.iesdouyin.com/share/video/{aweme}/", timeout=15, headers={
-    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) "
-                  "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"})
-r.encoding = "utf-8"
-raw = re.search(r"window\._ROUTER_DATA\s*=\s*({.*?})\s*</script>", r.text, re.DOTALL).group(1)
-# parse raw as-is — running it through .decode('unicode_escape') mojibakes the CJK (live incident)
-item = json.loads(raw)["loaderData"]["video_(id)/page"]["videoInfoRes"]["item_list"][0]
-meta = {
-    "title":       item["desc"],
-    "author":      item["author"]["nickname"],
-    "sec_uid":     item["author"]["sec_uid"],
-    "create_time": item["create_time"],                       # publish time, epoch seconds
-    "duration_ms": item["video"].get("duration") or item.get("duration"),
-    "play_url":    item["video"]["play_addr"]["url_list"][0], # …/aweme/v1/playwm/?video_id=… → 302 to CDN mp4
-    "cover_url":   (item["video"].get("cover") or item["video"]["origin_cover"])["url_list"][0],
-}
-```
-
-The `playwm` play address is watermarked — irrelevant here, only the audio is
-used. Download it with the same mobile UA + `Referer: https://www.douyin.com/`.
-
-### Common tail (both recipes)
-
-- Download the mp4 (`curl -sL`), then `ffprobe` its duration against the
-  metadata duration (§5) before spending ASR time on it.
-- Extract audio, take the cover from frame 0, and **delete the mp4** — the
-  media is never kept:
-  ```bash
-  ffmpeg -v error -i video.mp4 -ar 16000 -ac 1 audio.wav
-  ffmpeg -v error -i video.mp4 -frames:v 1 -q:v 3 images/cover.jpg
-  rm video.mp4
-  ```
-  (Recipe B's `cover_url` serves **WebP** regardless of extension — if you use
-  it instead of frame 0, convert: `ffmpeg -i cover.webp cover.jpg`.)
-- Run the §2 VAD-first SenseVoice recipe, then §3
-  `srt_to_anchors.py --url 'https://www.douyin.com/video/<aweme_id>'` —
-  anchors get best-effort `?t=<sec>s` links (the Douyin web player ignores
-  them today, but the MM:SS text still indexes the video).
-
-### Dead ends — do not retry (each burned real minutes in a live capture)
-
-- **yt-dlp's Douyin extractor**: `ERROR: Fresh cookies … are needed` — with
-  and without `--cookies-from-browser`, across yt-dlp versions; upgrading
-  yt-dlp does not fix it, nor do fabricated `__ac_nonce`/`s_v_web_id` cookies.
-- **Un-signed official web APIs**: `/aweme/v1/web/aweme/detail` returns an
-  empty body; `/web/api/v2/aweme/iteminfo` returns `encrypt_data_miss`;
-  `/oembed` carries no play data. All want X-Bogus-style request signing —
-  not worth reimplementing.
-- **Third-party resolvers**: TikWM rejects douyin.com URLs; cobalt v7 is shut
-  down and v10 requires auth.
-- **Generic browser automation on www.douyin.com** (navigate + scrape): page
-  loads time out under anti-bot; only an already-authenticated adapter session
-  (Recipe A) gets through reliably.
-
-## 8. 小红书 (Xiaohongshu) — video notes
-
-Field-tested live: one agent failed on every login-free path, then the opencli
-recipe below captured the same 20-minute note (207 MB video + cover + full
-metadata) in under 5 minutes. 小红书 has **no caption track** — always Path B
-(audio → ASR; content is zh → SenseVoice).
-
-The one viable fetcher is **`opencli xiaohongshu`** riding a logged-in Chrome
-session — 小红书 login-walls everything else (see dead ends). Note that
-agent-reach's xiaohongshu backend *is* opencli: `agent-reach doctor` showing
-`xiaohongshu: off` usually means opencli is missing **from that process's
-PATH**, not that a separate backend needs installing.
-
-**Step 0 — preconditions.**
-
-```bash
-opencli xiaohongshu whoami     # logged_in: true — else surface `opencli xiaohongshu login`
-```
-
-App shares carry a short link `http://xhslink.com/o/<code>`; the note id is the
-24-hex token in the resolved URL. Canonical `source_url` is
-`https://www.xiaohongshu.com/discovery/item/<note_id>` (strip the query — the
-`xsec_token` in it is per-share and ephemeral); `original_id` is the note id.
-
-### The recipe
-
-`download` accepts the **xhslink short link directly** — no resolving needed:
-
-```bash
-opencli xiaohongshu download 'http://xhslink.com/o/<code>' --output <tmpdir> \
-  > download.log 2>&1
-# → <tmpdir>/<note_id>/<note_id>_1.mp4 (the video) + _2.jpg… (cover/images)
-```
-
-Redirect the output: the progress bar spams `\r` frames (hundreds of KB) that
-will flood an agent transcript. A 200 MB video takes a few minutes — for long
-notes apply the §4 background+poll discipline.
-
-Metadata comes from `note`, which does **not** take a bare note id — it wants a
-full signed URL (`xsec_token` included). Resolve the short link to get one:
-
-```bash
-url=$(curl -s -o /dev/null -w '%{url_effective}' -L --max-time 15 'http://xhslink.com/o/<code>')
-opencli xiaohongshu note "$url" -f yaml
-# → title, author, content (the note text — keep it as the 简介), likes,
-#   collects, comments, tags.  NO publish time — if you need one, grab it from
-#   the note page via `opencli web read --url "$url"`, else omit --publish-time.
-```
-
-### Common tail
-
-Same as Douyin §7: `ffprobe` the mp4 duration for sanity (§5), extract
-16 kHz mono wav, keep the downloaded cover jpg (or take frame 0), **delete the
-mp4**, run §2 SenseVoice, then §3 `srt_to_anchors.py --url
-'https://www.xiaohongshu.com/discovery/item/<note_id>'` — the 小红书 player
-ignores `?t=` params today, so anchors are index-only, same as Douyin.
-
-### Dead ends — do not retry (from a live failed capture)
-
-- **Login-free browser automation**: xiaohongshu.com redirects any fresh
-  session to a `website-login/error` page (`error_code=300012 "IP at risk"`)
-  before content renders.
-- **tavily-extract / plain HTTP readers** on `discovery/item/<id>` URLs:
-  `Failed to fetch url` — same login wall.
-- **`opencli xiaohongshu note <bare-note-id>`**: hard error
-  `requires a full signed URL` — always pass the resolved URL with `xsec_token`.
-- **A daemon agent seeing `which opencli` fail while it's installed**: daemon
-  terminals snapshot a `bash -l` env, which reads `~/.profile` /
-  `~/.bash_profile` — **not** `~/.zprofile`, where npm-global PATH exports
-  usually live. Fix the PATH (export in `~/.profile`, or symlink opencli into
-  `~/.local/bin`) instead of concluding the tool is absent.
+Each platform file assumes this SOP: it supplies only fetch + metadata; the
+contract (§1), ASR (§2), assembly (§3), long-run discipline (§4), and
+verification (§5) stay here.
