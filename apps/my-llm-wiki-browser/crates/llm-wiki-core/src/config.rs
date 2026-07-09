@@ -10,9 +10,7 @@ pub struct CoreConfig {
 
 impl CoreConfig {
     pub fn from_env() -> Self {
-        let home = env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."));
+        let home = crate::paths::home_dir().unwrap_or_else(|| PathBuf::from("."));
         let registry_path = env::var_os("LLM_WIKI_REGISTRY")
             .map(PathBuf::from)
             .unwrap_or_else(|| home.join(".my-llm-wiki").join("wikis.json"));

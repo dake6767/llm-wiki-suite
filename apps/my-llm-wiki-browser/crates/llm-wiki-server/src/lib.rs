@@ -645,13 +645,10 @@ fn expand_home_path(path: impl AsRef<Path>) -> PathBuf {
         return path.to_path_buf();
     };
     if text == "~" {
-        return std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| path.to_path_buf());
+        return llm_wiki_core::paths::home_dir().unwrap_or_else(|| path.to_path_buf());
     }
     if let Some(rest) = text.strip_prefix("~/") {
-        return std::env::var_os("HOME")
-            .map(PathBuf::from)
+        return llm_wiki_core::paths::home_dir()
             .unwrap_or_else(|| PathBuf::from("~"))
             .join(rest);
     }
