@@ -5,6 +5,7 @@ import {
   listConfigWikis,
   restartServer,
   setAutostart,
+  setDefaultWiki,
   updateServerPort,
   type WikiConfigInfo,
 } from "../api/client";
@@ -109,6 +110,7 @@ export default function DesktopConfig() {
                 wikis={wikis}
                 loading={loading}
                 error={error}
+                onWikisChange={setWikis}
               />
             ) : (
               <RuntimePanel />
@@ -137,11 +139,28 @@ function WikiDirectoryPanel({
   wikis,
   loading,
   error,
+  onWikisChange,
 }: {
   wikis: WikiConfigInfo[];
   loading: boolean;
   error: string | null;
+  onWikisChange: (wikis: WikiConfigInfo[]) => void;
 }) {
+  const [savingKey, setSavingKey] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  async function makeDefault(key: string) {
+    setSaveError(null);
+    setSavingKey(key);
+    try {
+      onWikisChange(await setDefaultWiki(key));
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : "设置失败");
+    } finally {
+      setSavingKey(null);
+    }
+  }
+
   if (loading) {
     return <PanelMessage title="读取中" body="正在读取本机 Wiki 注册表。" />;
   }
@@ -160,6 +179,11 @@ function WikiDirectoryPanel({
         <span>Wiki</span>
         <span>Directories</span>
       </div>
+      {saveError ? (
+        <p className="border-b border-[var(--rule-soft)] bg-cinnabar/10 px-5 py-3 text-sm text-cinnabar">
+          {saveError}
+        </p>
+      ) : null}
       {wikis.map((wiki) => (
         <article
           key={wiki.key}
@@ -174,7 +198,17 @@ function WikiDirectoryPanel({
                 <span className="rounded-sm bg-cinnabar px-1.5 py-0.5 font-mono text-[0.62rem] uppercase tracking-[0.14em] text-paper">
                   default
                 </span>
-              ) : null}
+              ) : (
+                <button
+                  type="button"
+                  disabled={savingKey !== null}
+                  onClick={() => void makeDefault(wiki.key)}
+                  title="打开 WIKI 时默认进入这个库"
+                  className="rounded-sm border border-[var(--rule)] px-1.5 py-0.5 font-mono text-[0.62rem] uppercase tracking-[0.14em] text-ink-faint transition hover:border-cinnabar hover:text-cinnabar disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {savingKey === wiki.key ? "设置中…" : "设为默认"}
+                </button>
+              )}
             </div>
             <p className="font-mono mt-1 text-xs text-ink-faint">
               {wiki.key} · {wiki.page_count} pages

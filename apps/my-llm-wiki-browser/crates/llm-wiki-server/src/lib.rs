@@ -13,7 +13,7 @@ use axum::{
     http::{HeaderValue, Request, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, post, put},
 };
 use llm_wiki_core::{
     FullTextSearcher, IndexManager, PageRecord, WikiIndex, config::CoreConfig,
@@ -72,6 +72,8 @@ struct AppState {
     port: u16,
     control: Option<ServerControl>,
     share_url: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
+    /// 设置默认 wiki 需要改写注册表文件；`None`（如测试/无注册表场景）时该操作不可用。
+    registry_config: Option<Arc<CoreConfig>>,
     _wiki_watcher: Option<Arc<Mutex<RecommendedWatcher>>>,
 }
 
@@ -80,7 +82,7 @@ pub fn build_router(config: ServerConfig) -> Router {
     let searcher = Arc::new(Mutex::new(config.searcher));
     let registry_config = config.registry_config.clone();
     let wiki_watcher = if config.watch_wikis {
-        start_wiki_watcher(manager.clone(), searcher.clone(), registry_config)
+        start_wiki_watcher(manager.clone(), searcher.clone(), registry_config.clone())
     } else {
         None
     };
@@ -91,12 +93,14 @@ pub fn build_router(config: ServerConfig) -> Router {
         port: config.port,
         control: config.control,
         share_url: config.share_url,
+        registry_config: registry_config.map(Arc::new),
         _wiki_watcher: wiki_watcher,
     };
     let api = Router::new()
         .route("/healthz", get(healthz))
         .route("/wikis", get(list_wikis))
         .route("/config/wikis", get(list_config_wikis))
+        .route("/config/wikis/default", put(put_default_wiki))
         .route(
             "/config/server",
             get(get_server_config).put(put_server_config),
@@ -773,6 +777,89 @@ async fn list_config_wikis(
     Ok(Json(out))
 }
 
+/// 设置默认 wiki：只改注册表文件里的 `default` 字段（未登记的 wiki 会补一条），
+/// 写完同步重载索引，响应直接返回新列表。文件变更还会触发 watcher 再重载一次，
+/// 幂等无害。
+async fn put_default_wiki(
+    State(state): State<AppState>,
+    Json(update): Json<DefaultWikiUpdate>,
+) -> Result<Json<Vec<WikiConfigInfo>>, ApiError> {
+    let Some(config) = state.registry_config.clone() else {
+        return Err(ApiError::not_supported("当前环境不支持修改默认 WIKI"));
+    };
+    let root_dir = {
+        let manager = read_manager(&state)?;
+        manager
+            .wikis
+            .values()
+            .find(|idx| idx.entry.key == update.key)
+            .map(|idx| idx.entry.root_dir.clone())
+            .ok_or(ApiError::not_found("wiki 不存在"))?
+    };
+    write_registry_default(&config, &root_dir).map_err(|err| {
+        tracing::warn!(error = %err, "failed to write wiki registry");
+        ApiError::internal("写入注册表失败")
+    })?;
+    reload_registry_index(&config, &state.manager, &state.searcher).map_err(|err| {
+        tracing::warn!(error = %err, "failed to reload registry after default change");
+        ApiError::internal("重载注册表失败")
+    })?;
+    list_config_wikis(State(state)).await
+}
+
+/// 把注册表文件里 `root` 对应的条目标成唯一 default。经 `serde_json::Value` 读改写，
+/// 未涉及的字段与条目原样保留（注册表也被 skill 脚本读写，不能丢字段）。
+fn write_registry_default(config: &CoreConfig, root: &Path) -> Result<(), String> {
+    let registry_path = expand_home_path(&config.registry_path);
+    let mut data: serde_json::Value = match std::fs::read_to_string(&registry_path) {
+        Ok(text) => serde_json::from_str(&text).map_err(|err| err.to_string())?,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+        Err(err) => return Err(err.to_string()),
+    };
+    let Some(obj) = data.as_object_mut() else {
+        return Err("注册表根节点不是 JSON 对象".to_string());
+    };
+    let wikis = obj
+        .entry("wikis")
+        .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+    let Some(items) = wikis.as_array_mut() else {
+        return Err("注册表 wikis 字段不是数组".to_string());
+    };
+
+    let mut found = false;
+    for item in items.iter_mut() {
+        let Some(entry) = item.as_object_mut() else {
+            continue;
+        };
+        let is_target = entry
+            .get("path")
+            .and_then(|path| path.as_str())
+            .is_some_and(|path| expand_home_path(path) == root);
+        if is_target {
+            found = true;
+            entry.insert("default".to_string(), serde_json::Value::Bool(true));
+        } else if entry
+            .get("default")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+        {
+            entry.insert("default".to_string(), serde_json::Value::Bool(false));
+        }
+    }
+    if !found {
+        items.push(serde_json::json!({
+            "path": root.to_string_lossy(),
+            "default": true,
+        }));
+    }
+
+    if let Some(parent) = registry_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+    let text = serde_json::to_string_pretty(&data).map_err(|err| err.to_string())?;
+    std::fs::write(&registry_path, text + "\n").map_err(|err| err.to_string())
+}
+
 async fn get_server_config(State(state): State<AppState>) -> Json<ServerConfigInfo> {
     Json(ServerConfigInfo { port: state.port })
 }
@@ -1413,6 +1500,11 @@ struct ShareConfigInfo {
 #[derive(Debug, Deserialize)]
 struct ServerConfigUpdate {
     port: u16,
+}
+
+#[derive(Debug, Deserialize)]
+struct DefaultWikiUpdate {
+    key: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -2298,6 +2390,95 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert!(std::str::from_utf8(&body).unwrap().contains("shell"));
+    }
+
+    #[tokio::test]
+    async fn put_default_wiki_rewrites_registry_and_reloads() {
+        let tmp = tempfile::tempdir().unwrap();
+        for key in ["alpha", "beta"] {
+            let wiki_dir = tmp.path().join(key).join("wiki");
+            fs::create_dir_all(&wiki_dir).unwrap();
+            fs::write(wiki_dir.join("home.md"), "---\ntitle: Home\n---\nhi").unwrap();
+        }
+        let registry_path = tmp.path().join("wikis.json");
+        fs::write(
+            &registry_path,
+            serde_json::json!({
+                "wikis": [
+                    {"path": tmp.path().join("alpha"), "name": "Alpha", "default": true, "extra": "keep-me"},
+                    {"path": tmp.path().join("beta"), "name": "Beta"},
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let config = CoreConfig {
+            registry_path: registry_path.clone(),
+            wiki_dirs: vec![],
+            cache_dir: tmp.path().join(".cache"),
+        };
+
+        let manager = IndexManager::build(load_registry(&config).unwrap().into_values()).unwrap();
+        let app = build_router(ServerConfig {
+            frontend_dist: None,
+            index_manager: manager,
+            searcher: FullTextSearcher::in_memory().unwrap(),
+            auth_token: String::new(),
+            watch_wikis: false,
+            registry_config: Some(config),
+            port: 8800,
+            control: None,
+            share_url: None,
+        });
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/v1/config/wikis/default")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"key":"beta"}"#))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let wikis: Vec<WikiConfigInfo> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(wikis[0].key, "beta");
+        assert!(wikis[0].default);
+        assert!(!wikis.iter().any(|wiki| wiki.key == "alpha" && wiki.default));
+
+        // 文件被改写：default 唯一转移到 beta，其余字段原样保留。
+        let saved: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&registry_path).unwrap()).unwrap();
+        let items = saved["wikis"].as_array().unwrap();
+        let alpha = items.iter().find(|i| i["name"] == "Alpha").unwrap();
+        let beta = items.iter().find(|i| i["name"] == "Beta").unwrap();
+        assert_eq!(alpha["default"], serde_json::json!(false));
+        assert_eq!(alpha["extra"], serde_json::json!("keep-me"));
+        assert_eq!(beta["default"], serde_json::json!(true));
+
+        // 索引同步重载：后续 GET 也看到新 default。
+        let listed: Vec<WikiConfigInfo> = get_json(&app, "/api/v1/config/wikis").await;
+        assert_eq!(listed[0].key, "beta");
+        assert!(listed[0].default);
+
+        // 未知 key → 404。
+        let missing = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/v1/config/wikis/default")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"key":"nope"}"#))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

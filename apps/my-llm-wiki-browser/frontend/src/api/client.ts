@@ -209,6 +209,9 @@ export interface ReviewResponse {
 export const listWikis = () => api<WikiInfo[]>("/api/v1/wikis");
 export const listConfigWikis = () =>
   api<WikiConfigInfo[]>("/api/v1/config/wikis");
+// 设为默认 wiki：服务端改写注册表并热重载，返回更新后的完整列表。
+export const setDefaultWiki = (key: string) =>
+  send<WikiConfigInfo[]>("/api/v1/config/wikis/default", "PUT", { key });
 export const getServerConfig = () =>
   api<ServerConfigInfo>("/api/v1/config/server");
 // 持久化新端口（需重启生效）。
