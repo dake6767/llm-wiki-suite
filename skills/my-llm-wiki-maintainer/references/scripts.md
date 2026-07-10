@@ -85,10 +85,19 @@ This deterministic fallback unions `sources`, `tags`, and `related` (normalizing
 
 ```bash
 wiki_ops.py review list /path/to/wiki --status open
+wiki_ops.py review get /path/to/wiki review-20260611-0001
+wiki_ops.py review find /path/to/wiki --type contradiction --status open --limit 5
+wiki_ops.py review find /path/to/wiki --q "检索 质量"
 wiki_ops.py review add-blocks /path/to/wiki --blocks-file /tmp/output.txt --source raw/sources/file.md
 wiki_ops.py review resolve /path/to/wiki review-20260611-0001 --action researched
 wiki_ops.py sweep-reviews /path/to/wiki
 ```
+
+`get`/`find` are the context-budget entry points: they print one item / a
+filtered subset as full JSON so handling a single to-do never requires reading
+the whole `review.json` into context. `find --q` requires every space-separated
+keyword to match title/description/pages/queries; default `--status open`,
+`--limit 10`.
 
 `sweep-reviews` implements only deterministic stale-review rules. Use the LLM semantic sweep from `references/review-research.md` for ambiguous remaining items.
 
@@ -123,6 +132,7 @@ wiki_ops.py lint /path/to/wiki
 wiki_ops.py lint /path/to/wiki --exit-code                 # cron/CI gate: non-zero on warnings+
 wiki_ops.py lint /path/to/wiki --exit-code --fail-on error # only hard errors trip the gate
 wiki_ops.py trace /path/to/wiki ingest.analysis --source raw/sources/file.md --input-chars 12000 --output-chars 3000
+wiki_ops.py trace /path/to/wiki query.retrieval --backend browser --candidates 8 --pages-read 4 --context-chars 21000
 ```
 
 `lint` writes `.llm-wiki/lint.json` and always prints `{count, failing, fail_on, issues}`.
@@ -130,7 +140,10 @@ By default it exits 0 (report-only). `--exit-code` turns it into a **cron/CI gat
 it exits 1 when any issue at or above `--fail-on` (severity ranking `info < warning <
 error`, default `warning`) exists, so broken links / missing frontmatter fail a scheduled
 health check while advisory `info` items (orphans, no-outlinks) don't. `trace` appends
-JSONL to `.llm-wiki/agent/token-trace.jsonl`.
+JSONL to `.llm-wiki/agent/token-trace.jsonl`; the retrieval flags (`--backend
+mcp|browser|local`, `--candidates`, `--pages-read`, `--context-chars`,
+`--prompt-tokens`, `--cache-read-tokens`) are the runtime-agnostic counters used
+for cross-host before/after comparison (see `project-protocol.md` → Token Policy).
 
 ## Lint Scope (incremental semantic lint)
 
@@ -206,6 +219,39 @@ It always exits 0 and prints JSON. On success: `available: true` and `hits[]`,
 each hit carrying `file` (project-relative, e.g. `wiki/concepts/x.md` — read it
 directly), `title`, `type`, `snippet` (with `<mark>` highlights), `score`. On
 `available: false` (`browser-unavailable`, `wiki-key-unresolved`,
-`unauthorized`, …) **fall back silently** to the manual keyword scan in the
-Query SOP — the browser is optional and its absence is a normal state, not an
-error to surface.
+`unauthorized`, …) **fall back silently** to `local-search` below — the browser
+is optional and its absence is a normal state, not an error to surface.
+
+## Local Bounded Search (retrieval fallback tier)
+
+```bash
+wiki_ops.py local-search /path/to/wiki --q "检索词" --top 8
+wiki_ops.py local-search /path/to/wiki --q "检索词" --max-file-chars 8000
+```
+
+`local-search` is the **last tier** of the retrieval chain (Browser MCP →
+`browser-search` → this). Pure stdlib, no Browser required — it exists so every
+SOP stays fully usable without the optional Browser, just slightly more
+expensive. Bounded by design: scans at most `--max-file-chars` per page for
+scoring, returns top-k snippet-sized hits (`backend: "local"`, same `hits[]`
+shape as `browser-search`), and never returns whole files. Title hits weigh
+5x body occurrences; an exact/prefix whole-query title match pins to the top.
+`index.md`/`log.md`/`overview.md` are excluded.
+
+## Read Pages (budgeted context packing)
+
+```bash
+wiki_ops.py read-pages /path/to/wiki --paths "wiki/concepts/a.md,wiki/entities/b.md"
+wiki_ops.py read-pages /path/to/wiki --paths-file /tmp/cands.json \
+  --max-pages 5 --max-chars-per-page 6000 --max-total-chars 24000
+```
+
+`read-pages` packs search candidates into a bounded context — the local mirror
+of the Browser MCP `read_pages` tool (same budgets, same semantics). At most
+`--max-pages` pages (clamped to 20); each body truncated to
+`--max-chars-per-page` (`truncated: true` when clipped); the whole result capped
+at `--max-total-chars`. Output: `{budget, totalChars, pages[], missing[],
+omitted[]}` — `missing` are paths with no file, `omitted` are paths dropped by
+the page/total budget (so the caller knows what was left unread). Prefer
+`--paths-file` (JSON array or one path per line) for CJK-heavy lists. Use this
+instead of `cat` for reading wiki pages during ingest/query.

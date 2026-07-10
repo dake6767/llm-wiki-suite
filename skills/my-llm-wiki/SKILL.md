@@ -57,6 +57,16 @@ visible across a long fetch or transcription. After normalization, pass the exac
 resolved wiki root and the exact newly written RAW path into the maintainer's
 Ingest flow.
 
+**Run synthesis in a clean context where the host supports it.** The capture
+conversation typically carries the full fetched payload; dragging it into the
+synthesis phase re-bills that history on every maintainer tool call. When the
+host has a delegation mechanism (a subagent, a delegated task, an independent
+run), delegate the maintainer ingest to a fresh context and hand over **only the
+wiki root and the RAW path(s)** — RAW is the complete faithful record by design,
+so nothing is lost. This does NOT change the user-visible same-turn contract:
+both gates still complete, and one combined report still lands in the same turn.
+On hosts without delegation, proceed in-session as before.
+
 The combined request is complete only when:
 
 1. RAW normalization succeeded; and

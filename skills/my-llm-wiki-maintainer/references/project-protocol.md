@@ -98,11 +98,28 @@ Do not store project state outside the project root except for temporary scratch
 
 ## Token Policy
 
-Track expensive calls by scope:
+Track expensive calls by scope. `.llm-wiki/agent/token-trace.jsonl` is written by
+the skill in the project root, so it is the **only runtime-agnostic meter** — a
+host's own accounting (e.g. Hermes' state.db) sees only that host, while the
+trace makes before/after and cross-host comparison possible.
+
+Analysis/synthesis steps record chars:
 
 ```json
 {"scope":"ingest.analysis","projectRoot":"/abs/project","source":"raw/sources/a.md","inputChars":12000,"outputChars":3000,"createdAt":"2026-06-11T00:00:00Z"}
 ```
+
+Retrieval steps record the backend and what was packed (all flags on
+`wiki_ops.py trace`):
+
+```json
+{"scope":"query.retrieval","projectRoot":"/abs/project","backend":"browser","candidates":8,"pagesRead":4,"contextChars":21000,"createdAt":"2026-07-10T00:00:00Z"}
+```
+
+- `backend`: `mcp` | `browser` | `local` — which retrieval tier served the step.
+- `candidates`: search hits considered; `pagesRead`: pages actually packed.
+- `contextChars`: chars that entered the prompt context for this step.
+- `promptTokens` / `cacheReadTokens`: exact counts when the host exposes them.
 
 Use character counts when exact token usage is unavailable. The purpose is observability, not billing accuracy.
 

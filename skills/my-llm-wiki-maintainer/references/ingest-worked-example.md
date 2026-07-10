@@ -18,11 +18,14 @@ Always verify unless the caller gave an explicit, verified root:
 python3 scripts/wiki_ops.py resolve-root <path>
 ```
 
-## Step 2 — Read project context
+## Step 2 — Read project context (O(1) files only)
 
-Read `purpose.md`, `schema.md`, and `wiki/index.md` from the wiki root. These
-three files tell you: what the wiki is about, what page types exist, and what's
-already there (so you can cross-link and avoid duplicates).
+Read `purpose.md` and `schema.md` from the wiki root — what the wiki is about
+and what page types exist. Do **not** read `wiki/index.md` into context:
+"what's already there" comes from bounded retrieval in Step 5 (per-name
+`browser-search` / `local-search` + `read-pages`) plus the zero-cost disk grep
+sentinel (`grep -F "[[entities/<name>" wiki/index.md`). On a grown wiki a full
+index in the prompt is re-billed on every subsequent call of the session.
 
 ## Step 3 — Probe source size
 
@@ -42,9 +45,19 @@ python3 scripts/wiki_ops.py source-page <root> --raw <raw/sources/path.md> --url
 - `existing: null` → create a new source page
 - `existing: "wiki/sources/..."` → merge into that page (use `merge-page`)
 
-## Step 5 — Analyze the source
+## Step 5 — Retrieve the working set, then analyze
 
-Read the full raw source text. Identify:
+Read the full raw source text and extract the candidate entity/concept names it
+touches. Then, **per extracted name, one bounded search** (never a single topic
+query for the whole source — that collapses working-set recall from ~97% to ~28%):
+
+```bash
+python3 scripts/wiki_ops.py browser-search <root> --q "朱元璋" --top 8
+python3 scripts/wiki_ops.py local-search <root> --q "朱元璋" --top 8   # Browser absent
+```
+
+Pack the top 3–5 candidate pages with `read-pages` (defaults: 5 pages / 6000
+chars per page / 24000 total), then identify:
 - **Key entities and concepts** — what's already in the wiki vs what's new
 - **Main arguments and evidence**
 - **Connections to existing pages** — for cross-links

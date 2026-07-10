@@ -5,10 +5,62 @@
 Goal: compile one raw source into durable wiki pages while preserving traceability.
 
 1. Resolve project root.
-2. Read `purpose.md`, `schema.md`, and `wiki/index.md`.
+2. Read `purpose.md` and `schema.md` (both O(1); naming and classification rules
+   live in `schema.md`). Do **NOT** read `wiki/index.md` into context — not full,
+   not compact. Awareness of existing pages comes from the bounded retrieval
+   working set (step 5) plus the zero-context disk grep sentinel; a full index in
+   the prompt costs O(wiki) tokens on **every** subsequent model call in the
+   session and is the single largest measured waste in maintainer sessions.
 3. Extract source text and compute a hash.
 4. Check `.llm-wiki/agent/ingest-cache.json`. If hash and written files are unchanged, skip full ingest.
-5. Build a compact index for prompts. Keep full `index.md` on disk.
+5. Build the **retrieval working set** — O(top-k), never O(wiki):
+
+   1. From the source's title and a skim of its body, extract the candidate
+      entity/concept names this source touches (the same names steps 6–7 will
+      decide pages for).
+   2. **Per extracted name, one bounded search** — this retrieval discipline is
+      the load-bearing rule:
+
+      ```bash
+      python3 scripts/wiki_ops.py browser-search <root> --q "<name>" --top 8
+      # Browser absent (available: false) → same shape, local fallback:
+      python3 scripts/wiki_ops.py local-search <root> --q "<name>" --top 8
+      ```
+
+      Fall back silently; the Browser is optional and every step here must work
+      without it (just slightly more expensive). Do NOT compress this into one
+      topic query per source: measured working-set recall drops from ~97% to
+      ~28% (quality eval Test C) while saving only ~2KB of context.
+   3. Pack the candidate pages under a hard budget — read at most 3–5 pages:
+
+      ```bash
+      python3 scripts/wiki_ops.py read-pages <root> --paths-file /tmp/cands.json \
+        --max-pages 5 --max-chars-per-page 6000 --max-total-chars 24000
+      ```
+
+      (When the Browser MCP is connected, `search_wiki` + `read_pages` are the
+      same two operations as MCP tools — same backend, same budgets.)
+   4. **Disk grep sentinel (keep it).** Before creating any new content page,
+      check for an existing page with a disk grep — zero context cost:
+
+      ```bash
+      grep -F "[[entities/<name>" <root>/wiki/index.md
+      ```
+
+      The grep is a disk operation and complements the per-name search; what
+      this SOP removed is only "read the index *into context*", never the grep.
+   5. **Hard context budget.** Never put the full `wiki/index.md`, a full
+      wiki tree listing, or the whole `review.json` into context during ingest.
+      A `compact-index --no-desc` load is acceptable only for a small wiki
+      (listing under ~10k chars); large wikis get their global pass in review
+      batches instead (see `review-research.md` → Link Densification).
+   6. Record the retrieval trace so before/after comparisons stay possible on
+      any host:
+
+      ```bash
+      python3 scripts/wiki_ops.py trace <root> ingest.retrieval --backend browser \
+        --candidates 8 --pages-read 4 --context-chars 21000
+      ```
 
    **Size gate (large sources).** Before analyzing, run
    `scripts/wiki_ops.py probe-source <root> --raw <source>`. If it returns
@@ -22,8 +74,11 @@ Goal: compile one raw source into durable wiki pages while preserving traceabili
 6. Run analysis:
    - Key entities and concepts.
    - Main arguments and evidence strength.
-   - Connections to existing pages.
-   - Contradictions or tensions.
+   - Connections to existing pages (from the step-5 working set; the conflict
+     sentinel's `neighbors` expansion below catches one hop further).
+   - Contradictions or tensions with the working-set pages. Cross-cluster
+     contradictions that top-k retrieval cannot see are the review queue's job —
+     when in doubt file a review item, do not re-read the wiki wholesale.
    - Pages to create/update and review gaps.
 7. Generate FILE/REVIEW blocks. Require:
    - Source summary at `wiki/sources/<source-slug>.md`. Give it a **short, readable slug in the source's language** (3–6 words from the title/topic, e.g. `野生小虎-出海seo小游戏案例`) — do NOT dump the whole raw filename. First run `scripts/wiki_ops.py source-page` for dedup (see Source Identity below).
