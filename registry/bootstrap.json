@@ -24,6 +24,58 @@
     "_note": "Single machine-readable catalog for capture capability profiles, tool probes, install commands, and mainland-China variants. Skills declare profile ids in registry/skills.json; preflight.py evaluates only the requested profiles. Tool installation is always opt-in.",
     "catalog": "skills/my-llm-wiki/references/toolchain.json"
   },
+  "mcp": {
+    "_note": "Single source of truth for Browser MCP registration across hosts (parallel to default_skill_targets). The Browser serves MCP at {endpoint} behind the same Bearer token as /api/v1. Registration recipes are each host's OWN `mcp add` command — install-browser.py proposes them after install and runs one only with explicit per-host consent (never edits a host config file directly); doctor.py reports 'Browser installed but host X unregistered' and stale entries. MCP is an access form, not the capability itself: hosts without MCP reach the same backend through wiki_ops.py browser-search / local-search / read-pages, fully equivalent.",
+    "server_name": "my-llm-wiki",
+    "endpoint": "http://127.0.0.1:{port}/mcp",
+    "port_resolution": {
+      "pref_file": "~/.my-llm-wiki/connector/server-port",
+      "env": "PORT",
+      "default": 8800
+    },
+    "token_file": "~/.my-llm-wiki/connector/token",
+    "hosts": {
+      "claude": {
+        "detect_dir": "~/.claude",
+        "cli": "claude",
+        "config_path": "~/.claude.json",
+        "registered_check": {"format": "json", "pointer": ["mcpServers", "my-llm-wiki"]},
+        "register_command": "claude mcp add --scope user --transport http my-llm-wiki {endpoint} --header \"Authorization: Bearer {token}\"",
+        "unregister_command": "claude mcp remove --scope user my-llm-wiki"
+      },
+      "hermes": {
+        "detect_dir": "~/.hermes",
+        "cli": "hermes",
+        "config_path": "~/.hermes/config.yaml",
+        "registered_check": {"format": "text", "marker": "my-llm-wiki"},
+        "register_command": "hermes mcp add my-llm-wiki --url {endpoint} --auth header",
+        "unregister_command": "hermes mcp remove my-llm-wiki"
+      },
+      "codex": {
+        "detect_dir": "~/.codex",
+        "cli": "codex",
+        "config_path": "~/.codex/config.toml",
+        "registered_check": {"format": "text", "marker": "mcp_servers.my-llm-wiki"},
+        "register_command": "codex mcp add my-llm-wiki --url {endpoint} --bearer-token-env-var LLM_WIKI_WEB_TOKEN",
+        "register_note": "Codex reads the bearer token from $LLM_WIKI_WEB_TOKEN — export LLM_WIKI_WEB_TOKEN=\"$(cat ~/.my-llm-wiki/connector/token)\" in the profile Codex runs from.",
+        "unregister_command": "codex mcp remove my-llm-wiki"
+      },
+      "agents": {
+        "detect_dir": "~/.agents",
+        "cli": null,
+        "config_path": null,
+        "register_command": null,
+        "register_note": "No MCP registration CLI known for this host — use the equivalent CLI fallback (wiki_ops.py browser-search / local-search / read-pages)."
+      },
+      "workbuddy": {
+        "detect_dir": "~/.workbuddy",
+        "cli": null,
+        "config_path": null,
+        "register_command": null,
+        "register_note": "No MCP registration CLI known for this host — use the equivalent CLI fallback (wiki_ops.py browser-search / local-search / read-pages)."
+      }
+    }
+  },
   "browser": {
     "slug": "my-llm-wiki-browser",
     "collection_path": "apps/my-llm-wiki-browser",

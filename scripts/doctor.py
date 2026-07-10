@@ -46,6 +46,14 @@ from skill_graph import SkillGraphError, resolve_selection  # noqa: E402
 sys.path.insert(0, str(REPO_ROOT / "skills" / "my-llm-wiki" / "scripts"))
 import preflight as capture_preflight  # noqa: E402
 
+# install-browser.py owns the MCP registration recipes (build_mcp_commands);
+# import it under a module-safe name so doctor reuses the same resolution.
+import importlib.util as _ilu  # noqa: E402
+
+_spec = _ilu.spec_from_file_location("install_browser", REPO_ROOT / "scripts" / "install-browser.py")
+install_browser = _ilu.module_from_spec(_spec)
+_spec.loader.exec_module(install_browser)
+
 
 def expand(p: str) -> Path:
     return Path(os.path.expanduser(p))
@@ -237,6 +245,58 @@ def check_browser(bootstrap: dict) -> dict:
                 "detail": f"not reachable at {url} (port from {port_src}) — Browser optional / not running"}
 
 
+def check_mcp(bootstrap: dict, browser: dict) -> dict:
+    """Browser-MCP registration state per host.
+
+    - Browser installed but a host with a known register command has no entry →
+      warn with the one-line fix.
+    - Host has an entry but the Browser is gone → warn about the stale entry
+      (a broken MCP config pollutes the host's startup).
+    - Browser absent and nothing registered → skip: the Browser is an optional
+      component, skills use the CLI fallback — not a defect.
+    """
+    mcp = bootstrap.get("mcp")
+    if not mcp:
+        return {"status": "skip", "detail": "no mcp block in bootstrap.json"}
+    connector_files = [mcp.get("token_file"), (mcp.get("port_resolution") or {}).get("pref_file")]
+    browser_present = browser.get("status") == "ok" or any(
+        p and expand(p).is_file() for p in connector_files
+    )
+    rows = install_browser.build_mcp_commands(bootstrap)
+    hosts_out = []
+    warns = []
+    for row in rows:
+        host = {"host": row["host"], "registered": row["registered"]}
+        if row["registered"]:
+            if not browser_present:
+                host["issue"] = "stale-entry"
+                warns.append(
+                    f"{row['host']}: MCP entry present but Browser not installed — "
+                    f"remove it: {row['unregister_command'] or 'see host config'}"
+                )
+        elif row["command"] and browser_present:
+            host["issue"] = "unregistered"
+            warns.append(
+                f"{row['host']}: Browser installed but MCP not registered — "
+                "run: python3 scripts/install-browser.py --register-mcp"
+            )
+        hosts_out.append(host)
+    if not rows:
+        return {"status": "skip", "detail": "no agent host dirs detected"}
+    if not browser_present and not any(r["registered"] for r in rows):
+        return {"status": "skip", "browser_present": False, "hosts": hosts_out,
+                "detail": "Browser not installed (optional) — skills use the CLI fallback"}
+    status = "warn" if warns else "ok"
+    detail = (
+        "; ".join(warns)
+        if warns
+        else "registered: "
+        + (", ".join(r["host"] for r in rows if r["registered"]) or "none needed")
+    )
+    return {"status": status, "browser_present": browser_present,
+            "hosts": hosts_out, "warnings": warns, "detail": detail}
+
+
 def check_toolchain(bootstrap: dict, selection: dict) -> dict:
     profiles = selection.get("profiles", [])
     base = {
@@ -285,13 +345,15 @@ def build_report(
         return {"fatal": f"skill graph invalid: {exc}"}
     selected_slugs = {s["slug"] for s in selection["skills"]}
 
+    browser = check_browser(bootstrap)
     components = {
         "repo_home": check_repo_home(bootstrap),
         "skills": check_skills(
             bootstrap, skills_registry, selected_slugs, target_dirs=target_dirs
         ),
         "wiki_registry": check_wiki(bootstrap),
-        "browser": check_browser(bootstrap),
+        "browser": browser,
+        "mcp": check_mcp(bootstrap, browser),
         "toolchain": check_toolchain(bootstrap, selection),
     }
     overall = "ok"
@@ -325,6 +387,9 @@ def render_human(report: dict) -> str:
 
     br = c["browser"]
     lines.append(f"{_ICON[br['status']]} browser      {br['detail']}")
+
+    mc = c["mcp"]
+    lines.append(f"{_ICON[mc['status']]} mcp          {mc['detail']}")
 
     tc = c["toolchain"]
     if tc["status"] == "skip":

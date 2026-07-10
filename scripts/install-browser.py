@@ -156,6 +156,163 @@ def maybe_open(path: Path, dry_run: bool) -> None:
     subprocess.run(["open", str(path)], check=False)
 
 
+def expand(path: str) -> Path:
+    return Path(os.path.expanduser(path))
+
+
+def resolve_mcp_port(mcp: dict) -> int:
+    res = mcp.get("port_resolution") or {}
+    pref = res.get("pref_file")
+    if pref:
+        try:
+            value = int(expand(pref).read_text(encoding="utf-8").strip())
+            if value >= 1024:
+                return value
+        except (OSError, ValueError):
+            pass
+    env_name = res.get("env", "PORT")
+    env_value = os.environ.get(env_name, "").strip()
+    if env_value.isdigit() and int(env_value) >= 1024:
+        return int(env_value)
+    return res.get("default", 8800)
+
+
+def read_mcp_token(mcp: dict) -> str | None:
+    token_file = mcp.get("token_file")
+    if not token_file:
+        return None
+    try:
+        value = expand(token_file).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return value or None
+
+
+def host_mcp_registered(host: dict, server_name: str) -> bool | None:
+    """True/False when determinable, None when the host declares no config."""
+    config_path = host.get("config_path")
+    if not config_path:
+        return None
+    path = expand(config_path)
+    if not path.is_file():
+        return False
+    check = host.get("registered_check") or {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    if check.get("format") == "json":
+        try:
+            node = json.loads(text)
+        except json.JSONDecodeError:
+            return False
+        for key in check.get("pointer", []):
+            if not isinstance(node, dict) or key not in node:
+                return False
+            node = node[key]
+        return True
+    marker = check.get("marker") or server_name
+    return marker in text
+
+
+def build_mcp_commands(config: dict) -> list[dict]:
+    """One row per host the user actually has: the exact registration command
+    (placeholders resolved), current registration state, and any note."""
+    mcp = config.get("mcp") or {}
+    hosts = mcp.get("hosts") or {}
+    server_name = mcp.get("server_name", "my-llm-wiki")
+    port = resolve_mcp_port(mcp)
+    endpoint = mcp.get("endpoint", "http://127.0.0.1:{port}/mcp").replace("{port}", str(port))
+    token = read_mcp_token(mcp)
+    rows = []
+    for name, host in hosts.items():
+        if not expand(host.get("detect_dir", "~/.%s" % name)).is_dir():
+            continue  # user does not use this host
+        command = host.get("register_command")
+        if command:
+            command = command.replace("{endpoint}", endpoint)
+            command = command.replace(
+                "{token}", token or "<run the Browser once, then paste ~/.my-llm-wiki/connector/token>"
+            )
+        rows.append(
+            {
+                "host": name,
+                "cli": host.get("cli"),
+                "command": command,
+                "unregister_command": host.get("unregister_command"),
+                "note": host.get("register_note"),
+                "registered": host_mcp_registered(host, server_name),
+                "cli_available": bool(host.get("cli")) and shutil.which(host["cli"]) is not None,
+                "token_missing": token is None,
+            }
+        )
+    return rows
+
+
+def propose_mcp_registration(config: dict, assume_yes: bool = False, dry_run: bool = False) -> None:
+    """Offer (never force) MCP registration for each detected host.
+
+    Consent contract: show the exact host-native `mcp add` command, run it only
+    on explicit confirmation (or --yes), skip silently otherwise. We never edit
+    a host's config file ourselves — the host CLI owns its format.
+    """
+    rows = build_mcp_commands(config)
+    if not rows:
+        return
+    print("\nMCP registration (optional — skills work without it via the CLI fallback):")
+    interactive = sys.stdin.isatty() and not assume_yes
+    for row in rows:
+        label = f"  [{row['host']}]"
+        if row["registered"]:
+            print(f"{label} already registered — skipping")
+            continue
+        if not row["command"]:
+            if row["note"]:
+                print(f"{label} {row['note']}")
+            continue
+        print(f"{label} proposed: {row['command']}")
+        if row["note"]:
+            print(f"          note: {row['note']}")
+        if row["token_missing"]:
+            print("          note: no token yet (~/.my-llm-wiki/connector/token) — start the Browser once first")
+        if not row["cli_available"]:
+            print(f"          `{row['cli']}` not on PATH — run the command yourself when available")
+            continue
+        if dry_run:
+            print("          [dry-run] not executed")
+            continue
+        if row["token_missing"]:
+            continue  # a command with a placeholder token must not be executed
+        if interactive:
+            answer = input(f"          register {row['host']} now? [y/N] ").strip().lower()
+            if answer not in {"y", "yes"}:
+                print("          skipped")
+                continue
+        elif not assume_yes:
+            print("          (non-interactive: not executed — re-run with --register-mcp --yes to apply)")
+            continue
+        result = subprocess.run(row["command"], shell=True, check=False)
+        print(f"          {'registered' if result.returncode == 0 else f'command failed (exit {result.returncode})'}")
+
+
+def unregister_mcp(config: dict, dry_run: bool = False) -> None:
+    """Remove Browser MCP entries so an uninstalled Browser leaves no broken
+    host config behind. Uses each host's own `mcp remove`."""
+    rows = build_mcp_commands(config)
+    for row in rows:
+        if not row["registered"] or not row["unregister_command"]:
+            continue
+        print(f"  [{row['host']}] {row['unregister_command']}")
+        if dry_run:
+            print("          [dry-run] not executed")
+            continue
+        if not row["cli_available"]:
+            print(f"          `{row['cli']}` not on PATH — run the command yourself")
+            continue
+        result = subprocess.run(row["unregister_command"], shell=True, check=False)
+        print(f"          {'removed' if result.returncode == 0 else f'command failed (exit {result.returncode})'}")
+
+
 def source_build(config: dict, dry_run: bool) -> None:
     source = config["browser"]["source_build"]
     frontend_dir = ROOT / source["frontend_dir"]
@@ -189,9 +346,37 @@ def main() -> int:
         help="Build from source if release download is unavailable.",
     )
     parser.add_argument("--dry-run", action="store_true", help="Print actions without changing files.")
+    parser.add_argument(
+        "--register-mcp",
+        action="store_true",
+        help="Only propose/apply Browser MCP registration for detected hosts (no download).",
+    )
+    parser.add_argument(
+        "--unregister-mcp",
+        action="store_true",
+        help="Remove Browser MCP entries from detected hosts (cleanup before/after uninstall).",
+    )
+    parser.add_argument(
+        "--skip-mcp",
+        action="store_true",
+        help="Do not propose MCP registration after install.",
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="With --register-mcp: apply without interactive confirmation.",
+    )
     args = parser.parse_args()
 
     config = load_bootstrap()
+
+    if args.unregister_mcp:
+        unregister_mcp(config, dry_run=args.dry_run)
+        return 0
+    if args.register_mcp:
+        propose_mcp_registration(config, assume_yes=args.yes, dry_run=args.dry_run)
+        return 0
+
     repo = args.repo or infer_repo()
     if not repo:
         print("Could not infer GitHub repo. Pass --repo owner/name.", file=sys.stderr)
@@ -212,6 +397,8 @@ def main() -> int:
         maybe_extract_zip(dest, args.dry_run)
         if args.open:
             maybe_open(dest, args.dry_run)
+        if not args.skip_mcp:
+            propose_mcp_registration(config, dry_run=args.dry_run)
         return 0
     except (urllib.error.HTTPError, urllib.error.URLError, RuntimeError) as err:
         print(f"release install unavailable: {err}", file=sys.stderr)
@@ -220,6 +407,8 @@ def main() -> int:
             return 1
         print("falling back to source build")
         source_build(config, args.dry_run)
+        if not args.skip_mcp:
+            propose_mcp_registration(config, dry_run=args.dry_run)
         return 0
 
 

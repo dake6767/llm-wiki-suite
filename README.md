@@ -35,7 +35,8 @@ llm-wiki-suite/
 | **my-llm-wiki** | RAW 抓取门面与共享核心：wiki 路由、Adapter/RAW 契约、网页/公众号/文档/note、normalization 与 synthesis handoff | knowledge-base, rag, archive, raw | ✅ published | [源码](skills/my-llm-wiki) · [SKILL](skills/my-llm-wiki/SKILL.md) |
 | **my-llm-wiki-video** | 在线视频 → 带跳转时间戳的忠实转写；字幕优先、ASR fallback、封面本地化，不保存视频文件 | video, transcript, asr, timestamps | 🧪 unpublished | [源码](skills/my-llm-wiki-video) · [SKILL](skills/my-llm-wiki-video/SKILL.md) |
 | **my-llm-wiki-x** | X 单条/长文完整抓取与 bookmarks 增量同步：逐条正文媒体、tweet-id 去重、可恢复批处理 | x, twitter, bookmarks, raw | 🧪 unpublished | [源码](skills/my-llm-wiki-x) · [SKILL](skills/my-llm-wiki-x/SKILL.md) |
-| **my-llm-wiki-maintainer** | 把 RAW 源编译成相互链接的 wiki 页面并维护：review / deep research / 去重 / lint / 带引用查询 | knowledge-base, wiki, compile, citations | ✅ published | [源码](skills/my-llm-wiki-maintainer) · [SKILL](skills/my-llm-wiki-maintainer/SKILL.md) |
+| **my-llm-wiki-maintainer** | 把 RAW 源编译成相互链接的 wiki 页面并维护：review / deep research / 去重 / lint / 回存；O(top-k) 有界检索 + 上下文预算 | knowledge-base, wiki, compile, citations | ✅ published | [源码](skills/my-llm-wiki-maintainer) · [SKILL](skills/my-llm-wiki-maintainer/SKILL.md) |
+| **my-llm-wiki-search** | 只读检索与带引用回答的用户入口：三层检索（Browser MCP → HTTP → 本地有界），硬上下文预算，不写任何东西 | knowledge-base, search, query, read-only | 🧪 unpublished | [源码](skills/my-llm-wiki-search) · [SKILL](skills/my-llm-wiki-search/SKILL.md) |
 | **cn-mirrors** | 网络环境自适应：探测受限网络（大陆典型），把 pip/npm/brew/GitHub/HF 的安装下载路由到官方国内镜像；附项目侧发布指南（镜像仓库 / release 代理 / install_cn 约定） | network, mirrors, install, bootstrap | ✅ published | [源码](skills/cn-mirrors) · [SKILL](skills/cn-mirrors/SKILL.md) |
 
 ## Apps
