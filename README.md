@@ -31,6 +31,7 @@ llm-wiki-suite/
 | --- | --- | --- | --- | --- |
 | **my-llm-wiki** | 抓取外部内容（公众号 / X / 小红书 / 网页 / 视频 / 想法）转自包含 Markdown，沉淀进知识库 RAW 层 | knowledge-base, rag, archive, raw | ✅ published | [源码](skills/my-llm-wiki) · [SKILL](skills/my-llm-wiki/SKILL.md) |
 | **my-llm-wiki-maintainer** | 把 RAW 源编译成相互链接的 wiki 页面并维护：review / deep research / 去重 / lint / 带引用查询 | knowledge-base, wiki, compile, citations | ✅ published | [源码](skills/my-llm-wiki-maintainer) · [SKILL](skills/my-llm-wiki-maintainer/SKILL.md) |
+| **cn-mirrors** | 网络环境自适应：探测受限网络（大陆典型），把 pip/npm/brew/GitHub/HF 的安装下载路由到官方国内镜像；附项目侧发布指南（镜像仓库 / release 代理 / install_cn 约定） | network, mirrors, install, bootstrap | ✅ published | [源码](skills/cn-mirrors) · [SKILL](skills/cn-mirrors/SKILL.md) |
 
 ## Apps
 
