@@ -63,7 +63,12 @@ automatically.
    converter's bare intermediate output.
 5. **Handle long work safely.** Run long ASR in the background and poll its
    `status.yaml`; do not rely on a foreground tool timeout or passive notification.
-   Confirm the status belongs to the requested video before reading the transcript.
+   When the same turn will wait for the result, explicitly disable asynchronous
+   completion delivery (`notify_on_complete=false` in Hermes). After the matching
+   status appears, wait/reap the retained process handle and confirm it exited
+   before reporting success; a status-file check or read-only process poll alone
+   is not a lifecycle barrier. Confirm the status belongs to the requested video
+   before reading the transcript.
 6. **Polish faithfully.** Repair punctuation, paragraphing, and obvious ASR
    errors without summarizing or dropping content. Preserve every timestamp anchor
    exactly. For non-Chinese videos, append a full `## 中文译文` with the same anchors.
