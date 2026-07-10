@@ -60,25 +60,40 @@ Go full-wiki only when the user explicitly asks for a complete audit.
 
 Answer from the compiled wiki, not raw sources, unless the user explicitly asks for raw-source inspection.
 
+> **Trigger surface note.** The user-facing read-only query entrance (“查一下知识库”,
+> “wiki 里有没有…”) belongs to the sibling **my-llm-wiki-search** skill, which embeds
+> this same recipe (same `wiki_ops.py` backend, same budgets). This SOP stays here
+> because maintainer operations (save, research, dedup) query internally — and so
+> the maintainer remains fully usable where the search skill isn't installed.
+
 1. Resolve project root.
-2. Read `purpose.md` and compact `wiki/index.md`.
-3. Retrieve candidate pages — two tiers, cheap index first:
-   - **First tier (preferred)**: `wiki_ops.py browser-search <root> --q "<keywords>" --top 8`
-     — the optional Browser's full-text index. `available: true` → use `hits[].file`
-     as the candidate set (snippets tell you which hits matter); retrieval cost stays
-     flat as the wiki grows. Run 1–2 keyword variants if the first query misses.
-   - **Fallback**: `available: false` (browser absent/unreachable) → retrieve by title
-     and body keyword search over `wiki/` as before. Fall back silently; never fail
-     or complain because the optional browser is missing.
+2. Read `purpose.md` (O(1)). Do **not** read `wiki/index.md` — full or compact —
+   into context; candidates come from bounded retrieval below.
+3. Retrieve candidate pages — three tiers, same backend and budgets, cheapest
+   connected tier first; **fall back silently**, the Browser is optional and its
+   absence only makes retrieval slightly more expensive, never a failure:
+   - **Browser MCP** (when the host has it connected): `search_wiki`
+     (default top 8) — hits carry `path`/`snippet`/`score`.
+   - **Browser HTTP via CLI**: `wiki_ops.py browser-search <root> --q "<keywords>" --top 8`
+     — `available: true` → use `hits[].file` as the candidate set; retrieval cost
+     stays flat as the wiki grows. Run 1–2 keyword variants if the first query misses.
+   - **Local bounded fallback** (no Browser required):
+     `wiki_ops.py local-search <root> --q "<keywords>" --top 8` — bounded keyword
+     scan over `wiki/`, same output shape.
 4. Expand through graph signals where cheap:
    - direct wikilinks;
    - shared `sources[]`;
-   - common neighbors;
+   - common neighbors (`wiki_ops.py neighbors <root> --page <hit> --max 8`);
    - type affinity.
-5. Pack context with a page budget and per-page cap.
+5. Pack context under a hard budget — read at most 3–5 pages:
+   `wiki_ops.py read-pages <root> --paths ... --max-pages 5 --max-chars-per-page 6000 --max-total-chars 24000`
+   (or the Browser MCP `read_pages` tool — same budgets). Never cat whole files
+   or paste the index as "context".
 6. Number pages in the prompt.
 7. Answer with page citations like `[1]` and wiki links like `[[concept-slug]]`.
 8. If evidence is insufficient, say what is missing and optionally create a review suggestion.
+9. Record the retrieval trace:
+   `wiki_ops.py trace <root> query.retrieval --backend <mcp|browser|local> --candidates <hits> --pages-read <n> --context-chars <chars>`.
 
 ## Save
 

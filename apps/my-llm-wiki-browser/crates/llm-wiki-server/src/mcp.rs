@@ -12,7 +12,9 @@ use axum::{
     http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
-use llm_wiki_mcp::{PagePathArgs, SearchWikiArgs, ToolName, WikiArgs, tool_list};
+use llm_wiki_mcp::{
+    PagePathArgs, ReadPagesArgs, SearchWikiArgs, ToolName, WikiArgs, tool_list,
+};
 use serde_json::{Value, json};
 
 use super::{AppState, read_manager, safe_join};
@@ -109,6 +111,10 @@ fn tools_call(state: &AppState, params: &Value) -> Result<Value, (i64, String)> 
         ToolName::ReadPage => {
             let args: PagePathArgs = parse_args(arguments)?;
             run_read_page(state, args)
+        }
+        ToolName::ReadPages => {
+            let args: ReadPagesArgs = parse_args(arguments)?;
+            run_read_pages(state, args)
         }
         ToolName::ReadRaw => {
             let args: PagePathArgs = parse_args(arguments)?;
@@ -241,6 +247,80 @@ fn run_read_page(state: &AppState, args: PagePathArgs) -> Result<Value, String> 
         "outgoingLinks": outgoing,
         "backlinks": backlinks,
         "body": rec.body,
+    }))
+}
+
+/// 有界批量读取：这是「top-k 检索 → 读候选页」链条的打包步骤。
+/// 单页缺失不整体报错（记入 missing），预算越界按「先截断、后省略」处理，
+/// 让 agent 一次调用就拿到可控大小的上下文，而不是循环 read_page 重造大上下文。
+fn run_read_pages(state: &AppState, args: ReadPagesArgs) -> Result<Value, String> {
+    let manager = read_manager(state).map_err(|_| "index unavailable".to_string())?;
+    let idx = manager
+        .get(&args.wiki)
+        .ok_or_else(|| format!("wiki not found: {}", args.wiki))?;
+    if args.paths.is_empty() {
+        return Err("paths must not be empty".into());
+    }
+    let (max_pages, per_page, total_budget) = args.budget();
+
+    // 归一化 + 去重（保序）：search_wiki 的多次查询命中同一页很常见。
+    let mut seen = std::collections::BTreeSet::new();
+    let normalized: Vec<String> = args
+        .paths
+        .iter()
+        .map(|path| parser::normalize_page_path(path))
+        .filter(|path| seen.insert(path.clone()))
+        .collect();
+
+    let mut pages = Vec::new();
+    let mut missing = Vec::new();
+    let mut omitted = Vec::new();
+    let mut total_chars = 0usize;
+    for path in &normalized {
+        let Some(rec) = idx.pages.get(path) else {
+            missing.push(path.clone());
+            continue;
+        };
+        if pages.len() >= max_pages || total_budget.saturating_sub(total_chars) < 200 {
+            // 页数满或剩余预算不足以承载有意义的内容 → 省略，让 agent 知道还有谁没读。
+            omitted.push(path.clone());
+            continue;
+        }
+        let budget = per_page.min(total_budget - total_chars);
+        let body_chars = rec.body.chars().count();
+        let (body, truncated) = if body_chars > budget {
+            let cut = rec
+                .body
+                .char_indices()
+                .nth(budget)
+                .map(|(i, _)| i)
+                .unwrap_or(rec.body.len());
+            (format!("{}…", &rec.body[..cut]), true)
+        } else {
+            (rec.body.clone(), false)
+        };
+        total_chars += body_chars.min(budget);
+        pages.push(json!({
+            "path": rec.path,
+            "title": rec.title,
+            "type": rec.page_type,
+            "sources": rec.sources,
+            "chars": body_chars.min(budget),
+            "truncated": truncated,
+            "body": body,
+        }));
+    }
+    Ok(json!({
+        "wiki": args.wiki,
+        "budget": {
+            "maxPages": max_pages,
+            "maxCharsPerPage": per_page,
+            "maxTotalChars": total_budget,
+        },
+        "totalChars": total_chars,
+        "pages": pages,
+        "missing": missing,
+        "omitted": omitted,
     }))
 }
 

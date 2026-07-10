@@ -1,45 +1,165 @@
 {
   "recommended_threshold": 0.33,
   "should_trigger": [
-    {"text": "https://mp.weixin.qq.com/s/abc — 把这篇公众号文章存到我的知识库", "family": "archive_link"},
-    {"text": "Clip this article into my wiki: https://example.com/post", "family": "archive_link"},
-    {"text": "存一下这条推文到 RAW https://x.com/foo/status/123", "family": "archive_link"},
-    {"text": "save this article into my knowledge base", "family": "archive_link"},
-    {"text": "把这个小红书笔记沉淀进知识库", "family": "archive_link"},
-    {"text": "存成 RAW，存到人文库", "family": "archive_link"},
-    {"text": "归档这篇博客到我的 llm-wiki", "family": "archive_link"},
-    {"text": "同步我的 X 收藏到知识库", "family": "bookmark_sync"},
-    {"text": "sync my twitter bookmarks into RAW", "family": "bookmark_sync"},
-    {"text": "记一下我的想法：RAG 的召回比生成更难调", "family": "first_party_note"},
-    {"text": "存个 idea 到知识库", "family": "first_party_note"},
-    {"text": "沉淀一个观点：immutable RAW 是对的设计", "family": "first_party_note"},
-    {"text": "把这个 YouTube 视频沉淀进知识库 https://youtu.be/xyz", "family": "video_to_raw"},
-    {"text": "distill this bilibili video into my wiki", "family": "video_to_raw"},
-    {"text": "初始化 wiki，建一个技术知识库", "family": "init_wiki"},
-    {"text": "set up my llm-wiki at ~/llm-wiki", "family": "init_wiki"},
-    {"text": "把这个 PDF 存到知识库 /Users/me/paper.pdf", "family": "archive_link"},
-    {"text": "/my-llm-wiki https://example.com/page", "family": "archive_link"},
-    {"text": "/my-llm-wiki 抓取并整理 https://youtu.be/xyz", "family": "capture_then_synthesize"},
-    {"text": "Capture this YouTube talk and synthesize it into my wiki in the same run: https://youtu.be/xyz", "family": "capture_then_synthesize"},
-    {"text": "把这篇公众号沉淀后直接综合入库，不要停在 RAW：https://mp.weixin.qq.com/s/abc", "family": "capture_then_synthesize"}
+    {
+      "text": "https://mp.weixin.qq.com/s/abc — 把这篇公众号文章存到我的知识库",
+      "family": "archive_link"
+    },
+    {
+      "text": "Clip this article into my wiki: https://example.com/post",
+      "family": "archive_link"
+    },
+    {
+      "text": "存一下这条推文到 RAW https://x.com/foo/status/123",
+      "family": "archive_link"
+    },
+    {
+      "text": "save this article into my knowledge base",
+      "family": "archive_link"
+    },
+    {
+      "text": "把这个小红书笔记沉淀进知识库",
+      "family": "archive_link"
+    },
+    {
+      "text": "存成 RAW，存到人文库",
+      "family": "archive_link"
+    },
+    {
+      "text": "归档这篇博客到我的 llm-wiki",
+      "family": "archive_link"
+    },
+    {
+      "text": "同步我的 X 收藏到知识库",
+      "family": "bookmark_sync"
+    },
+    {
+      "text": "sync my twitter bookmarks into RAW",
+      "family": "bookmark_sync"
+    },
+    {
+      "text": "记一下我的想法：RAG 的召回比生成更难调",
+      "family": "first_party_note"
+    },
+    {
+      "text": "存个 idea 到知识库",
+      "family": "first_party_note"
+    },
+    {
+      "text": "沉淀一个观点：immutable RAW 是对的设计",
+      "family": "first_party_note"
+    },
+    {
+      "text": "把这个 YouTube 视频沉淀进知识库 https://youtu.be/xyz",
+      "family": "video_to_raw"
+    },
+    {
+      "text": "distill this bilibili video into my wiki",
+      "family": "video_to_raw"
+    },
+    {
+      "text": "初始化 wiki，建一个技术知识库",
+      "family": "init_wiki"
+    },
+    {
+      "text": "set up my llm-wiki at ~/llm-wiki",
+      "family": "init_wiki"
+    },
+    {
+      "text": "把这个 PDF 存到知识库 /Users/me/paper.pdf",
+      "family": "archive_link"
+    },
+    {
+      "text": "/my-llm-wiki https://example.com/page",
+      "family": "archive_link"
+    },
+    {
+      "text": "/my-llm-wiki 抓取并整理 https://youtu.be/xyz",
+      "family": "capture_then_synthesize"
+    },
+    {
+      "text": "Capture this YouTube talk and synthesize it into my wiki in the same run: https://youtu.be/xyz",
+      "family": "capture_then_synthesize"
+    },
+    {
+      "text": "把这篇公众号沉淀后直接综合入库，不要停在 RAW：https://mp.weixin.qq.com/s/abc",
+      "family": "capture_then_synthesize"
+    }
   ],
   "should_not_trigger": [
-    {"text": "总结这篇公众号文章讲了什么", "family": "summarize_analyze_only"},
-    {"text": "summarize this tweet for me", "family": "summarize_analyze_only"},
-    {"text": "分析一下这篇文章的论点", "family": "summarize_analyze_only"},
-    {"text": "帮我搜一些关于 RAG 的文章", "family": "search_only"},
-    {"text": "search the web for the latest on agents", "family": "search_only"},
-    {"text": "这篇值得读吗？帮我判断要不要看", "family": "judge_worth"},
-    {"text": "下载这个 YouTube 视频存成 mp4", "family": "rip_video_file"},
-    {"text": "把视频下下来保存到本地", "family": "rip_video_file"},
-    {"text": "把这个 PDF 转成 markdown 方便我阅读", "family": "pdf_for_reading"},
-    {"text": "把我攒的笔记整理成 wiki 页面", "family": "generate_wiki_pages"},
-    {"text": "generate the derived wiki pages from my RAW notes", "family": "generate_wiki_pages"},
-    {"text": "把我的 Obsidian 笔记同步到 Notion", "family": "sync_apps"}
+    {
+      "text": "总结这篇公众号文章讲了什么",
+      "family": "summarize_analyze_only"
+    },
+    {
+      "text": "summarize this tweet for me",
+      "family": "summarize_analyze_only"
+    },
+    {
+      "text": "分析一下这篇文章的论点",
+      "family": "summarize_analyze_only"
+    },
+    {
+      "text": "帮我搜一些关于 RAG 的文章",
+      "family": "search_only"
+    },
+    {
+      "text": "search the web for the latest on agents",
+      "family": "search_only"
+    },
+    {
+      "text": "这篇值得读吗？帮我判断要不要看",
+      "family": "judge_worth"
+    },
+    {
+      "text": "下载这个 YouTube 视频存成 mp4",
+      "family": "rip_video_file"
+    },
+    {
+      "text": "把视频下下来保存到本地",
+      "family": "rip_video_file"
+    },
+    {
+      "text": "把这个 PDF 转成 markdown 方便我阅读",
+      "family": "pdf_for_reading"
+    },
+    {
+      "text": "把我攒的笔记整理成 wiki 页面",
+      "family": "generate_wiki_pages"
+    },
+    {
+      "text": "generate the derived wiki pages from my RAW notes",
+      "family": "generate_wiki_pages"
+    },
+    {
+      "text": "把我的 Obsidian 笔记同步到 Notion",
+      "family": "sync_apps"
+    }
   ],
   "near_neighbor": [
-    {"text": "summarize this article", "family": "summarize_analyze_only"},
-    {"text": "下载这个视频", "family": "rip_video_file"},
-    {"text": "把笔记综合成文章", "family": "generate_wiki_pages"}
+    {
+      "text": "summarize this article",
+      "family": "summarize_analyze_only"
+    },
+    {
+      "text": "下载这个视频",
+      "family": "rip_video_file"
+    },
+    {
+      "text": "把笔记综合成文章",
+      "family": "generate_wiki_pages"
+    },
+    {
+      "text": "查一下知识库里有没有关于 MCP 的内容。",
+      "family": "readonly_query"
+    },
+    {
+      "text": "What does my wiki say about prompt caching?",
+      "family": "readonly_query"
+    },
+    {
+      "text": "wiki 里搜一下 SpaceX，之前存过吗？",
+      "family": "readonly_query"
+    }
   ]
 }

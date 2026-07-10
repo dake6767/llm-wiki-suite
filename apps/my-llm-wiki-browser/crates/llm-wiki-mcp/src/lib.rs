@@ -11,9 +11,19 @@ pub enum ToolName {
     ListWikis,
     SearchWiki,
     ReadPage,
+    ReadPages,
     ReadRaw,
     ListWikiTree,
 }
+
+/// read_pages 的预算默认值与上限：默认贴合「top-8 检索 → 读 3–5 页」的
+/// 检索纪律，clamp 防止一次调用重新造出整库级大上下文。
+pub const READ_PAGES_DEFAULT_MAX_PAGES: usize = 5;
+pub const READ_PAGES_MAX_PAGES_CEILING: usize = 20;
+pub const READ_PAGES_DEFAULT_CHARS_PER_PAGE: usize = 6_000;
+pub const READ_PAGES_CHARS_PER_PAGE_CEILING: usize = 20_000;
+pub const READ_PAGES_DEFAULT_TOTAL_CHARS: usize = 24_000;
+pub const READ_PAGES_TOTAL_CHARS_CEILING: usize = 100_000;
 
 impl ToolName {
     pub fn as_str(self) -> &'static str {
@@ -21,6 +31,7 @@ impl ToolName {
             Self::ListWikis => "list_wikis",
             Self::SearchWiki => "search_wiki",
             Self::ReadPage => "read_page",
+            Self::ReadPages => "read_pages",
             Self::ReadRaw => "read_raw",
             Self::ListWikiTree => "list_wiki_tree",
         }
@@ -52,7 +63,15 @@ impl ToolName {
             Self::ReadPage => {
                 "Read one compiled wiki page as markdown: frontmatter metadata, body with \
                  [[wikilinks]], plus resolved outgoing links and backlinks. `path` is a \
-                 page path as returned by search_wiki or list_wiki_tree, e.g. 'concepts/mcp'."
+                 page path as returned by search_wiki or list_wiki_tree, e.g. 'concepts/mcp'. \
+                 To pack several candidate pages into a bounded context, prefer read_pages."
+            }
+            Self::ReadPages => {
+                "Batch-read several wiki pages under a hard context budget: at most \
+                 `maxPages` pages, each body truncated to `maxCharsPerPage` characters, \
+                 the whole result capped at `maxTotalChars`. Use this after search_wiki \
+                 to pack the top candidates without re-creating a wiki-sized context; \
+                 over-budget pages are truncated (flagged) or listed in `omitted`."
             }
             Self::ReadRaw => {
                 "Read an original captured source under the wiki's raw/ layer (immutable \
@@ -90,6 +109,30 @@ impl ToolName {
                 },
                 "required": ["wiki", "path"]
             }),
+            Self::ReadPages => json!({
+                "type": "object",
+                "properties": {
+                    "wiki": wiki,
+                    "paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Page paths as returned by search_wiki, e.g. ['concepts/mcp', 'entities/claude']."
+                    },
+                    "maxPages": {
+                        "type": "integer",
+                        "description": format!("Max pages to read (default {READ_PAGES_DEFAULT_MAX_PAGES}, max {READ_PAGES_MAX_PAGES_CEILING}); extra paths are reported in `omitted`.")
+                    },
+                    "maxCharsPerPage": {
+                        "type": "integer",
+                        "description": format!("Per-page body budget in characters (default {READ_PAGES_DEFAULT_CHARS_PER_PAGE}); longer bodies are truncated and flagged.")
+                    },
+                    "maxTotalChars": {
+                        "type": "integer",
+                        "description": format!("Total body budget in characters (default {READ_PAGES_DEFAULT_TOTAL_CHARS}); pages past the budget land in `omitted`.")
+                    }
+                },
+                "required": ["wiki", "paths"]
+            }),
             Self::ReadRaw => json!({
                 "type": "object",
                 "properties": {
@@ -111,6 +154,7 @@ pub const TOOL_NAMES: &[ToolName] = &[
     ToolName::ListWikis,
     ToolName::SearchWiki,
     ToolName::ReadPage,
+    ToolName::ReadPages,
     ToolName::ReadRaw,
     ToolName::ListWikiTree,
 ];
@@ -147,6 +191,35 @@ pub struct PagePathArgs {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadPagesArgs {
+    pub wiki: String,
+    pub paths: Vec<String>,
+    pub max_pages: Option<usize>,
+    pub max_chars_per_page: Option<usize>,
+    pub max_total_chars: Option<usize>,
+}
+
+impl ReadPagesArgs {
+    /// clamp 到契约允许的预算区间；缺省取默认值。
+    pub fn budget(&self) -> (usize, usize, usize) {
+        let max_pages = self
+            .max_pages
+            .unwrap_or(READ_PAGES_DEFAULT_MAX_PAGES)
+            .clamp(1, READ_PAGES_MAX_PAGES_CEILING);
+        let per_page = self
+            .max_chars_per_page
+            .unwrap_or(READ_PAGES_DEFAULT_CHARS_PER_PAGE)
+            .clamp(200, READ_PAGES_CHARS_PER_PAGE_CEILING);
+        let total = self
+            .max_total_chars
+            .unwrap_or(READ_PAGES_DEFAULT_TOTAL_CHARS)
+            .clamp(per_page.min(1_000), READ_PAGES_TOTAL_CHARS_CEILING);
+        (max_pages, per_page, total)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WikiArgs {
     pub wiki: String,
 }
@@ -161,6 +234,30 @@ mod tests {
             assert_eq!(ToolName::from_str(tool.as_str()), Some(*tool));
         }
         assert_eq!(ToolName::from_str("nope"), None);
+    }
+
+    #[test]
+    fn read_pages_budget_defaults_and_clamps() {
+        let args: ReadPagesArgs =
+            serde_json::from_value(json!({"wiki": "demo", "paths": ["a", "b"]})).unwrap();
+        assert_eq!(
+            args.budget(),
+            (
+                READ_PAGES_DEFAULT_MAX_PAGES,
+                READ_PAGES_DEFAULT_CHARS_PER_PAGE,
+                READ_PAGES_DEFAULT_TOTAL_CHARS
+            )
+        );
+
+        let args: ReadPagesArgs = serde_json::from_value(json!({
+            "wiki": "demo", "paths": ["a"],
+            "maxPages": 999, "maxCharsPerPage": 1, "maxTotalChars": 10_000_000
+        }))
+        .unwrap();
+        assert_eq!(
+            args.budget(),
+            (READ_PAGES_MAX_PAGES_CEILING, 200, READ_PAGES_TOTAL_CHARS_CEILING)
+        );
     }
 
     #[test]

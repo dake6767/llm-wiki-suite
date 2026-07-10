@@ -71,13 +71,13 @@ reconstruct the document's structure.
 
 ## 4. MAP phase (LLM, per chunk → structured candidates)
 
-Compute the compact index ONCE and reuse it across all chunks:
+MAP runs **index-free** — do not load the index (full or compact) into the MAP
+prompts; on a grown wiki that re-bills an O(wiki) block once per chunk. Extract
+candidates from the chunk text alone and leave `linksToExisting` empty unless
+you already know the target; REDUCE re-checks existing pages with bounded
+retrieval anyway.
 
-```bash
-scripts/wiki_ops.py compact-index <root>        # cache the output, pass to each MAP
-```
-
-Then, for each chunk where `stage-status` reports it pending (phase 6), read
+For each chunk where `stage-status` reports it pending (phase 6), read
 `chunks/chunk-NNN.md` and **extract candidates only — do NOT write wiki pages
 yet**. Write the result as JSON to `map/chunk-NNN.json` (the staging contract):
 
@@ -108,8 +108,9 @@ MAP rules:
   chunk. No prose pages, no index edits.
 - `salience`: `high` = clearly page-worthy; `med` = notable, may merge into another
   page; `low` = mention only (becomes a review item later, never silently dropped).
-- `linksToExisting` references existing pages from the compact index by
-  `folder/slug`. If unsure, leave it out — REDUCE re-checks.
+- `linksToExisting` references existing pages by `folder/slug` when already
+  known (e.g. from an earlier bounded search). If unsure, leave it out —
+  REDUCE re-checks with per-name retrieval.
 - `name` follows the **source's own language** (keep CJK as-is) — these become
   page titles/slugs downstream, which must match the source language (see
   `ingest-update.md` → Output Language & Filenames).
@@ -139,7 +140,13 @@ Only start when `stage-status` reports `ready: true` (`pending == 0 && stale == 
    (e.g. `野生小虎` in chunks 2, 9, 17) into ONE candidate: union `facts`,
    `evidence`, `linksToExisting`, `aliases`; keep the highest `salience`. This is
    the cross-section dedup a single pass cannot do.
-3. Run source identity first (dedup one source → one page):
+3. **Check candidates against the existing wiki with bounded retrieval** — the
+   deduped candidate names are exactly the "extracted names" of the ingest
+   retrieval discipline (`ingest-update.md` step 5): per name, one
+   `browser-search`/`local-search --top 8` plus the disk grep sentinel
+   (`grep -F "[[entities/<name>" wiki/index.md`), then `read-pages` the top
+   3–5 pages that overlap. Never load the whole index to "see what exists".
+4. Run source identity first (dedup one source → one page):
 
 ```bash
 scripts/wiki_ops.py source-page <root> --raw raw/sources/<...>.md [--url <url>]
@@ -147,7 +154,7 @@ scripts/wiki_ops.py source-page <root> --raw raw/sources/<...>.md [--url <url>]
 
    If it returns `existing`, merge into that page (`merge-page`) instead of
    creating a new one.
-4. Emit FILE/REVIEW blocks using the EXISTING output contract (see
+5. Emit FILE/REVIEW blocks using the EXISTING output contract (see
    `output-blocks.md` and `ingest-update.md`):
    - `wiki/sources/<slug>.md` — a **structured multi-section** summary (template
      below), NOT a one-paragraph blurb.
@@ -156,7 +163,7 @@ scripts/wiki_ops.py source-page <root> --raw raw/sources/<...>.md [--url <url>]
    - `wiki/log.md` — one append-only line noting two-phase ingest + chunk count.
    - REVIEW blocks for: contradictions, `low`-salience-but-notable candidates, and
      any candidate NOT promoted to a page — conservative failure, nothing dropped.
-5. Apply and verify exactly as `ingest-update.md` steps 8–12: `apply-blocks`
+6. Apply and verify exactly as `ingest-update.md` steps 8–12: `apply-blocks`
    (every FILE in `written[]`, `warnings` empty), index delta merge, then
    `cache save` listing every written page. Run the coverage gate (phase 7) and
    `lint` before saving cache.
@@ -232,10 +239,10 @@ scripts/wiki_ops.py probe-source $R --raw $S
 # → {"bodyChars":210000,"path":"large",...}
 scripts/wiki_ops.py split-source $R --raw $S --url https://x/report --write
 # → {"status":"written","chunkCount":18,"sourceSlug":"行业长报告"}
-scripts/wiki_ops.py compact-index $R                      # reuse across MAP
-# MAP each of 18 chunks → map/chunk-NNN.json ; --mark-done NNN each
+# MAP each of 18 chunks (index-free) → map/chunk-NNN.json ; --mark-done NNN each
 scripts/wiki_ops.py stage-status $R --source $S           # → "ready": true
 # REDUCE: read all map/*.json, dedup (e.g. 野生小虎 in chunks 2/9/17 → one page)
+scripts/wiki_ops.py browser-search $R --q "野生小虎" --top 8   # per deduped name (fallback: local-search)
 scripts/wiki_ops.py source-page $R --raw $S --url https://x/report
 scripts/wiki_ops.py apply-blocks $R --blocks-file /tmp/blocks.txt --source $S
 scripts/wiki_ops.py lint $R

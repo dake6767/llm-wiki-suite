@@ -1,0 +1,170 @@
+{
+  "_comment": "Route-boundary semantic config for my-llm-wiki-search, scored by yao-meta-skill scripts/trigger_eval.py. One broad positive concept (read-only lookup phrasing over MY existing wiki/knowledge base) so any lookup verb-phrase clears the 0.33 threshold. Negatives capture the two siblings — capture-into-RAW (my-llm-wiki) and write/maintain incl. save-back (my-llm-wiki-maintainer) — plus generic WEB search and summarize/translate/explain; exclusive negatives push those below threshold. Deliberately NO over-broad positives like bare 'my wiki' or 'look up' (they appear inside capture/maintain requests too).",
+  "fallback_positive_concepts": [
+    "readonly_wiki_lookup"
+  ],
+  "positive_concepts": {
+    "readonly_wiki_lookup": {
+      "weight": 1.0,
+      "phrases": [
+        "查一下知识库",
+        "查一下我的 wiki",
+        "查一下 wiki",
+        "wiki 里搜",
+        "知识库里搜",
+        "知识库里有没有",
+        "wiki 里有没有",
+        "wiki 里查",
+        "知识库里查",
+        "之前存过",
+        "存过没有",
+        "知识库怎么说",
+        "wiki 怎么说",
+        "what does my wiki say",
+        "search my wiki",
+        "search my knowledge base",
+        "did i save anything",
+        "answer this question from the wiki",
+        "answer from the wiki",
+        "from the wiki with citations",
+        "look it up in my wiki"
+      ]
+    }
+  },
+  "negative_concepts": {
+    "capture_into_raw": {
+      "weight": 0.32,
+      "exclusive": true,
+      "phrases": [
+        "save this article",
+        "save this link",
+        "save this tweet",
+        "save this post",
+        "save this page",
+        "clip this",
+        "archive this link",
+        "archive this page",
+        "capture this url",
+        "fetch this url",
+        "faithful markdown original",
+        "save it to my wiki",
+        "save this to raw",
+        "into the raw layer",
+        "sync my bookmarks",
+        "sync my twitter bookmarks",
+        "distill this video",
+        "file my idea",
+        "save my note",
+        "存进知识库",
+        "存到知识库",
+        "沉淀这条",
+        "沉淀这篇",
+        "存成 raw",
+        "存到 raw",
+        "把这个链接存",
+        "把这篇文章存",
+        "同步我的 x 收藏",
+        "剪藏",
+        "归档这条",
+        "把这个视频存进知识库",
+        "记一下我的想法",
+        "存个 idea"
+      ]
+    },
+    "maintain_wiki": {
+      "weight": 0.32,
+      "exclusive": true,
+      "phrases": [
+        "ingest the raw sources",
+        "ingest the new raw sources",
+        "run the review queue",
+        "review queue",
+        "sweep the stale review items",
+        "deep research",
+        "dedup the wiki",
+        "merge the duplicate entity pages",
+        "lint my knowledge base",
+        "lint the wiki",
+        "save that answer back",
+        "save the answer back",
+        "save it back into the wiki",
+        "refresh the overview",
+        "compile the raw sources",
+        "flush the inbox",
+        "把答案回存",
+        "回存",
+        "跑一遍 review 队列",
+        "处理收件箱",
+        "去重",
+        "把重名的实体页合并",
+        "做 lint",
+        "检查坏链",
+        "刷新概览",
+        "刷新 overview",
+        "编译成相互链接的页面",
+        "把 raw 源编译成"
+      ]
+    },
+    "web_search": {
+      "weight": 0.32,
+      "exclusive": true,
+      "phrases": [
+        "search the web",
+        "search online",
+        "google it",
+        "web search",
+        "搜一下最新",
+        "上网搜",
+        "网上搜",
+        "谷歌一下",
+        "百度一下",
+        "全网调研",
+        "最新的新闻",
+        "最新新闻"
+      ]
+    },
+    "summarize_only": {
+      "weight": 0.3,
+      "exclusive": true,
+      "phrases": [
+        "summarize this",
+        "summarize",
+        "summary",
+        "recap",
+        "tldr",
+        "总结一下",
+        "概括一下",
+        "提炼重点"
+      ]
+    },
+    "translate_only": {
+      "weight": 0.35,
+      "exclusive": true,
+      "phrases": [
+        "translate this",
+        "translate",
+        "into english",
+        "into chinese",
+        "翻译成中文",
+        "翻译",
+        "译成中文",
+        "译成英文"
+      ]
+    },
+    "explain_only": {
+      "weight": 0.26,
+      "exclusive": true,
+      "phrases": [
+        "explain what",
+        "just explain",
+        "in simple terms",
+        "what does it mean",
+        "解释一下",
+        "讲讲",
+        "什么意思",
+        "写一个",
+        "帮我写"
+      ]
+    }
+  }
+}

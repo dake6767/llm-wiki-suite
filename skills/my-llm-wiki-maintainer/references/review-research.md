@@ -35,6 +35,22 @@ Recommended shape:
 
 Deduplicate open items by `(type, normalized title)`. Merge affected pages and search queries.
 
+### Targeted access (context budget)
+
+Never read the whole `review.json` into context to handle one item — on a grown
+wiki that file alone is tens of thousands of chars re-billed on every subsequent
+model call. Fetch exactly what the task needs:
+
+```bash
+wiki_ops.py review list <root> --status open              # one line per item (id/type/title)
+wiki_ops.py review get <root> review-20260611-0001        # ONE full item as JSON
+wiki_ops.py review find <root> --type contradiction       # filtered subset, JSON
+wiki_ops.py review find <root> --q "关键词" --limit 5     # keyword match on title/description/pages
+```
+
+`list` is the cheap orientation pass; `get`/`find` return full fields
+(`searchQueries`, `affectedPages`, `sourcePath`) for just the items being worked.
+
 ## Resolving Items (mark, never delete)
 
 Resolving a review **marks** it — it never removes the item from `review.json`. A
@@ -71,6 +87,28 @@ Stage 2: conservative semantic judgment.
 - Keep `contradiction`, `confirm`, and ambiguous items open by default.
 - Accept only IDs that belong to the current batch.
 
+## Link Densification (periodic, review-batch)
+
+Ingest now works from a bounded top-k working set instead of a full index in
+context. That trades away a measured ≤12% of "accidental discovery" links —
+mostly hub-page maintenance links that accumulate across many ingests, not
+single-ingest products. This batch action is the compensation: the O(wiki) cost
+is paid **once per review batch**, not on every ingest.
+
+Run it as part of a periodic review batch (e.g. after a flush, or on an explicit
+"链接致密化 / densify links" request):
+
+1. This is the one routine moment a global listing is allowed in context:
+   `wiki_ops.py compact-index <root> --no-desc` (sections + links, no
+   descriptions).
+2. Compare recently changed pages (`lint-scope` gives the changed set) against
+   the listing: missing cross-links between related pages, hub pages whose
+   obvious neighbors don't link back, cross-cluster contradictions that
+   per-ingest top-k retrieval could not see.
+3. Apply link additions via `merge-page`/`apply-blocks` as usual; file
+   `contradiction` review items for conflicts instead of silently rewriting.
+4. Close with the scoped semantic lint (`lint-scope` → checks → `--mark`).
+
 ## Deep Research
 
 Deep Research is **delegation-first**. This skill does NOT bundle a search engine or a domain tool registry. It owns exactly one thing: the **evidence contract** — the shape evidence must arrive in to be filed into the wiki — plus the filing, synthesis, and ingest-back. *How* the evidence is gathered is the orchestration layer's job: at run time the agent picks whatever domain-appropriate retrieval skill or MCP is available in the environment, exactly the way the wiki treats an upstream capture skill (see SKILL.md → Upstream capture). The retrieval producer is interchangeable; the contract is not.
@@ -89,6 +127,23 @@ Infer the domain from `purpose.md` / `schema.md`, then route to whatever is actu
 | General / fallback | a general deep-research skill, Tavily/web-search MCP, built-in web search |
 
 Discover at run time (which MCP servers are connected, which skills are installed) rather than assuming. If nothing is available, say research needs a retrieval provider and ask whether to proceed from local sources only. Record which producer was used so the run is reproducible.
+
+### Context budget: web results are disk-first
+
+Web/deep-research producers return large payloads (a three-query run measured
+~91KB), and anything pasted into the conversation is re-billed as prompt prefix
+on every later call in the session. The same budget discipline as ingest
+retrieval applies:
+
+- **Save first, read back selectively.** Land the producer's full output on disk
+  (ultimately as the RAW evidence file, `raw/sources/research/<id>.md`; use a
+  scratch file under `.llm-wiki/agent/research/` while normalizing). Then read
+  back only the excerpts the synthesis actually needs, within an explicit budget
+  (a few thousand chars per finding, not the full result set).
+- **Never lose data by doing this** — the full text is on disk and cited; the
+  budget only changes what enters the prompt, not what is preserved.
+- Record the step with `wiki_ops.py trace <root> research.retrieval
+  --context-chars <n>` so the cost stays observable across hosts.
 
 ### Retrieval execution safety
 

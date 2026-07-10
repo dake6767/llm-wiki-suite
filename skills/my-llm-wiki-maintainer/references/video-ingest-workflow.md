@@ -168,10 +168,18 @@ python3 <maintainer>/scripts/wiki_ops.py source-page <root> --raw "<raw_path>" -
 
 ### 6. Plan Pages: Create vs Update
 
-Read existing `wiki/index.md` to avoid duplicating entities/concepts.
+Check each extracted entity/concept against the existing wiki with bounded
+retrieval — do NOT read the full `wiki/index.md` into context (retrieval
+discipline, `ingest-update.md` step 5):
+
+```bash
+python3 <maintainer>/scripts/wiki_ops.py browser-search <root> --q "<name>" --top 8
+python3 <maintainer>/scripts/wiki_ops.py local-search <root> --q "<name>" --top 8   # Browser absent
+grep -F "[[entities/<name>" <root>/wiki/index.md                                    # disk sentinel, zero context
+```
 
 **Decision tree:**
-- **Entity exists in index** → update (merge new content into existing page)
+- **Entity exists (search/grep hit)** → update (merge new content into existing page)
 - **Entity is new** → create
 - **Concept exists** (e.g. 明朝内阁制度, 明朝宦官制度) → update with new source cross-references
 - **Concept is new** → create

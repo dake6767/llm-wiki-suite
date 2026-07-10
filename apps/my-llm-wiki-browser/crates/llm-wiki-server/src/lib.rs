@@ -2015,7 +2015,7 @@ mod tests {
         .await;
         assert_eq!(response.status(), StatusCode::ACCEPTED);
 
-        // tools/list → 契约层的 5 个工具
+        // tools/list → 契约层的 6 个工具
         let reply = mcp_rpc(
             &app,
             None,
@@ -2023,8 +2023,9 @@ mod tests {
         )
         .await;
         let tools = reply["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 5);
+        assert_eq!(tools.len(), 6);
         assert!(tools.iter().any(|tool| tool["name"] == "search_wiki"));
+        assert!(tools.iter().any(|tool| tool["name"] == "read_pages"));
 
         // list_wikis
         let reply = mcp_rpc(
@@ -2070,6 +2071,37 @@ mod tests {
         let text = tool_text(&reply);
         assert!(text.contains("[[entities/claude|Claude]]"));
         assert!(text.contains("entities/claude")); // outgoingLinks 已解析
+
+        // read_pages → 有界批量读取：缺页进 missing，正常页带 body
+        let reply = mcp_rpc(
+            &app,
+            None,
+            serde_json::json!({"jsonrpc":"2.0","id":51,"method":"tools/call",
+                "params":{"name":"read_pages","arguments":{
+                    "wiki":"demo","paths":["mcp","entities/claude","nope"]}}}),
+        )
+        .await;
+        assert_eq!(reply["result"]["isError"], false);
+        let payload: serde_json::Value =
+            serde_json::from_str(&tool_text(&reply)).expect("read_pages payload");
+        assert_eq!(payload["pages"].as_array().unwrap().len(), 2);
+        assert_eq!(payload["missing"][0], "nope");
+        assert!(payload["pages"][0]["body"].as_str().unwrap().contains("[[entities/claude|Claude]]"));
+
+        // read_pages 预算：maxPages=1 → 第二页落入 omitted；超长正文被截断并标记
+        let reply = mcp_rpc(
+            &app,
+            None,
+            serde_json::json!({"jsonrpc":"2.0","id":52,"method":"tools/call",
+                "params":{"name":"read_pages","arguments":{
+                    "wiki":"demo","paths":["mcp","entities/claude"],"maxPages":1}}}),
+        )
+        .await;
+        let payload: serde_json::Value =
+            serde_json::from_str(&tool_text(&reply)).expect("read_pages payload");
+        assert_eq!(payload["pages"].as_array().unwrap().len(), 1);
+        assert_eq!(payload["omitted"][0], "entities/claude");
+        assert_eq!(payload["budget"]["maxPages"], 1);
 
         // read_raw → raw 层原文（无扩展名也可解析）
         let reply = mcp_rpc(
