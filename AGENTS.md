@@ -202,10 +202,19 @@ to RAW, compile it into your wiki, and show where to view it in My LLM Wiki Brow
 ## 8. MCP Setup
 
 The Browser serves MCP at `http://127.0.0.1:<port>/mcp` behind the same Bearer
-token as the Web API (`~/.my-llm-wiki/connector/token`). Registration recipes
-for every host live in `registry/bootstrap.json` → `mcp` (the single source of
-truth, parallel to `default_skill_targets`); each recipe is the host's **own**
-`mcp add` command, so no host config file is ever edited directly.
+token as the Web API (`~/.my-llm-wiki/connector/token`), but **local hosts must
+default to the suite-owned stdio bridge**, not a direct loopback URL. Hermes and
+WorkBuddy can send loopback through the system proxy; the bridge disables all
+proxies and resolves the current port/token at runtime. Remote relay access
+continues to use native streamable HTTP.
+
+Registration recipes for every host live in `registry/bootstrap.json` → `mcp`
+(the single source of truth, parallel to `default_skill_targets`). They are argv
+arrays, not shell strings: `install-browser.py` substitutes the absolute current
+Python executable and permanent-checkout bridge path, preserving Windows drive
+letters/backslashes and paths containing spaces. Do not guess an app-bundle,
+portable-extraction, or Linux package path, and do not reintroduce `npx
+mcp-remote`.
 
 ```bash
 python3 scripts/install-browser.py --register-mcp     # propose per detected host; runs only on explicit consent
@@ -216,11 +225,15 @@ python3 scripts/install-browser.py --unregister-mcp   # cleanup: no stale entrie
 install (suppress with `--skip-mcp`). Consent rules: show the exact command,
 run it only after the user confirms, skip without error otherwise — the
 generalization of "never edit an existing Hermes config without user consent"
-to all hosts. `doctor.py` reports drift both ways: Browser installed but a host
-unregistered (one-line fix), or a stale entry left after the Browser is gone.
+to all hosts. WorkBuddy has no registration CLI, so print the exact JSON for the
+user to merge manually; never edit its config directly. `doctor.py` reports
+unregistered/stale entries, legacy direct-loopback registrations, and the result
+of a real bridge `tools/list` probe when the Browser is running.
 
 MCP is an access form, not the capability itself: hosts without MCP reach the
 same backend through `wiki_ops.py browser-search` / `local-search` /
-`read-pages`, fully equivalent. Prefer `Authorization: Bearer <token>` over
-putting long-lived tokens in URLs. For remote access, use the relay URL shown
-by the Browser tray/settings UI.
+`read-pages`, fully equivalent. Local stdio host configs contain neither the
+port nor the token; the bridge reads them from `~/.my-llm-wiki/connector` on
+every request, so rotations need no re-registration. For remote access, use the
+relay URL shown by the Browser tray/settings UI and prefer an Authorization
+header over putting long-lived tokens in URLs.
