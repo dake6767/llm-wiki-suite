@@ -114,17 +114,34 @@ them, keep the **per-cue start times**:
      via [FunASR](https://github.com/modelscope/FunASR)): ~15× faster than
      Whisper on CPU and far better on Chinese proper nouns. Install into a
      dedicated venv: `python3 -m venv ~/.local/share/llm-wiki/asr-venv &&
-     ~/.local/share/llm-wiki/asr-venv/bin/pip install funasr torch torchaudio`.
+     ~/.local/share/llm-wiki/asr-venv/bin/pip install funasr torch`
+     (torchaudio is NOT needed — the recipe loads audio with librosa, already
+     a funasr dep). Create the venv with **python 3.11/3.12**: on 3.13,
+     funasr's `editdistance` dep has no prebuilt wheel and without a C
+     compiler the whole install rolls back (live Windows incident; the field
+     workaround was `--no-deps` + a python-Levenshtein `editdistance.py`
+     shim). On Windows the venv interpreter is `asr-venv/Scripts/python.exe`,
+     not `bin/python`. Slow PyPI (mainland networks): add
+     `-i https://pypi.tuna.tsinghua.edu.cn/simple`; the model weights need no
+     mirror — funasr pulls them from ModelScope, a domestic CDN.
      It reads wav (not m4a — convert first, §6) and has **no native
      timestamps** — feeding it the whole file returns ONE cue stamped
      `00:00:00,000 --> 00:00:00,000` (a documented incident re-ran a 40-min
-     ASR twice before noticing). Timestamps come from a **VAD-first** pass —
-     the recipe at the end of this section.
+     ASR twice before noticing). **Passing `vad_model=` into the same
+     `AutoModel` (the combined pipeline) does not fix it** — that pipeline
+     concatenates all segments into one untimed blob regardless of how
+     `merge_vad` / `merge_length_s` are set (a Windows capture burned three
+     full attempts on those knobs). Timestamps come from a **VAD-first**
+     pass — VAD run as its *own* model — the recipe at the end of this
+     section.
    - **Everything else → faster-whisper** (`pip install whisper-ctranslate2`,
      [github.com/Softcatala/whisper-ctranslate2](https://github.com/Softcatala/whisper-ctranslate2);
      same models ~3-5× faster, makes `large-v3` affordable on CPU) →
      stock `whisper` (`brew install openai-whisper`,
-     [github.com/openai/whisper](https://github.com/openai/whisper)) as last resort.
+     [github.com/openai/whisper](https://github.com/openai/whisper)) as last
+     resort. faster-whisper pulls its models from Hugging Face — on networks
+     where that's blocked (mainland China) prefix the first run with
+     `HF_ENDPOINT=https://hf-mirror.com`.
    - **Cloud fallback** — `agent-reach transcribe <url>` (Groq/OpenAI Whisper
      API) is fast and zero-install, **but returns plain text without
      timestamps**, so it breaks the anchor contract. Use it only when no local
@@ -287,6 +304,14 @@ one command at 300 s). The universal contract:
   expect ~2 segments/min. But a transcript ending at ~80-85 % of a long video
   with a *natural sentence ending* is normal (non-speech outro music/previews) —
   don't re-run ASR for that.
+- **VAD/ASR stopping cleanly at a *fraction* of a long video** (one capture:
+  202 cues ending at 20 min of a 67-min video), especially with AAC/decode
+  errors anywhere earlier in the logs, means the **downloaded audio itself is
+  truncated or corrupt** — every consumer (ffmpeg convert, funasr's internal
+  loader, a VAD pass) stops at the damage point. Re-download (Bilibili:
+  `--downloader aria2c`, see its pitfalls file) and re-check duration with
+  ffprobe. It is NOT a VAD length limit — fsmn-vad handles 40+ min fine —
+  so don't reach for chunked-VAD workarounds before ruling out a bad file.
 
 **Then polish** (the agent's job, in the temp dir, per SKILL.md §8): light
 content-preserving repair — punctuation, paragraph breaks, ASR homophone fixes —
@@ -321,8 +346,15 @@ in the wiki's `data/`, not in this skill.
 Generic pitfalls, any platform:
 
 - **Convert m4a → wav for Python-API ASR backends** (librosa/soundfile can't
-  read m4a): `afconvert -f WAVE -d LEI16@16000 audio.m4a audio.wav` (or the
-  ffmpeg equivalent).
+  read m4a): `ffmpeg -i audio.m4a -ar 16000 -ac 1 audio.wav` anywhere, or
+  `afconvert -f WAVE -d LEI16@16000 audio.m4a audio.wav` (macOS-only tool —
+  don't cite it in cross-platform notes).
+- **Tools found outside PATH must be put ON PATH for the session.** FunASR and
+  yt-dlp shell out to a bare `ffmpeg` — knowing the full path yourself doesn't
+  help their subprocesses. Windows winget installs land under
+  `%LOCALAPPDATA%\Microsoft\WinGet\…` which new shells often don't have:
+  `export PATH="<dir-with-ffmpeg>:$PATH"` once per session before any
+  download/ASR step (`preflight.py` prints the resolved locations).
 - **Sponsor segments are spoken content** — ASR transcribes mid-video ad reads
   (1–3 min) as if they were lecture. Scan the built transcript for ad-indicator
   keyword clusters (product names, 评论区链接/专属福利/一键三连, 618/双11) and skip

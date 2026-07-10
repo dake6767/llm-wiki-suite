@@ -47,23 +47,45 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # Tool resolution — tools are frequently installed but missing from a sandboxed
 # agent's PATH (npm CLIs in an nvm bin; yt-dlp/ffmpeg in Homebrew; pip CLIs in
-# ~/.local/bin). Probe the usual bin dirs, not just PATH.
+# ~/.local/bin; on Windows, winget drops binaries under WinGet/Packages and the
+# Links shim dir that a Git Bash session may not have on PATH — a documented
+# capture ran every ffmpeg call through a hand-exported path because of this).
+# Probe the usual bin dirs, not just PATH.
 # ---------------------------------------------------------------------------
 
 
 def _candidate_dirs() -> list[str]:
     home = str(Path.home())
-    dirs = glob.glob(f"{home}/.nvm/versions/node/*/bin")
-    dirs += [
-        "/opt/homebrew/bin",
-        "/usr/local/bin",
-        f"{home}/.local/bin",
-        f"{home}/Library/Python/3.*/bin",
-    ]
+    if os.name == "nt":
+        local = os.environ.get("LOCALAPPDATA", f"{home}/AppData/Local")
+        roaming = os.environ.get("APPDATA", f"{home}/AppData/Roaming")
+        dirs = [
+            f"{local}/Microsoft/WinGet/Links",          # winget's shim dir (new shells only)
+            f"{local}/Microsoft/WinGet/Packages/*",     # portable exes sit at the package root…
+            f"{local}/Microsoft/WinGet/Packages/*/*/bin",  # …or nested (ffmpeg builds)
+            f"{home}/scoop/shims",
+            "C:/ProgramData/chocolatey/bin",
+            f"{roaming}/npm",                            # npm -g shims (opencli.cmd)
+            f"{roaming}/Python/Python3*/Scripts",        # pip --user CLIs
+            f"{local}/Programs/Python/Python3*/Scripts",
+        ]
+    else:
+        dirs = glob.glob(f"{home}/.nvm/versions/node/*/bin")
+        dirs += [
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            f"{home}/.local/bin",
+            f"{home}/Library/Python/3.*/bin",
+        ]
     out = []
     for d in dirs:
         out += glob.glob(d) if "*" in d else [d]
     return out
+
+
+# On Windows a "binary" may be tool.exe (native), tool.cmd (npm shim) or
+# tool.bat; shutil.which handles PATHEXT but our candidate-dir walk must too.
+_EXTS = ("", ".exe", ".cmd", ".bat") if os.name == "nt" else ("",)
 
 
 def find_tool(name: str) -> str | None:
@@ -71,16 +93,20 @@ def find_tool(name: str) -> str | None:
     if p:
         return p
     for d in _candidate_dirs():
-        cand = Path(d) / name
-        if cand.is_file() and os.access(cand, os.X_OK):
-            return str(cand)
+        for ext in _EXTS:
+            cand = Path(d) / (name + ext)
+            if cand.is_file() and os.access(cand, os.X_OK):
+                return str(cand)
     return None
 
 
 # Conventional home for a dedicated SenseVoice venv, so a user can install funasr
 # off to the side (it's a heavy, optional dep) and the probe finds it with no env
-# var: `python3 -m venv <here> && <here>/bin/pip install funasr torch torchaudio`.
-SENSEVOICE_VENV_PYTHON = Path.home() / ".local" / "share" / "llm-wiki" / "asr-venv" / "bin" / "python"
+# var: `python3 -m venv <here> && <here>/bin/pip install funasr torch`.
+# Windows venvs put the interpreter under Scripts\, not bin/ — a venv at the
+# conventional home was invisible to this probe until that was accounted for.
+_ASR_VENV = Path.home() / ".local" / "share" / "llm-wiki" / "asr-venv"
+SENSEVOICE_VENV_PYTHON = _ASR_VENV / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 
 @functools.lru_cache(maxsize=1)
@@ -109,6 +135,26 @@ def _funasr_python() -> str:
 
 def sensevoice_available() -> bool:
     return bool(_funasr_python())
+
+
+@functools.lru_cache(maxsize=1)
+def _github_reachable(timeout: float = 3.0) -> bool:
+    """One cheap connectivity probe: install recommendations differ on networks
+    where GitHub/PyPI/npm are blocked or throttled (mainland China). Deliberately
+    inline & stdlib-only — no dependency on the cn-mirrors skill being installed;
+    that skill carries the full playbook, this just picks which commands to print."""
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(
+        "https://api.github.com/", method="HEAD",
+        headers={"User-Agent": "llm-wiki-preflight"})
+    try:
+        urllib.request.urlopen(req, timeout=timeout)
+        return True
+    except urllib.error.HTTPError:
+        return True  # an HTTP response means reachable
+    except Exception:
+        return False
 
 
 # Where each tool lives — cite these when recommending an install, so the user
@@ -168,7 +214,7 @@ def probe() -> dict:
     return out
 
 
-def assess(tools: dict) -> tuple[dict, list[str]]:
+def assess(tools: dict, github_ok: bool = True) -> tuple[dict, list[str]]:
     """Return (per-source-type capability, recommendations)."""
     have = {k: bool(v) for k, v in tools.items()}
     asr = ("faster-whisper" if have["whisper-ctranslate2"]
@@ -253,7 +299,9 @@ def assess(tools: dict) -> tuple[dict, list[str]]:
         recs.append("recommended for CHINESE video (much faster & more accurate; route "
                     "zh audio here): install SenseVoice into the auto-discovered venv: "
                     "`python3 -m venv ~/.local/share/llm-wiki/asr-venv && "
-                    "~/.local/share/llm-wiki/asr-venv/bin/pip install funasr torch torchaudio` "
+                    "~/.local/share/llm-wiki/asr-venv/bin/pip install funasr torch` "
+                    "— use python 3.11/3.12 (3.13 lacks a prebuilt editdistance wheel "
+                    "and the install rolls back); Windows venv python is Scripts\\python.exe "
                     "(or set LLM_WIKI_ASR_PYTHON to any python that has funasr; "
                     f"{TOOL_HOMES['sensevoice']}).")
     if not have["whisper-ctranslate2"] and (have["whisper"] or have["yt-dlp"]):
@@ -262,12 +310,26 @@ def assess(tools: dict) -> tuple[dict, list[str]]:
                     f"({TOOL_HOMES['whisper-ctranslate2']})")
 
     cap["note"] = {"status": "ok", "via": "no tool needed"}
+
+    # Restricted network (github unreachable ⇒ PyPI/npm/HF likely throttled too):
+    # every install command above needs mirror routing or a different channel.
+    if not github_ok:
+        recs.insert(0,
+            "github.com is UNREACHABLE from here (mainland-China network profile?) — "
+            "route installs through domestic mirrors: pip `-i https://pypi.tuna.tsinghua.edu.cn/simple`, "
+            "npm `--registry=https://registry.npmmirror.com`, HF models `HF_ENDPOINT=https://hf-mirror.com`; "
+            "prefer `pip install -U yt-dlp` over brew/winget (its self-update hits GitHub Releases). "
+            "SenseVoice models need nothing — funasr pulls from ModelScope (domestic CDN). "
+            "Full playbook: the cn-mirrors skill (if installed).")
     return cap, recs
 
 
-def emit(tools: dict, cap: dict, recs: list[str]) -> None:
+def emit(tools: dict, cap: dict, recs: list[str], github_ok: bool = True) -> None:
     def line(k, v, ind=0):
         print("  " * ind + f"{k}: {v}")
+    print("network:")
+    line("github.com", "reachable" if github_ok
+         else "unreachable  # mirror-route installs; see recommendations", 1)
     print("tools:")
     for name, note in TOOLS.items():
         path = tools[name]
@@ -297,8 +359,9 @@ def main() -> None:
     ap.add_argument("--quiet", action="store_true", help="(reserved) same output, no extra chatter")
     ap.parse_args()
     tools = probe()
-    cap, recs = assess(tools)
-    emit(tools, cap, recs)
+    github_ok = _github_reachable()
+    cap, recs = assess(tools, github_ok)
+    emit(tools, cap, recs, github_ok)
 
 
 if __name__ == "__main__":

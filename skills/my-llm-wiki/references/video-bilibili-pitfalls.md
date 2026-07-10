@@ -15,7 +15,11 @@ any-platform pitfalls stay in the SOP §6.
   yt-dlp's default HTTP downloader can produce m4a files whose AAC payload is
   damaged mid-stream (ffmpeg truncates; macOS `afconvert` errors `'bada'`).
   aria2c downloads are clean. Corruption can also be *transient* — one fresh
-  re-download is worth trying before switching formats.
+  re-download is worth trying before switching formats. A damaged m4a
+  truncates **everything downstream** at the damage point — ffmpeg
+  conversion, funasr's internal loader, a VAD pass (one 67-min capture
+  "stopped" at 20 min this way and was misdiagnosed as a VAD length limit;
+  the SOP §5 fraction-of-duration check is the tell).
 - **HTTP 412 = Bilibili bot protection.** Wait a few minutes, retry with
   `--cookies-from-browser chrome`. `--cookies-from-browser` itself can hang
   10-30 s when Chrome holds many cookies — close Chrome or use another browser.
