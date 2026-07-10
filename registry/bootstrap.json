@@ -74,7 +74,7 @@
         "config_path": "~/.workbuddy/mcp.json",
         "registered_check": {"format": "text", "marker": "llm-wiki"},
         "register_command": null,
-        "register_note": "No registration CLI, but Workbuddy reads ~/.workbuddy/mcp.json (claude-style mcpServers map: {\"type\": \"http\", \"url\": ..., \"headers\": {\"Authorization\": \"Bearer ...\"}}). Registration means the USER edits that file (per the consent contract we never write host config files); a relay URL works there too if Workbuddy needs remote access. Otherwise use the equivalent CLI fallback (wiki_ops.py browser-search / local-search / read-pages)."
+        "register_note": "No registration CLI, but Workbuddy reads ~/.workbuddy/mcp.json (claude-style mcpServers map); registration means the USER edits that file (per the consent contract we never write host config files). Pitfall: with a local system proxy (Clash etc.) Workbuddy's HTTP client fails on loopback URLs just like Hermes (see hosts.hermes.register_note), so a direct {\"type\": \"http\", \"url\": \"http://127.0.0.1:...\"} entry won't connect — use a stdio bridge entry instead: {\"command\": \"npx\", \"args\": [\"-y\", \"mcp-remote\", \"{endpoint}\", \"--header\", \"Authorization:Bearer {token}\", \"--transport\", \"http-only\"]}. A relay URL also works if Workbuddy needs remote access. Otherwise use the equivalent CLI fallback (wiki_ops.py browser-search / local-search / read-pages)."
       }
     }
   },
