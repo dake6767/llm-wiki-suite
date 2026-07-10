@@ -71,9 +71,10 @@
       "workbuddy": {
         "detect_dir": "~/.workbuddy",
         "cli": null,
-        "config_path": null,
+        "config_path": "~/.workbuddy/mcp.json",
+        "registered_check": {"format": "text", "marker": "llm-wiki"},
         "register_command": null,
-        "register_note": "No MCP registration CLI known for this host — use the equivalent CLI fallback (wiki_ops.py browser-search / local-search / read-pages)."
+        "register_note": "No registration CLI, but Workbuddy reads ~/.workbuddy/mcp.json (claude-style mcpServers map: {\"type\": \"http\", \"url\": ..., \"headers\": {\"Authorization\": \"Bearer ...\"}}). Registration means the USER edits that file (per the consent contract we never write host config files); a relay URL works there too if Workbuddy needs remote access. Otherwise use the equivalent CLI fallback (wiki_ops.py browser-search / local-search / read-pages)."
       }
     }
   },
