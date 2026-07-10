@@ -566,7 +566,7 @@ def main() -> None:
                 f"default to the working filename '{stem}'. Pass --title \"<real "
                 f"title>\" or put a `# <title>` H1 in the file. For a video "
                 f"capture, assemble the full transcript.md (H1 + `>` header + "
-                f"cover) per video-capture-sop.md §1 — don't normalize the bare "
+                f"cover) per my-llm-wiki-video's video-capture-sop.md §1 — don't normalize the bare "
                 f"srt_to_anchors.py output."
             )
         title = stem

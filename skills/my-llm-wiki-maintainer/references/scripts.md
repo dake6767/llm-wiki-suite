@@ -97,8 +97,12 @@ wiki_ops.py sweep-reviews /path/to/wiki
 ```bash
 wiki_ops.py cache check /path/to/wiki /path/to/wiki/raw/sources/file.md
 wiki_ops.py cache save /path/to/wiki /path/to/wiki/raw/sources/file.md wiki/sources/file.md wiki/concepts/foo.md
+wiki_ops.py cache save /path/to/wiki /path/to/wiki/raw/sources/file.md --files-file /tmp/pages.json
 wiki_ops.py cache pending /path/to/wiki   # list raw sources not yet ingested (new) or changed since (changed)
 ```
+
+Prefer `--files-file` for generated or CJK-heavy page lists. It accepts a JSON
+array or one relative path per line and keeps data out of inline code.
 
 `cache pending` is the batch-discovery entry point for "process the inbox": it scans `raw/sources/**/*.md` and returns those with no cache entry or a changed hash. Read-only; takes one explicit wiki root (no multi-wiki discovery — the caller picks the root).
 

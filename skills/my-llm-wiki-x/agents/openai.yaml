@@ -1,0 +1,4 @@
+interface:
+  display_name: "My LLM Wiki X"
+  short_description: "Archive X posts and sync bookmarks into RAW"
+  default_prompt: "Use $my-llm-wiki-x to archive this X post or sync my bookmarks into RAW."

@@ -18,11 +18,12 @@ PATH**, not that a separate backend needs installing.
 **Step 0 — preconditions.**
 
 ```bash
-opencli xiaohongshu whoami     # logged_in: true — else surface `opencli xiaohongshu login`
+opencli xiaohongshu whoami     # logged_in: true — else surface the platform login step
 ```
 
-App shares carry a short link `http://xhslink.com/o/<code>`; the note id is the
-24-hex token in the resolved URL. Canonical `source_url` is
+App shares may display a short link as `http://xhslink.com/o/<code>`; normalize
+its scheme to HTTPS before passing it to a command. The note id is the 24-hex
+token in the resolved URL. Canonical `source_url` is
 `https://www.xiaohongshu.com/discovery/item/<note_id>` (strip the query — the
 `xsec_token` in it is per-share and ephemeral); `original_id` is the note id.
 
@@ -31,7 +32,7 @@ App shares carry a short link `http://xhslink.com/o/<code>`; the note id is the
 `download` accepts the **xhslink short link directly** — no resolving needed:
 
 ```bash
-opencli xiaohongshu download 'http://xhslink.com/o/<code>' --output <tmpdir> \
+opencli xiaohongshu download 'https://xhslink.com/o/<code>' --output <tmpdir> \
   > download.log 2>&1
 # → <tmpdir>/<note_id>/<note_id>_1.mp4 (the video) + _2.jpg… (cover/images)
 ```
@@ -44,12 +45,18 @@ Metadata comes from `note`, which does **not** take a bare note id — it wants 
 full signed URL (`xsec_token` included). Resolve the short link to get one:
 
 ```bash
-url=$(curl -s -o /dev/null -w '%{url_effective}' -L --max-time 15 'http://xhslink.com/o/<code>')
-opencli xiaohongshu note "$url" -f yaml
+curl --fail --silent --show-error --location --max-time 15 \
+  --output /dev/null --write-out '%{url_effective}\n' \
+  'https://xhslink.com/o/<code>' > "$TMPDIR/resolved-url.txt"
+opencli xiaohongshu note '<resolved-https-url>' -f yaml
 # → title, author, content (the note text — keep it as the 简介), likes,
 #   collects, comments, tags.  NO publish time — if you need one, grab it from
-#   the note page via `opencli web read --url "$url"`, else omit --publish-time.
+#   the note page via opencli web read, else omit --publish-time.
 ```
+
+Read the single line in `resolved-url.txt` as data and substitute it for the
+placeholder in the second command. Do not wrap the network command in shell
+command substitution.
 
 ## Common tail
 

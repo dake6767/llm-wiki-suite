@@ -6,12 +6,23 @@ fixed *shape* on disk. So **any tool** that can produce that shape plugs in:
 opencli, agent-reach, yt-dlp, a browser extension's export, a Python scraper,
 even hand-written files. This file is the contract that decoupling rests on.
 
-Whatever you fetch with, this is the only file to satisfy. The per-scenario SOPs
-in `references/sources.md` give concrete recipes per common tool (opencli /
-agent-reach / bare CLIs / the agent's own WebFetch) — all implementations of
-this contract.
+Whatever you fetch with, this is the only file to satisfy. Default Web/WeChat/doc
+recipes live in `references/sources.md`; X and online-video recipes live in the
+sibling `my-llm-wiki-x` and `my-llm-wiki-video` skills. All of them are
+implementations of this contract, regardless of whether they use opencli,
+agent-reach, bare CLIs, or the agent's own WebFetch.
 
 ---
+
+## Contents
+
+- [Adapter responsibility](#what-an-adapter-does-and-where-it-stops)
+- [Input shapes](#the-two-input-shapes)
+- [Media boundary](#the-media-responsibility-line)
+- [Metadata routes](#supplying-metadata-two-routes-use-either-or-both)
+- [Core guarantees](#what-the-core-guarantees-so-adapters-stay-thin)
+- [Canonical source types](#source_type-buckets-canonical)
+- [Minimal example](#minimal-worked-example-no-opencli-at-all)
 
 ## What an adapter does (and where it stops)
 
@@ -169,7 +180,8 @@ Keep it short and stable. The buckets the skill uses today:
 shelf. `note` and `doc` get slightly relaxed health checks (a short note isn't a
 failed fetch; a sparse doc extraction is fine because its original is archived).
 
-`video` is the online-video bucket (`references/video-capture-sop.md` is its
+`video` is the online-video bucket (`my-llm-wiki-video` owns its
+`references/video-capture-sop.md`
 scenario SOP). Its faithful "original" is the **URL**, not a stored file — the
 video is deliberately never downloaded; the body is a **transcript** (a lossy
 text extraction, exactly like a `doc`'s markitdown text). So the core suppresses

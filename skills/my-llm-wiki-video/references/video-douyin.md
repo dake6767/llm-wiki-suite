@@ -44,30 +44,17 @@ minutes — download immediately.
 ## Recipe B — mobile share page (no opencli, no login)
 
 The **mobile** share page embeds full metadata including an unsigned play
-address. Request it with an iPhone UA — a desktop UA gets an empty JS shell —
-and bypass proxies (China-domestic CDN):
+address. The shipped helper sends the required iPhone UA, bypasses local
+proxies for the China-domestic CDN, and parses `_ROUTER_DATA` as data:
 
-```python
-import json, re, requests
-aweme = "<aweme_id>"
-s = requests.Session(); s.trust_env = False            # drop any http(s)_proxy
-r = s.get(f"https://www.iesdouyin.com/share/video/{aweme}/", timeout=15, headers={
-    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) "
-                  "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"})
-r.encoding = "utf-8"
-raw = re.search(r"window\._ROUTER_DATA\s*=\s*({.*?})\s*</script>", r.text, re.DOTALL).group(1)
-# parse raw as-is — running it through .decode('unicode_escape') mojibakes the CJK (live incident)
-item = json.loads(raw)["loaderData"]["video_(id)/page"]["videoInfoRes"]["item_list"][0]
-meta = {
-    "title":       item["desc"],
-    "author":      item["author"]["nickname"],
-    "sec_uid":     item["author"]["sec_uid"],
-    "create_time": item["create_time"],                       # publish time, epoch seconds
-    "duration_ms": item["video"].get("duration") or item.get("duration"),
-    "play_url":    item["video"]["play_addr"]["url_list"][0], # …/aweme/v1/playwm/?video_id=… → 302 to CDN mp4
-    "cover_url":   (item["video"].get("cover") or item["video"]["origin_cover"])["url_list"][0],
-}
+```bash
+python3 "$VIDEO_SKILL/scripts/douyin_probe.py" --aweme-id "$AWEME_ID" \
+  --output "$TMPDIR/metadata.json"
 ```
+
+Do not reproduce the parser as inline Python. The helper preserves CJK without
+`unicode_escape` mojibake and returns title, author, sec_uid, create time,
+duration, play URL, and cover URL.
 
 The `playwm` play address is watermarked — irrelevant here, only the audio is
 used. Download it with the same mobile UA + `Referer: https://www.douyin.com/`.

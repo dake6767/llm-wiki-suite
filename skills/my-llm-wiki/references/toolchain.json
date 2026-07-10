@@ -1,0 +1,92 @@
+{
+  "version": 1,
+  "profiles": {
+    "capture.web": {
+      "label": "Web / WeChat / Xiaohongshu article capture",
+      "tools": ["opencli", "agent-reach"]
+    },
+    "capture.doc": {
+      "label": "Local document capture",
+      "tools": ["markitdown"]
+    },
+    "capture.note": {
+      "label": "First-party note capture",
+      "tools": []
+    },
+    "capture.x.single": {
+      "label": "Single X/Twitter post capture",
+      "tools": ["opencli", "agent-reach"]
+    },
+    "capture.x.bookmarks": {
+      "label": "X/Twitter bookmark sync",
+      "tools": ["opencli"]
+    },
+    "capture.video": {
+      "label": "Online video transcript capture",
+      "tools": [
+        "opencli",
+        "yt-dlp",
+        "ffmpeg",
+        "sensevoice",
+        "whisper-ctranslate2",
+        "whisper"
+      ]
+    }
+  },
+  "tools": {
+    "opencli": {
+      "probe": "opencli",
+      "description": "web/social fetch through a real logged-in browser with image localization",
+      "install": "npm i -g @jackwener/opencli",
+      "install_cn": "npm i -g @jackwener/opencli --registry=https://registry.npmmirror.com",
+      "home": "https://www.npmjs.com/package/@jackwener/opencli"
+    },
+    "agent-reach": {
+      "probe": "agent-reach",
+      "description": "multi-platform fetch routing; inspect its own doctor for per-platform availability",
+      "home": "https://github.com/Panniantong/agent-reach"
+    },
+    "yt-dlp": {
+      "probe": "yt-dlp",
+      "description": "video metadata, captions, and audio-only download",
+      "install": "brew install yt-dlp",
+      "install_cn": "python3 -m pip install -U yt-dlp -i https://pypi.tuna.tsinghua.edu.cn/simple",
+      "home": "https://github.com/yt-dlp/yt-dlp"
+    },
+    "ffmpeg": {
+      "probe": "ffmpeg",
+      "description": "audio conversion and cover handling for video captures",
+      "install": "brew install ffmpeg",
+      "install_cn": "brew install ffmpeg with TUNA Homebrew bottle settings; on Windows use the gyan.dev build and add bin to PATH",
+      "home": "https://ffmpeg.org"
+    },
+    "sensevoice": {
+      "probe": "python:funasr",
+      "description": "SenseVoice/FunASR local ASR for Chinese video",
+      "install": "python3 -m venv ~/.local/share/llm-wiki/asr-venv && ~/.local/share/llm-wiki/asr-venv/bin/pip install funasr torch",
+      "install_cn": "python3 -m venv ~/.local/share/llm-wiki/asr-venv && ~/.local/share/llm-wiki/asr-venv/bin/pip install funasr torch -i https://pypi.tuna.tsinghua.edu.cn/simple",
+      "home": "https://github.com/FunAudioLLM/SenseVoice"
+    },
+    "whisper-ctranslate2": {
+      "probe": "whisper-ctranslate2",
+      "description": "faster Whisper-family local ASR for non-Chinese video",
+      "install": "python3 -m pip install -U whisper-ctranslate2",
+      "install_cn": "python3 -m pip install -U whisper-ctranslate2 -i https://pypi.tuna.tsinghua.edu.cn/simple; set HF_ENDPOINT=https://hf-mirror.com for model download",
+      "home": "https://github.com/Softcatala/whisper-ctranslate2"
+    },
+    "whisper": {
+      "probe": "whisper",
+      "description": "stock OpenAI Whisper local ASR fallback",
+      "install": "brew install openai-whisper",
+      "install_cn": "python3 -m pip install -U openai-whisper -i https://pypi.tuna.tsinghua.edu.cn/simple; set HF_ENDPOINT=https://hf-mirror.com for model download",
+      "home": "https://github.com/openai/whisper"
+    },
+    "markitdown": {
+      "probe": "markitdown",
+      "description": "local PDF/docx/pptx/xlsx/epub to Markdown conversion",
+      "install": "pipx install markitdown",
+      "install_cn": "pipx install markitdown --pip-args '-i https://pypi.tuna.tsinghua.edu.cn/simple'",
+      "home": "https://github.com/microsoft/markitdown"
+    }
+  }
+}

@@ -6,7 +6,17 @@ re-capture everything. This is the one genuinely stateful flow in the skill.
 
 > This recipe is part of the **default adapter** (it uses `opencli twitter`). The
 > wiki-core pieces (dedupe by id, per-item normalize) are tool-agnostic; only the
-> listing/fetch commands are opencli-specific — see `references/adapter-contract.md`.
+> listing/fetch commands are opencli-specific — see sibling
+> `my-llm-wiki/references/adapter-contract.md`.
+
+## Contents
+
+- [1. Resolve the wiki](#1-resolve-the-wiki-same-as-1-of-skillmd)
+- [2. List bookmarks](#2-list-the-bookmarks)
+- [3. Deduplicate before download](#3-dedupe-by-tweet-id--guard-the-expensive-step)
+- [3.5 First vs incremental sync](#35-volume--first-sync-vs-incremental)
+- [4. Capture each new item](#4-ingest-each-new-bookmark)
+- [5. Report](#5-report)
 
 ## 1. Resolve the wiki (same as §1 of SKILL.md)
 
@@ -49,7 +59,7 @@ Never download media for a tweet you already have.
 A tweet's `id` is its stable identity. Get the ids already in RAW:
 
 ```bash
-python3 <skill>/scripts/captured_ids.py --wiki "<wiki>" --source x
+python3 <x-skill>/scripts/captured_ids.py --wiki "<wiki>" --source x
 ```
 
 Subtract that set from the bookmark listing, and only run `twitter download` +
@@ -88,14 +98,14 @@ nothing is new, the run is near-free. This is a good habit to run periodically.
 
 ## 4. Ingest each new bookmark
 
-For each survivor, run the **single-post flow** in `references/sources.md` → X —
+For each survivor, run the **single-post flow** in `references/x-capture-sop.md` —
 the same path as a single pasted tweet. In short, per tweet:
 1. `web read --url <tweet-url> --download-images true` → full text + local images.
    This is the content source — never reconstruct the body from the listing's
    `text` field (it's lossy; see step 2).
 2. If the tweet has video, `twitter download --tweet-url <url>`, move the `.mp4`
    into the web-read folder's `images/`, and add `![video](images/<file>.mp4)`.
-3. `normalize_raw.py --from <web-read folder> --source-type x --source-url <url>
+3. `<core-skill>/scripts/normalize_raw.py --from <web-read folder> --source-type x --source-url <url>
    --original-id <id> --on-exists skip
    --captured-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"`.
 

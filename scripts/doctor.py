@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Suite-level health check ("doctor") for llm-wiki-suite.
 
-Answers one question in a single shot: **is the whole suite wired up?** — skills
-linked into the agent skill dirs, the wiki registry present, My LLM Wiki Browser
-reachable, and the capture adapters available. It is the install/troubleshoot
-feedback loop, the counterpart to `agent-reach doctor`.
+Answers one question in a single shot: **is the selected suite surface wired
+up?** — skill linkage/dependencies, wiki registry, Browser reachability, and the
+capture capability profiles contributed by requested/bundled skills. It is the
+install/troubleshoot feedback loop, the counterpart to `agent-reach doctor`.
 
 Self-locating: resolves the repo root from this file (following symlinks, so it
 works whether run from a dev checkout or through an installed-skill symlink) and
@@ -14,11 +14,12 @@ Output: a human summary by default, or machine-readable JSON with --json
 (mirrors `agent-reach doctor --json`). Each component reports one of:
   ok    — good to go
   warn  — works with a caveat / optional piece missing
-  error — a critical piece is broken (drives a non-zero exit)
+  error — critical skill linkage/dependency wiring is broken (drives non-zero)
   skip  — not applicable on this machine
 
-Exit code: 0 unless a component is in "error" (today: skills linkage — the one
-thing install must get right). Everything else degrades to warn/skip.
+Exit code: 0 unless a component is in "error" (skill linkage, missing declared
+runtime dependencies, invalid registry references, or an invalid toolchain
+catalog/profile). Missing optional tools and viable fallbacks degrade to warn.
 
 Scope note: this is the repo-resident version — it assumes the repo is present
 (the install-time / dev-checkout case). Surfacing it to any session regardless of
@@ -30,7 +31,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import sys
 import urllib.error
 import urllib.request
@@ -40,24 +40,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 BOOTSTRAP = REPO_ROOT / "registry" / "bootstrap.json"
 SKILLS_REGISTRY = REPO_ROOT / "registry" / "skills.json"
 
-# Capture adapters my-llm-wiki's scenario SOPs can use. Absence never gates
-# the exit code (every scenario has a fallback recipe, see references/
-# sources.md) — but the `core` ones are near-mandatory for a smooth capture
-# flow: without opencli the CJK platforms (公众号图片本地化 / 小红书 / 抖音 /
-# X) degrade to text-only or fail outright, and without yt-dlp + ffmpeg there
-# is no video→transcript path at all. Their absence is reported loudly with
-# the install command + project home URL so the user can vet before installing.
-# Fields: (name, description, core, install_cmd, home_url)
-ADAPTERS = [
-    ("opencli", "web/social fetch adapter (公众号图片/小红书/抖音/X 依赖它)", True,
-     "npm i -g @jackwener/opencli", "https://www.npmjs.com/package/@jackwener/opencli"),
-    ("yt-dlp", "video/audio download (the whole video→transcript path)", True,
-     "brew install yt-dlp", "https://github.com/yt-dlp/yt-dlp"),
-    ("ffmpeg", "audio extraction + covers for video captures", True,
-     "brew install ffmpeg", "https://ffmpeg.org"),
-    ("markitdown", "local document (PDF/docx) conversion", False,
-     "pipx install markitdown", "https://github.com/microsoft/markitdown"),
-]
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+from skill_graph import SkillGraphError, resolve_selection  # noqa: E402
+
+sys.path.insert(0, str(REPO_ROOT / "skills" / "my-llm-wiki" / "scripts"))
+import preflight as capture_preflight  # noqa: E402
 
 
 def expand(p: str) -> Path:
@@ -90,24 +77,47 @@ def check_repo_home(bootstrap: dict) -> dict:
     }
 
 
-def check_skills(bootstrap: dict, skills_registry: dict) -> dict:
-    """Per active skill: is it linked into this repo across the existing targets?"""
-    active = [s for s in skills_registry.get("skills", [])
-              if s.get("lifecycle", "active") == "active"]
-    targets = [expand(t) for t in bootstrap.get("default_skill_targets", [])]
+def check_skills(
+    bootstrap: dict,
+    skills_registry: dict,
+    selected_slugs: set[str] | None = None,
+    target_dirs: list[str] | None = None,
+) -> dict:
+    """Check active skill linkage plus declared runtime dependencies."""
+    def target_has_skill(path: Path) -> bool:
+        if path.is_symlink():
+            try:
+                path.resolve(strict=True)
+                return True
+            except OSError:
+                return False
+        return path.exists()
+
+    all_active = [s for s in skills_registry.get("skills", [])
+                  if s.get("lifecycle", "active") == "active"]
+    active_slugs = {s["slug"] for s in all_active}
+    active = [s for s in all_active
+              if selected_slugs is None or s["slug"] in selected_slugs]
+    configured_targets = (target_dirs if target_dirs is not None
+                          else bootstrap.get("default_skill_targets", []))
+    targets = [expand(t) for t in configured_targets]
     existing_targets = [t for t in targets if t.is_dir()]
 
     skills_out = []
     worst = "ok"
     for s in active:
         slug = s["slug"]
+        requires = s.get("requires", [])
+        bundles = s.get("bundles", [])
+        unknown_refs = sorted((set(requires) | set(bundles)) - active_slugs)
         src = (REPO_ROOT / s["collection_path"]).resolve()
         states = {}  # target -> state
+        dependency_missing = {}
         for t in existing_targets:
             dest = t / slug
             if dest.is_symlink():
                 try:
-                    resolved = dest.resolve()
+                    resolved = dest.resolve(strict=True)
                 except OSError:
                     states[str(t)] = "broken-link"
                     continue
@@ -117,8 +127,21 @@ def check_skills(bootstrap: dict, skills_registry: dict) -> dict:
             else:
                 states[str(t)] = "missing"
 
+            if states[str(t)] != "missing" and requires:
+                missing = [dep for dep in requires
+                           if not target_has_skill(t / dep)]
+                if missing:
+                    dependency_missing[str(t)] = missing
+
         vals = list(states.values())
-        if not vals:
+        if unknown_refs:
+            status = "error"
+            note = "registry references unknown/inactive skill(s): " + ", ".join(unknown_refs)
+        elif dependency_missing:
+            status = "error"
+            missing_names = sorted({d for deps in dependency_missing.values() for d in deps})
+            note = "installed without required skill(s): " + ", ".join(missing_names)
+        elif not vals:
             status = "warn"  # no agent dirs at all on this machine
             note = "no agent skill dirs present"
         elif all(v == "missing" for v in vals):
@@ -137,7 +160,10 @@ def check_skills(bootstrap: dict, skills_registry: dict) -> dict:
             status = "ok"
             note = "linked into repo"
         worst = _worse(worst, status)
-        skills_out.append({"slug": slug, "status": status, "note": note, "targets": states})
+        skills_out.append({"slug": slug, "status": status, "note": note,
+                           "requires": requires, "bundles": bundles,
+                           "dependency_missing": dependency_missing,
+                           "targets": states})
 
     return {"status": worst, "skills": skills_out,
             "existing_targets": [str(t) for t in existing_targets]}
@@ -211,27 +237,28 @@ def check_browser(bootstrap: dict) -> dict:
                 "detail": f"not reachable at {url} (port from {port_src}) — Browser optional / not running"}
 
 
-def check_adapters() -> dict:
-    out = []
-    core_missing = []
-    for name, desc, core, install, home in ADAPTERS:
-        found = shutil.which(name)
-        if found:
-            detail = found
-        elif core:
-            detail = f"not found — {desc}. 强烈建议安装: `{install}` ({home})"
-            core_missing.append(name)
-        else:
-            detail = f"not found — {desc} (optional; skill degrades)"
-        out.append({"name": name, "status": "ok" if found else "warn",
-                    "core": core, "detail": detail})
-    # Adapters never gate the exit code, but the summary is only `ok` when the
-    # core (near-mandatory) toolchain is complete.
-    status = "ok" if not core_missing else "warn"
-    result = {"status": status, "adapters": out}
-    if core_missing:
-        result["core_missing"] = core_missing
-    return result
+def check_toolchain(bootstrap: dict, selection: dict) -> dict:
+    profiles = selection.get("profiles", [])
+    base = {
+        "selected_skills": [s["slug"] for s in selection.get("skills", [])],
+        "feature_skills": selection.get("feature_skills", []),
+        "profiles": profiles,
+    }
+    if not profiles:
+        return {"status": "skip", "detail": "selected skills declare no capture profiles", **base}
+
+    config = bootstrap.get("capture_toolchain") or {}
+    catalog_rel = config.get("catalog")
+    if not catalog_rel:
+        return {"status": "error", "detail": "bootstrap has no capture toolchain catalog", **base}
+    catalog_path = REPO_ROOT / catalog_rel
+    try:
+        report = capture_preflight.build_report(profiles, catalog_path)
+    except ValueError as exc:
+        return {"status": "error", "detail": str(exc), **base}
+    report.update(base)
+    report["catalog"] = str(catalog_path)
+    return report
 
 
 _ORDER = {"ok": 0, "skip": 0, "warn": 1, "error": 2}
@@ -241,7 +268,10 @@ def _worse(a: str, b: str) -> str:
     return a if _ORDER[a] >= _ORDER[b] else b
 
 
-def build_report() -> dict:
+def build_report(
+    requested_skills: list[str] | None = None,
+    target_dirs: list[str] | None = None,
+) -> dict:
     bootstrap = load_json(BOOTSTRAP)
     skills_registry = load_json(SKILLS_REGISTRY)
     if isinstance(bootstrap, Exception):
@@ -249,12 +279,20 @@ def build_report() -> dict:
     if isinstance(skills_registry, Exception):
         return {"fatal": f"cannot read {SKILLS_REGISTRY}: {skills_registry}"}
 
+    try:
+        selection = resolve_selection(skills_registry, requested_skills)
+    except SkillGraphError as exc:
+        return {"fatal": f"skill graph invalid: {exc}"}
+    selected_slugs = {s["slug"] for s in selection["skills"]}
+
     components = {
         "repo_home": check_repo_home(bootstrap),
-        "skills": check_skills(bootstrap, skills_registry),
+        "skills": check_skills(
+            bootstrap, skills_registry, selected_slugs, target_dirs=target_dirs
+        ),
         "wiki_registry": check_wiki(bootstrap),
         "browser": check_browser(bootstrap),
-        "adapters": check_adapters(),
+        "toolchain": check_toolchain(bootstrap, selection),
     }
     overall = "ok"
     for c in components.values():
@@ -277,7 +315,7 @@ def render_human(report: dict) -> str:
 
     sk = c["skills"]
     lines.append(f"{_ICON[sk['status']]} skills       "
-                 f"{len(sk['skills'])} active · targets: "
+                 f"{len(sk['skills'])} selected · targets: "
                  f"{', '.join(os.path.basename(os.path.dirname(t)) for t in sk['existing_targets']) or 'none'}")
     for s in sk["skills"]:
         lines.append(f"     {_ICON[s['status']]} {s['slug']}: {s['note']}")
@@ -288,12 +326,24 @@ def render_human(report: dict) -> str:
     br = c["browser"]
     lines.append(f"{_ICON[br['status']]} browser      {br['detail']}")
 
-    ad = c["adapters"]
-    lines.append(f"{_ICON[ad['status']]} adapters     "
-                 + " · ".join(f"{_ICON[a['status']]}{a['name']}" for a in ad["adapters"]))
-    for a in ad["adapters"]:
-        if a["status"] != "ok":
-            lines.append(f"     {_ICON[a['status']]} {a['name']}: {a['detail']}")
+    tc = c["toolchain"]
+    if tc["status"] == "skip":
+        lines.append(f"{_ICON['skip']} toolchain    {tc['detail']}")
+    elif tc["status"] == "error":
+        lines.append(f"{_ICON['error']} toolchain    {tc['detail']}")
+    else:
+        profiles = ", ".join(tc.get("profiles", [])) or "none"
+        lines.append(f"{_ICON[tc['status']]} toolchain    profiles: {profiles}")
+        for profile, info in tc.get("capabilities", {}).items():
+            cap_icon = _ICON["ok"] if info.get("status") == "ok" else _ICON["warn"]
+            detail = info.get("via") or info.get("note") or ""
+            lines.append(f"     {cap_icon} {profile}: {info.get('status')}"
+                         + (f" via {detail}" if detail else ""))
+        for rec in tc.get("recommendations", []):
+            reasons = "; ".join(rec.get("reasons", []))
+            lines.append(f"     → {rec['tool']} [{rec['priority']}]: {reasons}")
+            if rec.get("install"):
+                lines.append(f"       `{rec['install']}` ({rec.get('home', '')})")
 
     lines.append("")
     verdict = {"ok": "all systems go",
@@ -306,9 +356,21 @@ def render_human(report: dict) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(description="Suite-level health check for llm-wiki-suite.")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
+    ap.add_argument(
+        "--skills",
+        nargs="+",
+        metavar="SLUG",
+        help="scope linkage and toolchain checks to requested skills plus graph closure",
+    )
+    ap.add_argument(
+        "--target",
+        action="append",
+        metavar="DIR",
+        help="check this agent skills directory instead of registry defaults (repeatable)",
+    )
     args = ap.parse_args()
 
-    report = build_report()
+    report = build_report(args.skills, target_dirs=args.target)
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:

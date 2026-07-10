@@ -5,6 +5,22 @@ This repository is meant to be installable by an agent from a GitHub URL.
 When a user says "install this project" and provides the suite URL, follow this
 release-first flow.
 
+The preferred skills-only entry point is the standalone root `bootstrap.sh`.
+Download and inspect it, then run it; do not pipe a remote script directly into
+a shell:
+
+```bash
+curl -fsSLo bootstrap.sh \
+  https://raw.githubusercontent.com/dake6767/llm-wiki-suite/main/bootstrap.sh
+less bootstrap.sh
+bash bootstrap.sh
+```
+
+It implements steps 1–3 below: reuse/clone the permanent checkout, sync active
+skills into the registry's default agent targets, and run the scoped doctor. It
+detects external capture tools but never installs them. Use the manual commands
+below when an agent needs to control an individual step.
+
 ## 1. Clone Or Open The Repo
 
 The default install mode is **symlink** (`scripts/install.sh`), so the checkout is
@@ -28,6 +44,9 @@ Resolve where the repo lives, in this order:
 
 If a checkout is already present, `git pull` (or ask) before overwriting local
 changes. Never clone into the agent workspace / current working directory.
+`bootstrap.sh` is conservative for developer checkouts: it reuses them without
+changing them, and only pulls when `--update` is explicit and the worktree is
+clean.
 
 ## 2. Install Skills
 
@@ -49,30 +68,35 @@ Windows Python and installs links as directory junctions (`mklink /J`, no
 admin / Developer Mode needed) because Git Bash's `ln -s` silently degrades to
 a copy. Run it as-is — no manual path fixing.
 
-## 3. Install The Capture Toolchain (strongly recommend it)
+## 3. Detect And Offer The Selected Capture Toolchain
 
-The skills ship no fetchers — capture quality is gated on the machine's tools,
-and two of them are **near-mandatory** for a smooth flow. Probe first
-(`which opencli yt-dlp ffmpeg`, or `python3 scripts/doctor.py` after step 2),
-then for anything missing, **strongly recommend the install to the user** —
-say concretely what breaks without it, give the command *with the project home
-URL* so they can vet it, and get their go-ahead. Never install silently: a
-toolchain install is the user's call.
+The skills ship no fetchers. After step 2, run the exact `toolchain check:`
+command printed by `install.sh`. It scopes detection to feature skills the user
+requested plus their `bundles`; runtime-only `requires` are installed but do not
+contribute unrelated capability profiles. Examples:
 
-| Tool | Install | Without it |
-|------|---------|------------|
-| **opencli** | `npm i -g @jackwener/opencli` · [npm](https://www.npmjs.com/package/@jackwener/opencli) | 公众号 images stay remote; 小红书/抖音 captures fail outright (login-walled); X degrades |
-| **yt-dlp** | `brew install yt-dlp` · [github.com/yt-dlp/yt-dlp](https://github.com/yt-dlp/yt-dlp) | no video→transcript path at all (captions and audio both come through it) |
-| **ffmpeg** | `brew install ffmpeg` · [ffmpeg.org](https://ffmpeg.org) | no audio extraction / covers for the video path |
+```bash
+python3 scripts/doctor.py --skills my-llm-wiki-x
+python3 scripts/doctor.py --skills my-llm-wiki-video
+python3 scripts/doctor.py                       # default full-suite check
+```
 
-(`registry/bootstrap.json` → `capture_toolchain` carries the same list
-machine-readable. `markitdown` is optional — only needed for local PDF/docx.)
+Read the `toolchain` component. `unavailable` means the selected capability has
+no viable path; `degraded` means a fallback works with the stated limitation;
+`ok` may still carry an optional quality recommendation. Explain exactly which
+selected capability improves or breaks, give the reported install command and
+project home URL, and get the user's go-ahead. Never install silently.
+
+The single machine-readable catalog is
+`skills/my-llm-wiki/references/toolchain.json`; skills declare only capability
+ids in `registry/skills.json`, while `registry/bootstrap.json` points to the
+catalog. Do not re-create a hardcoded tool table in AGENTS.md or doctor.py.
 
 **Mainland-China networks:** before recommending any command above, check
 reachability — `python3 skills/cn-mirrors/scripts/net_probe.py` (or the
 `network:` line of my-llm-wiki's `preflight.py`). If github/PyPI/npm are
-blocked or crawling, recommend the `install_cn` variants from
-`bootstrap.json` instead of the defaults (they route through official
+blocked or crawling, recommend the `install_cn` variants from the toolchain
+report instead of the defaults (they route through official
 domestic mirrors, and for yt-dlp switch channels entirely so self-update
 keeps working). The full playbook — including cloning this repo itself via a
 mirror — is the `cn-mirrors` skill.
@@ -86,6 +110,12 @@ Two follow-ups that bite later if skipped now:
 - **opencli logins are per-platform and one-time** (`opencli xiaohongshu login`,
   `opencli douyin login`, …). Don't front-load them all — surface the login
   step when a capture first needs that platform.
+- **Hermes unattended runs**: when Hermes is one of the selected targets, offer
+  `approvals.mode: smart` plus `security.redact_secrets: true`, while keeping
+  `approvals.cron_mode: deny` and `security.tirith_enabled: true`. Never switch
+  to `off` / `yolo` or unconditional cron approval as an installation shortcut,
+  and never edit an existing Hermes config without user consent. Repository
+  examples must pass `python3 scripts/check_approval_safety.py`.
 
 ## 4. Initialize A Wiki
 
@@ -138,8 +168,8 @@ python3 scripts/doctor.py --json   # machine-readable (for scripting / watch)
 ```
 
 Each component reports `ok` / `warn` / `error` / `skip`; the process exits
-non-zero only on `error` (today: skills not linked into any agent dir — the one
-thing install must get right). Fix any `error`, and relay `warn`s the user cares
+non-zero only on `error` (skills not linked into any agent dir, a declared skill
+runtime dependency missing, or an invalid registry reference). Fix any `error`, and relay `warn`s the user cares
 about (e.g. a skill installed as a `--copy` won't track repo edits; Browser not
 running is fine if they only want the skills).
 

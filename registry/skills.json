@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 3,
   "updated_at": "2026-07-09",
   "skills": [
     {
@@ -20,9 +20,11 @@
     {
       "slug": "my-llm-wiki",
       "title": "my-llm-wiki — RAW 知识库内容沉淀",
-      "summary": "把外部内容（公众号 / X / 小红书 / 网页 / 在线视频 / 个人想法）抓取并转换为自包含 Markdown、图片本地化，沉淀进 LLM-WIKI 知识库不可变的 RAW 层；只定义场景 SOP 与产物验收契约，抓取委托给机器上现有工具（opencli / agent-reach / yt-dlp / WebFetch 等），能力探测优先。",
+      "summary": "LLM-WIKI RAW 抓取的统一入口与共享核心：负责 wiki 路由、Adapter/RAW 契约、网页/公众号/文档/个人想法的默认 SOP、确定性 normalization 和 synthesis handoff；X 与在线视频的复杂场景分别由 my-llm-wiki-x / my-llm-wiki-video 组合完成。",
       "source_local_path": "~/.claude/skills/my-llm-wiki",
       "collection_path": "skills/my-llm-wiki",
+      "bundles": ["my-llm-wiki-video", "my-llm-wiki-x"],
+      "capabilities": ["capture.web", "capture.doc", "capture.note"],
       "lifecycle": "active",
       "sync_status": "published",
       "github_repo": "llm-wiki-suite",
@@ -30,7 +32,39 @@
       "license": "MIT",
       "tags": ["knowledge-base", "rag", "archive", "raw", "wiki", "content-ingestion", "opencli"],
       "last_synced_at": "2026-06-23",
-      "updated_at": "2026-07-08"
+      "updated_at": "2026-07-09"
+    },
+    {
+      "slug": "my-llm-wiki-video",
+      "title": "my-llm-wiki-video — 在线视频转时间戳 RAW",
+      "summary": "把 YouTube、Bilibili、抖音、小红书视频等在线内容沉淀为带跳转时间戳的忠实转写：字幕优先，无字幕时走音频与本地 ASR，保留封面和来源链接但不保存视频文件；产物通过 my-llm-wiki 的共享 RAW runtime 统一提交。",
+      "source_local_path": "~/.claude/skills/my-llm-wiki-video",
+      "collection_path": "skills/my-llm-wiki-video",
+      "requires": ["my-llm-wiki"],
+      "capabilities": ["capture.video"],
+      "lifecycle": "active",
+      "sync_status": "unpublished",
+      "github_repo": "llm-wiki-suite",
+      "github_url": "https://github.com/dake6767/llm-wiki-suite/tree/main/skills/my-llm-wiki-video",
+      "license": "MIT",
+      "tags": ["knowledge-base", "video", "transcript", "asr", "timestamps", "raw"],
+      "updated_at": "2026-07-09"
+    },
+    {
+      "slug": "my-llm-wiki-x",
+      "title": "my-llm-wiki-x — X 内容与收藏沉淀",
+      "summary": "把单条 X/Twitter post 或登录用户的 bookmarks 沉淀为完整 RAW：逐条抓取正文和媒体，按 tweet id 去重，支持首次全量与后续增量同步，并通过 my-llm-wiki 的共享 RAW runtime 统一提交。",
+      "source_local_path": "~/.claude/skills/my-llm-wiki-x",
+      "collection_path": "skills/my-llm-wiki-x",
+      "requires": ["my-llm-wiki"],
+      "capabilities": ["capture.x.single", "capture.x.bookmarks"],
+      "lifecycle": "active",
+      "sync_status": "unpublished",
+      "github_repo": "llm-wiki-suite",
+      "github_url": "https://github.com/dake6767/llm-wiki-suite/tree/main/skills/my-llm-wiki-x",
+      "license": "MIT",
+      "tags": ["knowledge-base", "x", "twitter", "bookmarks", "raw", "content-ingestion"],
+      "updated_at": "2026-07-09"
     },
     {
       "slug": "my-llm-wiki-maintainer",

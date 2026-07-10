@@ -172,37 +172,17 @@ content page the ingest updates or heavily links:
     neither is orphaned: the Browser can't link it to a source or a page.
 11. Save cache only after successful, verified writes:
     ```bash
-    python3 scripts/wiki_ops.py cache save <root> "<raw/source/path>" <wiki/page1> <wiki/page2> ...
+    python3 scripts/wiki_ops.py cache save <root> "<raw/source/path>" \
+      --files-file /tmp/written-pages.json
+    python3 scripts/wiki_ops.py cache check <root> "<raw/source/path>"
     ```
 
-    **Pitfall: cache save with CJK paths in shell args can hang silently.** When the raw
-    path or wiki page slugs contain long CJK segments (e.g. `raw/sources/x/2026-06-16-AI-内容创作的地基信息源以-AI投资设计三个领域为例.md`),
-    calling `wiki_ops.py cache save` through the shell can appear to hang. The script
-    itself is fine — it succeeds with exit 0 and writes the cache; the shell wrapper
-    is what's slow/fragile. The reliable pattern is to invoke it from a tiny Python
-    wrapper using `subprocess.run([...])` with args as a list (no shell expansion):
-
-    ```python
-    # /tmp/save_cache.py
-    import subprocess
-    script = "<skill>/scripts/wiki_ops.py"
-    subprocess.run(
-        ["python3", script, "cache", "save", root, raw, *pages],
-        check=True, timeout=30,
-    )
-    ```
-
-    Always verify the cache write landed afterwards (read `ingest-cache.json` and
-    confirm the key exists with the expected `filesWritten` list) — silent success is
-    worse than a loud failure. **The cache structure is nested**: `{"entries": {<key>: {...}}}`,
-    not a flat dict — so a naive `cache[key]` lookup fails; access `cache["entries"][key]`
-    instead. In Python:
-    ```python
-    import json
-    with open(f"{root}/.llm-wiki/agent/ingest-cache.json") as f:
-        entries = json.load(f)["entries"]
-    assert key in entries and entries[key].get("filesWritten") == pages
-    ```
+    **Pitfall: cache save with CJK paths in shell args can hang silently.** Write
+    the affected page paths to `written-pages.json` as a JSON array using the
+    runtime's normal file-write tool. `--files-file` keeps those dynamic paths
+    out of shell code, and the save command prints the persisted
+    `filesWritten`. Require that list to match, then require `cache check` to
+    report `hit: true`; silent success is worse than a loud failure.
 12. Run review sweep after a batch drains.
 
 ## Output Language & Filenames
