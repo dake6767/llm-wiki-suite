@@ -1,7 +1,22 @@
 {
   "version": 1,
-  "updated_at": "2026-07-08",
+  "updated_at": "2026-07-09",
   "skills": [
+    {
+      "slug": "cn-mirrors",
+      "title": "cn-mirrors — 网络环境自适应安装/下载",
+      "summary": "探测本机对 github.com / PyPI / npm / HuggingFace 等开发主机的真实可达性（scripts/net_probe.py，纯标准库跨平台），在受限网络（大陆典型）把失败的生态路由到官方国内镜像：pip→TUNA、npm→npmmirror、HF→hf-mirror、GitHub→项目镜像/加速前缀；会话级参数优先、绝不静默改全局配置、只用公开镜像不做隧道。附项目维护者篇：Gitee/CNB 自动同步镜像、release 代理、install/install_cn 双命令约定。",
+      "source_local_path": "~/.claude/skills/cn-mirrors",
+      "collection_path": "skills/cn-mirrors",
+      "lifecycle": "active",
+      "sync_status": "published",
+      "github_repo": "llm-wiki-suite",
+      "github_url": "https://github.com/dake6767/llm-wiki-suite/tree/main/skills/cn-mirrors",
+      "license": "MIT",
+      "tags": ["network", "mirrors", "mainland-china", "install", "bootstrap", "pip", "npm", "huggingface"],
+      "last_synced_at": "2026-07-09",
+      "updated_at": "2026-07-09"
+    },
     {
       "slug": "my-llm-wiki",
       "title": "my-llm-wiki — RAW 知识库内容沉淀",

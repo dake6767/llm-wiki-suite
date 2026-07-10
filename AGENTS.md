@@ -68,6 +68,15 @@ toolchain install is the user's call.
 (`registry/bootstrap.json` → `capture_toolchain` carries the same list
 machine-readable. `markitdown` is optional — only needed for local PDF/docx.)
 
+**Mainland-China networks:** before recommending any command above, check
+reachability — `python3 skills/cn-mirrors/scripts/net_probe.py` (or the
+`network:` line of my-llm-wiki's `preflight.py`). If github/PyPI/npm are
+blocked or crawling, recommend the `install_cn` variants from
+`bootstrap.json` instead of the defaults (they route through official
+domestic mirrors, and for yt-dlp switch channels entirely so self-update
+keeps working). The full playbook — including cloning this repo itself via a
+mirror — is the `cn-mirrors` skill.
+
 Two follow-ups that bite later if skipped now:
 
 - **PATH for daemon agents**: npm global bins usually get exported only in
