@@ -20,6 +20,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -157,7 +158,7 @@ def maybe_open(path: Path, dry_run: bool) -> None:
 
 
 def expand(path: str) -> Path:
-    return Path(os.path.expanduser(path))
+    return Path(os.path.expandvars(os.path.expanduser(path)))
 
 
 def resolve_mcp_port(mcp: dict) -> int:
@@ -188,34 +189,95 @@ def read_mcp_token(mcp: dict) -> str | None:
     return value or None
 
 
-def host_mcp_registered(host: dict, server_name: str) -> bool | None:
-    """True/False when determinable, None when the host declares no config."""
+def _config_node(host: dict, server_name: str) -> tuple[bool | None, object | None, str]:
+    """Return registration state, isolated config node when possible, raw text."""
     config_path = host.get("config_path")
     if not config_path:
-        return None
+        return None, None, ""
     path = expand(config_path)
     if not path.is_file():
-        return False
+        return False, None, ""
     check = host.get("registered_check") or {}
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
-        return False
+        return False, None, ""
     if check.get("format") == "json":
         try:
             node = json.loads(text)
         except json.JSONDecodeError:
-            return False
+            return False, None, text
         for key in check.get("pointer", []):
             if not isinstance(node, dict) or key not in node:
-                return False
+                return False, None, text
             node = node[key]
-        return True
+        return True, node, text
     marker = check.get("marker") or server_name
-    return marker in text
+    return marker in text, None, text
 
 
-def build_mcp_commands(config: dict) -> list[dict]:
+def host_mcp_registered(host: dict, server_name: str) -> bool | None:
+    return _config_node(host, server_name)[0]
+
+
+def host_mcp_transport(host: dict, server_name: str) -> str | None:
+    """Best-effort transport classification for doctor/migration guidance."""
+    registered, node, text = _config_node(host, server_name)
+    if not registered:
+        return None
+    sample = json.dumps(node, ensure_ascii=False) if node is not None else text
+    lowered = sample.lower()
+    if "mcp-stdio-bridge.py" in lowered:
+        return "stdio"
+    if (isinstance(node, dict) and node.get("command")) or "mcp-remote" in lowered:
+        return "stdio-external"
+    if "127.0.0.1" in lowered or "localhost" in lowered or "[::1]" in lowered:
+        return "http-loopback"
+    if "http://" in lowered or "https://" in lowered or 'type = "http"' in lowered:
+        return "http-remote"
+    return "unknown"
+
+
+def _replace_placeholders(value, replacements: dict[str, str]):
+    if isinstance(value, str):
+        for name, replacement in replacements.items():
+            value = value.replace("{" + name + "}", replacement)
+        return value
+    if isinstance(value, list):
+        return [_replace_placeholders(item, replacements) for item in value]
+    if isinstance(value, dict):
+        return {key: _replace_placeholders(item, replacements) for key, item in value.items()}
+    return value
+
+
+def display_argv(argv: list[str], system: str | None = None) -> str:
+    """Render only for the user; execution always uses the argv list directly."""
+    if (system or platform.system()).lower() == "windows":
+        return subprocess.list2cmdline(argv)
+    return shlex.join(argv)
+
+
+def preferred_python_executable(system: str | None = None) -> str:
+    """Choose a host-stable absolute Python path for long-lived MCP config.
+
+    On Unix, sys.executable may resolve inside a versioned Homebrew/pyenv
+    directory.  Preserve the stable python3 shim instead.  On Windows the native
+    executable is preferable because MCP hosts do not execute through Git Bash
+    and therefore need a directly launchable .exe path.
+    """
+    if (system or platform.system()).lower() == "windows":
+        return os.path.abspath(sys.executable)
+    candidate = shutil.which("python3") or sys.executable
+    return os.path.abspath(candidate)
+
+
+def build_mcp_commands(
+    config: dict,
+    *,
+    root: Path = ROOT,
+    python_executable: str | None = None,
+    system: str | None = None,
+) -> list[dict]:
     """One row per host the user actually has: the exact registration command
     (placeholders resolved), current registration state, and any note."""
     mcp = config.get("mcp") or {}
@@ -224,26 +286,38 @@ def build_mcp_commands(config: dict) -> list[dict]:
     port = resolve_mcp_port(mcp)
     endpoint = mcp.get("endpoint", "http://127.0.0.1:{port}/mcp").replace("{port}", str(port))
     token = read_mcp_token(mcp)
+    bridge_rel = mcp.get("stdio_bridge_script", "scripts/mcp-stdio-bridge.py")
+    bridge_script = (root / bridge_rel).resolve()
+    python_path = os.path.abspath(python_executable or preferred_python_executable(system))
+    replacements = {
+        "endpoint": endpoint,
+        "token": token or "<Browser token>",
+        "python": python_path,
+        "bridge_script": str(bridge_script),
+    }
     rows = []
     for name, host in hosts.items():
         if not expand(host.get("detect_dir", "~/.%s" % name)).is_dir():
             continue  # user does not use this host
-        command = host.get("register_command")
-        if command:
-            command = command.replace("{endpoint}", endpoint)
-            command = command.replace(
-                "{token}", token or "<run the Browser once, then paste ~/.my-llm-wiki/connector/token>"
-            )
+        argv = _replace_placeholders(host.get("register_argv"), replacements)
+        unregister_argv = _replace_placeholders(host.get("unregister_argv"), replacements)
+        manual_config = _replace_placeholders(host.get("manual_config"), replacements)
         rows.append(
             {
                 "host": name,
                 "cli": host.get("cli"),
-                "command": command,
-                "unregister_command": host.get("unregister_command"),
+                "argv": argv,
+                "command": display_argv(argv, system) if argv else None,
+                "unregister_argv": unregister_argv,
+                "unregister_command": display_argv(unregister_argv, system) if unregister_argv else None,
+                "manual_config": manual_config,
+                "config_path": str(expand(host["config_path"])) if host.get("config_path") else None,
                 "note": host.get("register_note"),
                 "registered": host_mcp_registered(host, server_name),
+                "transport": host_mcp_transport(host, server_name),
                 "cli_available": bool(host.get("cli")) and shutil.which(host["cli"]) is not None,
-                "token_missing": token is None,
+                "bridge_script": str(bridge_script),
+                "bridge_available": bridge_script.is_file(),
             }
         )
     return rows
@@ -263,26 +337,39 @@ def propose_mcp_registration(config: dict, assume_yes: bool = False, dry_run: bo
     interactive = sys.stdin.isatty() and not assume_yes
     for row in rows:
         label = f"  [{row['host']}]"
-        if row["registered"]:
-            print(f"{label} already registered — skipping")
+        migrating = row["registered"] and row["transport"] in {"http-loopback", "stdio-external"}
+        if row["registered"] and not migrating:
+            suffix = f" ({row['transport']})" if row["transport"] else ""
+            print(f"{label} already registered{suffix} — skipping")
             continue
+        if migrating:
+            reason = (
+                "legacy loopback HTTP"
+                if row["transport"] == "http-loopback"
+                else "external stdio bridge"
+            )
+            print(f"{label} {reason} registration detected — replace with suite stdio bridge")
         if not row["command"]:
+            if row["manual_config"]:
+                action = "replace the existing entry with" if migrating else "apply this config manually"
+                destination = f" in {row['config_path']}" if row["config_path"] else ""
+                print(f"{label} {action}{destination}:")
+                print(json.dumps(row["manual_config"], ensure_ascii=False, indent=2))
             if row["note"]:
                 print(f"{label} {row['note']}")
             continue
         print(f"{label} proposed: {row['command']}")
         if row["note"]:
             print(f"          note: {row['note']}")
-        if row["token_missing"]:
-            print("          note: no token yet (~/.my-llm-wiki/connector/token) — start the Browser once first")
+        if not row["bridge_available"]:
+            print(f"          bridge missing: {row['bridge_script']}")
+            continue
         if not row["cli_available"]:
             print(f"          `{row['cli']}` not on PATH — run the command yourself when available")
             continue
         if dry_run:
             print("          [dry-run] not executed")
             continue
-        if row["token_missing"]:
-            continue  # a command with a placeholder token must not be executed
         if interactive:
             answer = input(f"          register {row['host']} now? [y/N] ").strip().lower()
             if answer not in {"y", "yes"}:
@@ -291,7 +378,12 @@ def propose_mcp_registration(config: dict, assume_yes: bool = False, dry_run: bo
         elif not assume_yes:
             print("          (non-interactive: not executed — re-run with --register-mcp --yes to apply)")
             continue
-        result = subprocess.run(row["command"], shell=True, check=False)
+        if migrating and row["unregister_argv"]:
+            removed = subprocess.run(row["unregister_argv"], check=False)
+            if removed.returncode != 0:
+                print(f"          remove failed (exit {removed.returncode}); keeping existing registration")
+                continue
+        result = subprocess.run(row["argv"], check=False)
         print(f"          {'registered' if result.returncode == 0 else f'command failed (exit {result.returncode})'}")
 
 
@@ -300,7 +392,11 @@ def unregister_mcp(config: dict, dry_run: bool = False) -> None:
     host config behind. Uses each host's own `mcp remove`."""
     rows = build_mcp_commands(config)
     for row in rows:
-        if not row["registered"] or not row["unregister_command"]:
+        if not row["registered"]:
+            continue
+        if not row["unregister_command"]:
+            location = row["config_path"] or "the host MCP config"
+            print(f"  [{row['host']}] remove the my-llm-wiki entry manually from {location}")
             continue
         print(f"  [{row['host']}] {row['unregister_command']}")
         if dry_run:
@@ -309,7 +405,7 @@ def unregister_mcp(config: dict, dry_run: bool = False) -> None:
         if not row["cli_available"]:
             print(f"          `{row['cli']}` not on PATH — run the command yourself")
             continue
-        result = subprocess.run(row["unregister_command"], shell=True, check=False)
+        result = subprocess.run(row["unregister_argv"], check=False)
         print(f"          {'removed' if result.returncode == 0 else f'command failed (exit {result.returncode})'}")
 
 

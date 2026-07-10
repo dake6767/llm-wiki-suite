@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -265,8 +266,37 @@ def check_mcp(bootstrap: dict, browser: dict) -> dict:
     rows = install_browser.build_mcp_commands(bootstrap)
     hosts_out = []
     warns = []
+    bridge_probe = None
+    if browser.get("status") == "ok":
+        bridge_rel = mcp.get("stdio_bridge_script", "scripts/mcp-stdio-bridge.py")
+        bridge_path = (REPO_ROOT / bridge_rel).resolve()
+        if not bridge_path.is_file():
+            warns.append(f"stdio bridge missing: {bridge_path}")
+            bridge_probe = {"ok": False, "error": "bridge script missing"}
+        else:
+            try:
+                result = subprocess.run(
+                    [sys.executable, str(bridge_path), "--probe", "--json", "--timeout", "3"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if result.returncode == 0:
+                    bridge_probe = json.loads(result.stdout)
+                else:
+                    error = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+                    bridge_probe = {"ok": False, "error": error}
+                    warns.append(f"stdio bridge probe failed: {error}")
+            except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+                bridge_probe = {"ok": False, "error": str(exc)}
+                warns.append(f"stdio bridge probe failed: {exc}")
     for row in rows:
-        host = {"host": row["host"], "registered": row["registered"]}
+        host = {
+            "host": row["host"],
+            "registered": row["registered"],
+            "transport": row.get("transport"),
+        }
         if row["registered"]:
             if not browser_present:
                 host["issue"] = "stale-entry"
@@ -274,7 +304,19 @@ def check_mcp(bootstrap: dict, browser: dict) -> dict:
                     f"{row['host']}: MCP entry present but Browser not installed — "
                     f"remove it: {row['unregister_command'] or 'see host config'}"
                 )
-        elif row["command"] and browser_present:
+            elif row.get("transport") == "http-loopback":
+                host["issue"] = "legacy-loopback-http"
+                warns.append(
+                    f"{row['host']}: loopback HTTP can be captured by system proxies — "
+                    "migrate: python3 scripts/install-browser.py --register-mcp"
+                )
+            elif row.get("transport") == "stdio-external":
+                host["issue"] = "external-stdio-bridge"
+                warns.append(
+                    f"{row['host']}: external stdio bridge still depends on npx/package state — "
+                    "migrate: python3 scripts/install-browser.py --register-mcp"
+                )
+        elif (row["command"] or row.get("manual_config")) and browser_present:
             host["issue"] = "unregistered"
             warns.append(
                 f"{row['host']}: Browser installed but MCP not registered — "
@@ -294,7 +336,8 @@ def check_mcp(bootstrap: dict, browser: dict) -> dict:
         + (", ".join(r["host"] for r in rows if r["registered"]) or "none needed")
     )
     return {"status": status, "browser_present": browser_present,
-            "hosts": hosts_out, "warnings": warns, "detail": detail}
+            "bridge_probe": bridge_probe, "hosts": hosts_out,
+            "warnings": warns, "detail": detail}
 
 
 def check_toolchain(bootstrap: dict, selection: dict) -> dict:

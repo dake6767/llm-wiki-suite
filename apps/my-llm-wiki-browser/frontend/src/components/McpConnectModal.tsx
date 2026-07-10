@@ -5,8 +5,8 @@ import { copyToClipboard } from "../lib/reviewPrompt";
 
 // 「连接 MCP」弹窗：把本 Browser 的 MCP 端点拼成一段可复制的提示词，
 // 交给任意 agent（Claude Code / 其他 MCP 客户端）完成注册。
-// 端点取自当前访问地址（origin + BASE），本机打开是 127.0.0.1，
-// 经中继打开自然是公网地址——复制即所见，无需用户换算。
+// 本机访问默认引导 suite 自带的 stdio bridge，彻底绕过宿主/系统代理；
+// 经中继打开时才给原生 streamable HTTP 配方。
 
 // 提示词是给 agent 的指令而非配置文件：先给意图，再给两条落地路径
 // （Claude Code 一行命令 / 通用 mcpServers JSON），最后附 consult-first 建议。
@@ -14,8 +14,29 @@ function buildMcpPrompt(): string {
   const endpoint = `${location.origin}${BASE}/mcp/`;
   const token = getToken();
   const auth = token ? `Authorization: Bearer ${token}` : "";
+  const loopbackHosts = new Set(["127.0.0.1", "localhost", "::1"]);
+  const isLocal = loopbackHosts.has(location.hostname);
+  const python = /Windows/i.test(navigator.userAgent) ? "py -3" : "python3";
+  if (isLocal) {
+    return [
+      "请把我的本机 LLM Wiki 知识库注册为 MCP 服务器。默认使用项目自带的 stdio bridge，",
+      "不要把 127.0.0.1 HTTP 端点直接写进宿主配置；Hermes、WorkBuddy 等客户端可能会把",
+      "loopback 错送进系统代理。bridge 会强制直连，并在运行时读取当前端口和 token。",
+      "",
+      "请找到永久安装的 llm-wiki-suite checkout，在仓库根目录运行：",
+      `${python} scripts/install-browser.py --register-mcp`,
+      "",
+      "安装器会识别 Claude Code、Hermes、Codex、WorkBuddy，并使用当前操作系统中实际的",
+      "Python 和 bridge 绝对路径生成配置；不要手工猜测 macOS app bundle、Windows 盘符或",
+      "Linux 安装目录。它只在确认后调用宿主自己的注册命令；WorkBuddy 没有注册 CLI，",
+      "安装器会打印需要人工合并到 ~/.workbuddy/mcp.json 的准确 JSON。",
+      "",
+      "注册后请新开会话并验证 list_wikis。Browser 必须在运行，但后续端口变化或 token 重置",
+      "不需要重新注册 MCP。",
+    ].join("\n");
+  }
   const lines = [
-    "请把我的 LLM Wiki 知识库注册为 MCP 服务器（streamable HTTP）：",
+    "请把我的远程 LLM Wiki 知识库注册为 MCP 服务器（streamable HTTP）：",
     "",
     `端点：${endpoint}`,
     ...(token ? [`认证头：${auth}`] : []),
@@ -25,7 +46,7 @@ function buildMcpPrompt(): string {
       ? `claude mcp add --transport http llm-wiki ${endpoint} --header "${auth}"`
       : `claude mcp add --transport http llm-wiki ${endpoint}`,
     "",
-    "其他 MCP 客户端，写入等价配置：",
+    "其他支持 streamable HTTP 的 MCP 客户端，写入等价配置：",
     JSON.stringify({
       mcpServers: {
         "llm-wiki": {
@@ -108,8 +129,8 @@ export default function McpConnectModal({
         {/* 正文 */}
         <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
           <p className="mb-3 font-serif text-sm leading-relaxed text-ink">
-            把下面这段提示词发给任意 agent（Claude Code、Cursor 等 MCP
-            客户端），它会把本知识库注册成三个只读工具：
+            把下面这段提示词发给任意 agent（Claude Code、Hermes、WorkBuddy
+            等 MCP 客户端），它会把本知识库注册成六个只读工具，包括：
             <span className="font-mono text-xs">
               list_wikis / search_wiki / read_page
             </span>

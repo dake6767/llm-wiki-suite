@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "updated_at": "2026-07-10",
   "home": "~/.my-llm-wiki",
   "repo_url": "https://github.com/dake6767/llm-wiki-suite.git",
@@ -25,9 +25,12 @@
     "catalog": "skills/my-llm-wiki/references/toolchain.json"
   },
   "mcp": {
-    "_note": "Single source of truth for Browser MCP registration across hosts (parallel to default_skill_targets). The Browser serves MCP at {endpoint} behind the same Bearer token as /api/v1. Registration recipes are each host's OWN `mcp add` command — install-browser.py proposes them after install and runs one only with explicit per-host consent (never edits a host config file directly); doctor.py reports 'Browser installed but host X unregistered' and stale entries. MCP is an access form, not the capability itself: hosts without MCP reach the same backend through wiki_ops.py browser-search / local-search / read-pages, fully equivalent.",
+    "_note": "Single source of truth for Browser MCP registration across hosts (parallel to default_skill_targets). Local Browser access defaults to the suite-owned stdio bridge so loopback never enters a host/system proxy; remote relay access remains native streamable HTTP. Registration argv is stored as arrays so install-browser.py can preserve Windows drive letters, backslashes, spaces, and shell metacharacters without shell parsing. The script proposes each host's own MCP command and runs it only with explicit consent; hosts without a registration CLI receive an exact manual config snippet. MCP is an access form, not the capability itself: CLI fallback remains equivalent.",
     "server_name": "my-llm-wiki",
     "endpoint": "http://127.0.0.1:{port}/mcp",
+    "local_default_transport": "stdio",
+    "remote_default_transport": "http",
+    "stdio_bridge_script": "scripts/mcp-stdio-bridge.py",
     "port_resolution": {
       "pref_file": "~/.my-llm-wiki/connector/server-port",
       "env": "PORT",
@@ -40,32 +43,35 @@
         "cli": "claude",
         "config_path": "~/.claude.json",
         "registered_check": {"format": "json", "pointer": ["mcpServers", "my-llm-wiki"]},
-        "register_command": "claude mcp add --scope user --transport http my-llm-wiki {endpoint} --header \"Authorization: Bearer {token}\"",
-        "unregister_command": "claude mcp remove --scope user my-llm-wiki"
+        "register_argv": ["claude", "mcp", "add", "--scope", "user", "my-llm-wiki", "--", "{python}", "{bridge_script}"],
+        "unregister_argv": ["claude", "mcp", "remove", "--scope", "user", "my-llm-wiki"],
+        "remote_register_command": "claude mcp add --scope user --transport http my-llm-wiki {remote_endpoint} --header \"Authorization: Bearer {token}\""
       },
       "hermes": {
         "detect_dir": "~/.hermes",
         "cli": "hermes",
         "config_path": "~/.hermes/config.yaml",
         "registered_check": {"format": "text", "marker": "my-llm-wiki"},
-        "register_command": "hermes mcp add my-llm-wiki --url {endpoint} --auth header",
-        "register_note": "Pitfall: Hermes' httpx routes loopback through the macOS system proxy (bypass list ignored — NousResearch/hermes-agent#31421 #14451), so with a local proxy (Clash etc.) the URL form 502s at probe AND runtime. Workaround until upstream adds a loopback bypass to the MCP path: register a stdio bridge instead — hermes mcp add my-llm-wiki --command npx --args -y mcp-remote {endpoint} --header \"Authorization:Bearer {token}\" --transport http-only",
-        "unregister_command": "hermes mcp remove my-llm-wiki"
+        "register_argv": ["hermes", "mcp", "add", "my-llm-wiki", "--command", "{python}", "--args", "{bridge_script}"],
+        "register_note": "Local stdio is intentional: Hermes' httpx can route loopback through the macOS system proxy and ignore the bypass list. The suite bridge disables proxies and reads the current Browser port/token at runtime.",
+        "unregister_argv": ["hermes", "mcp", "remove", "my-llm-wiki"],
+        "remote_register_command": "hermes mcp add my-llm-wiki --url {remote_endpoint} --auth header"
       },
       "codex": {
         "detect_dir": "~/.codex",
         "cli": "codex",
         "config_path": "~/.codex/config.toml",
         "registered_check": {"format": "text", "marker": "mcp_servers.my-llm-wiki"},
-        "register_command": "codex mcp add my-llm-wiki --url {endpoint} --bearer-token-env-var LLM_WIKI_WEB_TOKEN",
-        "register_note": "Codex reads the bearer token from $LLM_WIKI_WEB_TOKEN — export LLM_WIKI_WEB_TOKEN=\"$(cat ~/.my-llm-wiki/connector/token)\" in the profile Codex runs from.",
-        "unregister_command": "codex mcp remove my-llm-wiki"
+        "register_argv": ["codex", "mcp", "add", "my-llm-wiki", "--", "{python}", "{bridge_script}"],
+        "unregister_argv": ["codex", "mcp", "remove", "my-llm-wiki"],
+        "remote_register_command": "codex mcp add my-llm-wiki --url {remote_endpoint} --bearer-token-env-var LLM_WIKI_WEB_TOKEN",
+        "register_note": "For a remote relay, export its token as LLM_WIKI_WEB_TOKEN and use the remote HTTP recipe. Local access needs no token in host config because the bridge reads the Browser token file at runtime."
       },
       "agents": {
         "detect_dir": "~/.agents",
         "cli": null,
         "config_path": null,
-        "register_command": null,
+        "register_argv": null,
         "register_note": "No MCP registration CLI known for this host — use the equivalent CLI fallback (wiki_ops.py browser-search / local-search / read-pages)."
       },
       "workbuddy": {
@@ -73,8 +79,9 @@
         "cli": null,
         "config_path": "~/.workbuddy/mcp.json",
         "registered_check": {"format": "text", "marker": "llm-wiki"},
-        "register_command": null,
-        "register_note": "No registration CLI, but Workbuddy reads ~/.workbuddy/mcp.json (claude-style mcpServers map); registration means the USER edits that file (per the consent contract we never write host config files). Pitfall: with a local system proxy (Clash etc.) Workbuddy's HTTP client fails on loopback URLs just like Hermes (see hosts.hermes.register_note), so a direct {\"type\": \"http\", \"url\": \"http://127.0.0.1:...\"} entry won't connect — use a stdio bridge entry instead: {\"command\": \"npx\", \"args\": [\"-y\", \"mcp-remote\", \"{endpoint}\", \"--header\", \"Authorization:Bearer {token}\", \"--transport\", \"http-only\"]}. A relay URL also works if Workbuddy needs remote access. Otherwise use the equivalent CLI fallback (wiki_ops.py browser-search / local-search / read-pages)."
+        "register_argv": null,
+        "manual_config": {"mcpServers": {"my-llm-wiki": {"command": "{python}", "args": ["{bridge_script}"]}}},
+        "register_note": "WorkBuddy has no registration CLI, so the user applies the printed JSON to the expanded per-user config path shown by the installer. Local HTTP loopback is deliberately not offered because its client can route it through the system proxy. A remote relay may still use native HTTPS."
       }
     }
   },
