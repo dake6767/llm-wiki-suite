@@ -5,6 +5,8 @@ llm-wiki 生态的 monorepo：统一管理 **Skills** 与 **My LLM Wiki Browser*
 
 每个 skill 都应服务真实任务结果，可复用、可维护、可评估。
 
+本文件面向人类读者；给 agent 的端到端安装协议（工具链检测、无人值守配置、Browser 安装等）见 [`AGENTS.md`](AGENTS.md)。
+
 结构与发布约定参考自 [`yaojingang/yao-open-skills`](https://github.com/yaojingang/yao-open-skills)，并按本仓库实际情况做了调整。
 
 ## 仓库结构
@@ -88,47 +90,16 @@ python3 scripts/doctor.py --skills my-llm-wiki-x  # 只检查 X leaf + 所需 co
 python3 scripts/doctor.py --target ~/.codex/skills # 检查自定义安装目标
 ```
 
-每项报 `ok`/`warn`/`error`/`skip`；skills 未软链、声明的运行依赖缺失、
-registry/toolchain 配置无效时为 `error`，进程非零退出。工具缺失或存在可用降级
-路径只记 `warn`，由用户决定是否安装增强栈。
+每项报 `ok`/`warn`/`error`/`skip`，仅 `error` 非零退出；各状态的含义与处理方式见
+[`AGENTS.md`](AGENTS.md)。
 
 ### 抓取工具链（按 capability 检测）
 
 skills 自己不带 fetcher。`registry/skills.json` 只声明 capability profile；
-`doctor.py --skills …` 根据 requested/bundled skills 计算检测范围，运行时依赖
-`requires` 不会带入无关工具。例如单装 X 不检查 yt-dlp/ffmpeg/markitdown，
-而安装完整 `my-llm-wiki` 门面会合并 Web、doc、X、video profiles。
-
-缺失工具、降级范围、普通/大陆网络安装命令和项目主页都由 `toolchain` 一节给出。
-机器可读的唯一工具清单在
-`skills/my-llm-wiki/references/toolchain.json`，`registry/bootstrap.json` 只保存
-其路径。安装建议必须由用户确认，绝不静默执行。npm 全局 bin 仍应导出到
-`~/.profile`，让守护进程型 agent 能找到 opencli。
-
-### Hermes 无人值守抓取
-
-Hermes 建议保留 Tirith，并把审批切到 `smart`；不要用 `off` / `yolo`，也不要把
-cron 全局设成无条件批准。`~/.hermes/config.yaml` 的推荐最小配置是：
-
-```yaml
-approvals:
-  mode: smart
-  cron_mode: deny
-security:
-  tirith_enabled: true
-  redact_secrets: true
-```
-
-wiki skills 的命令示例必须把抓取结果当作数据：先落盘，再交给仓库内的固定脚本；
-禁止 `curl | python`、`python -c`、临时 heredoc 脚本和宽范围 `rm -rf`。提交前可运行：
-
-```bash
-python3 scripts/check_approval_safety.py
-python3 -m unittest scripts.test_approval_safe -v
-```
-
-这会消除可预先规避的命令审批，但不会绕过真实的权限边界。读取浏览器 cookies、
-登录平台、访问私有/付费内容、覆盖用户文件、执行来源代码或安装软件仍需用户明确同意。
+`doctor.py --skills …` 按所选 skill 计算检测范围，例如单装 X 不检查
+yt-dlp/ffmpeg/markitdown。缺失工具的安装命令由 doctor 的 `toolchain` 一节给出，
+必须经用户确认，绝不静默执行。完整协议（工具清单位置、daemon agent 的 PATH
+注意事项、无人值守审批配置等）见 [`AGENTS.md`](AGENTS.md)。
 
 ## 新增 / 更新一个 skill
 
@@ -141,18 +112,15 @@ python3 -m unittest scripts.test_approval_safe -v
    用户功能需要的技术栈用 `capabilities` profile 声明。
 4. 每个 skill 以自带的 `SKILL.md` 作为使用说明入口。
 5. 手动在上面的 Skills 表加一行（纯说明，不影响安装）。
-6. push 后把该条目 `sync_status` 标为 `published`。
+6. 提交前运行 `python3 scripts/check_approval_safety.py` 与
+   `python3 -m unittest scripts.test_approval_safe -v`，确保命令示例能安全通过
+   agent 的命令审批（先落盘再交给仓库内固定脚本；禁止 `curl | python`、
+   `python -c`、临时 heredoc 和宽范围 `rm -rf`）。
+7. push 后把该条目 `sync_status` 标为 `published`。
 
 ## My LLM Wiki Browser 融合
 
 Browser 作为 app 纳入 `apps/my-llm-wiki-browser/`，不安装到 agent 的 skills 目录。
 使用与构建说明见 [`apps/my-llm-wiki-browser/README.md`](apps/my-llm-wiki-browser/README.md)。
-
-Browser 安装策略是 **优先下载 GitHub Release**；只有没有匹配 release 时才回退源码构建：
-
-```bash
-python3 scripts/install-browser.py --open
-python3 scripts/install-browser.py --fallback-source
-```
-
-给 agent 的完整安装协议见 [`AGENTS.md`](AGENTS.md)。
+安装策略是 **优先下载 GitHub Release**（`scripts/install-browser.py`），没有匹配
+release 时才回退源码构建；具体命令与回退条件见 [`AGENTS.md`](AGENTS.md)。
