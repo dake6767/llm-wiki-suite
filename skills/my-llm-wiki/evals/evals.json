@@ -57,6 +57,54 @@
           "text": "body is faithful and substantial (>2000 chars of article text)"
         }
       ]
+    },
+    {
+      "id": 2,
+      "name": "note-capture-and-synthesize-same-turn",
+      "prompt": "/my-llm-wiki 抓取并整理这条我自己的笔记：\"检索系统的质量上限取决于可观测性；没有失败样本回流，调参只是在猜。\" 知识库根目录就是你的 outputs 目录（已有 schema.md、wiki/ 和 .llm-wiki/project.json）。这是一个组合请求，请在同一轮完成，不要只停在 RAW。",
+      "expected_output": "The note is first normalized into immutable raw/sources/note/, then that exact RAW file is ingested by my-llm-wiki-maintainer into derived wiki pages in the same turn. The ingest ledger records a cache hit, and the single final response reports both capture and synthesis without asking the user to say 整理 again.",
+      "files": [],
+      "assertions": [
+        {
+          "text": "A file matching raw/sources/note/*.md exists with source_type: note and status: raw"
+        },
+        {
+          "text": "At least one derived Markdown page under wiki/ cites or lists the exact newly written RAW note as a source"
+        },
+        {
+          "text": ".llm-wiki/agent/ingest-cache.json contains an entry for the exact newly written RAW note"
+        },
+        {
+          "text": "wiki_ops.py cache check for the exact RAW note reports hit: true"
+        },
+        {
+          "text": "The only user-facing completion response reports both RAW capture and wiki synthesis"
+        },
+        {
+          "text": "The response does not ask the user to say 整理, 综合, ingest, or otherwise repeat the already requested second stage"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "note-capture-only-does-not-synthesize",
+      "prompt": "/my-llm-wiki 只存 RAW，暂时不要整理：\"把失败样本作为检索评测集的一部分。\" 知识库根目录就是你的 outputs 目录（已有 schema.md、wiki/ 和 .llm-wiki/project.json）。",
+      "expected_output": "The note is normalized into raw/sources/note/ and left pending. No maintainer ingest, derived page, or ingest-cache entry is created because the user explicitly requested capture only.",
+      "files": [],
+      "assertions": [
+        {
+          "text": "A file matching raw/sources/note/*.md exists with source_type: note and status: raw"
+        },
+        {
+          "text": "No derived wiki page cites the newly written RAW note"
+        },
+        {
+          "text": "The ingest cache has no entry for the newly written RAW note"
+        },
+        {
+          "text": "The response accurately reports a capture-only result and does not claim synthesis completed"
+        }
+      ]
     }
   ]
 }

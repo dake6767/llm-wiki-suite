@@ -2,7 +2,7 @@
   "optimizer_hints": {
     "capability": "Ingest external content into the immutable RAW layer of an LLM-WIKI knowledge base",
     "inputs": ["a URL", "a WeChat 公众号 link", "an X/Twitter post", "a 小红书 note", "a web page", "an online video link", "the user's own thought", "a local PDF/doc"],
-    "trigger_actions": ["save a link into the wiki", "archive/clip/沉淀 a source into RAW", "sync X bookmarks into RAW", "file my own note/idea", "distill a video into RAW", "initialize a new wiki"],
+    "trigger_actions": ["save a link into the wiki", "archive/clip/沉淀 a source into RAW", "capture a source and synthesize it into wiki pages in the same turn", "sync X bookmarks into RAW", "file my own note/idea", "distill a video into RAW", "initialize a new wiki"],
     "exclusions": ["summarize or analyze the content", "search for content", "judge whether it is worth reading", "rip a video file to keep", "convert a PDF just to read it", "generate the wiki's derived pages", "sync notes between apps"]
   },
   "fallback_positive_concepts": ["archive_link", "bookmark_sync", "first_party_note", "video_to_raw", "init_wiki"],
@@ -12,8 +12,10 @@
       "phrases": [
         "save this link", "save this article", "archive this", "clip this", "clip this page",
         "capture this into my wiki", "store this in my knowledge base", "keep this article",
+        "capture then synthesize", "capture and ingest", "capture and organize in the same run",
         "file this into RAW", "save it as RAW", "save into the knowledge base",
         "存成 RAW", "存到知识库", "存进知识库", "存一下这篇", "存下来", "把这个链接存进知识库",
+        "抓取并整理", "沉淀后直接整理", "沉淀后直接综合入库", "不要停在 RAW",
         "沉淀这篇文章", "沉淀一下", "归档这篇", "保存到我的 wiki", "存到人文库", "存到我的库",
         "把这篇公众号存了", "存这条推文", "存这条小红书"
       ]
