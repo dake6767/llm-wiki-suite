@@ -8,9 +8,14 @@ description: >-
   online video, or their own note/idea into a wiki or knowledge base; also use to
   initialize a new wiki or when the user explicitly invokes my-llm-wiki. For X or
   Twitter capture, combine with my-llm-wiki-x. For online-video capture, combine
-  with my-llm-wiki-video. Do not use merely to summarize/analyze content, search the
-  web, judge whether something is worth reading, rip a video file, convert a PDF
-  only for reading, edit derived wiki pages, or sync notes between apps.
+  with my-llm-wiki-video. When one request combines capture with downstream wiki
+  synthesis—e.g. “抓取并整理”, “沉淀后直接整理”, “抓取并理解/读懂/吃透”, or
+  “capture then ingest/synthesize”—own the full same-turn chain: write RAW, hand the
+  exact wiki root and RAW path to my-llm-wiki-maintainer, verify its ingest ledger,
+  then report once. Do not stop after RAW or ask the user to repeat the synthesis
+  request. Do not use merely to summarize/analyze content, search the web, judge
+  whether something is worth reading, rip a video file, convert a PDF only for
+  reading, edit already-derived wiki pages, or sync notes between apps.
 ---
 
 # my-llm-wiki — RAW capture facade and core
@@ -20,11 +25,48 @@ but never edited. Preserve text, structure, provenance, and local media. Fetchin
 is delegated to installed tools; this skill owns the stable Adapter/RAW contracts,
 wiki routing, deterministic normalization, and handoff to synthesis.
 
-Every capture follows one spine:
+Classify the requested terminal outcome before calling a fetcher, then follow the
+matching spine:
 
 ```text
-resolve wiki → fetch to a temp adapter shape → verify → normalize once → report
+capture only:
+  resolve wiki → fetch to temp → verify → normalize once → report RAW
+
+capture + synthesize:
+  resolve wiki → fetch to temp → verify → normalize once
+  → ingest that exact RAW with my-llm-wiki-maintainer
+  → verify the ingest ledger → report both stages once
 ```
+
+## Decide the terminal outcome first
+
+Read the whole request, not just the URL or the `/my-llm-wiki` command name.
+
+- **Capture only** — “存一下 / 归档 / clip / save / 只存 RAW”, a bare URL with
+  archival intent, or “沉淀” without a downstream processing verb. The requested
+  artifact is the immutable RAW source.
+- **Capture + synthesize** — the same request also says “整理 / 综合 / 深度整理 /
+  理解 / 读懂 / 吃透 / 串起来 / ingest / synthesize”, including the canonical
+  “抓取并整理”. The requested artifact includes derived `wiki/` pages, so RAW alone
+  is an intermediate checkpoint, not a completed task.
+
+For capture + synthesize, record both completion gates in the working plan and
+load `my-llm-wiki-maintainer` as soon as the intent is recognized—even in a fresh
+session where it is not already in context. This early load keeps the second gate
+visible across a long fetch or transcription. After normalization, pass the exact
+resolved wiki root and the exact newly written RAW path into the maintainer's
+Ingest flow.
+
+The combined request is complete only when:
+
+1. RAW normalization succeeded; and
+2. maintainer ingest succeeded and `cache check` reports `hit: true` for that RAW.
+
+Do not send a capture-only success response between those gates. In particular,
+do not finish with “已沉淀，如需整理请告诉我” when the original request already
+asked for 整理. If the maintainer is unavailable or ingest fails, report that second
+stage as blocked; do not relabel the partial result as full success or make the
+user repeat the same instruction.
 
 ## Approval-clean execution
 
@@ -152,15 +194,19 @@ idea; never edit its existing RAW file.
 
 - **Capture-only intent:** leave the new source pending and say how to request
   synthesis later.
-- **Explicit synthesis intent:** use `my-llm-wiki-maintainer` in the same turn,
-  passing the exact resolved wiki root and new RAW path.
+- **Capture + synthesize intent:** continue the already-planned
+  `my-llm-wiki-maintainer` Ingest flow in the same turn, passing the exact resolved
+  wiki root and new RAW path; verify the ingest-cache entry before the final reply.
 - **Explicit `/my-llm-wiki` query intent:** hand off to the maintainer's Query
   flow rather than scanning RAW directly.
 - **Backlog intent:** resolve the wiki, list pending sources from the maintainer's
   ingest ledger, and ingest them through one path only.
 
-The ingest ledger—not the immutable `inbox` tag—is authoritative. If the desktop
-app watches the wiki, do not also auto-chain skill ingestion and create duplicates.
+The ingest ledger—not the immutable `inbox` tag—is authoritative. Keep one ingest
+owner to avoid duplicates, but do not infer ownership merely because the Browser
+is installed or running. Skip direct maintainer ingest only when an external watcher
+is confirmed to own synthesis for this wiki; even then, verify that it produced the
+ledger hit and derived page before reporting the combined request as complete.
 
 ## Invariants
 

@@ -18,7 +18,10 @@
     {"text": "初始化 wiki，建一个技术知识库", "family": "init_wiki"},
     {"text": "set up my llm-wiki at ~/llm-wiki", "family": "init_wiki"},
     {"text": "把这个 PDF 存到知识库 /Users/me/paper.pdf", "family": "archive_link"},
-    {"text": "/my-llm-wiki https://example.com/page", "family": "archive_link"}
+    {"text": "/my-llm-wiki https://example.com/page", "family": "archive_link"},
+    {"text": "/my-llm-wiki 抓取并整理 https://youtu.be/xyz", "family": "capture_then_synthesize"},
+    {"text": "Capture this YouTube talk and synthesize it into my wiki in the same run: https://youtu.be/xyz", "family": "capture_then_synthesize"},
+    {"text": "把这篇公众号沉淀后直接综合入库，不要停在 RAW：https://mp.weixin.qq.com/s/abc", "family": "capture_then_synthesize"}
   ],
   "should_not_trigger": [
     {"text": "总结这篇公众号文章讲了什么", "family": "summarize_analyze_only"},
