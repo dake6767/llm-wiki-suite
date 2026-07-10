@@ -1,6 +1,6 @@
 {
   "version": 3,
-  "updated_at": "2026-07-09",
+  "updated_at": "2026-07-10",
   "skills": [
     {
       "slug": "cn-mirrors",
@@ -69,7 +69,7 @@
     {
       "slug": "my-llm-wiki-maintainer",
       "title": "my-llm-wiki-maintainer — LLM Wiki 维护与编译",
-      "summary": "把已沉淀的 RAW 源编译成相互链接的 wiki 页面并保持健康：初始化 wiki、ingest/更新页面、跑 review 队列、deep research、去重、lint、带引用查询并回存、合并页面与索引、刷新 overview。与 my-llm-wiki（上游 capture）配套，消费已存在的 raw 源。",
+      "summary": "把已沉淀的 RAW 源编译成相互链接的 wiki 页面并保持健康：初始化 wiki、ingest/更新页面、跑 review 队列、deep research、去重、lint、回存答案、合并页面与索引、刷新 overview。检索走 O(top-k) 有界工作集（browser-search/local-search/read-pages），带上下文预算与 token-trace 计量。与 my-llm-wiki（上游 capture）和 my-llm-wiki-search（只读查询入口）配套，消费已存在的 raw 源。",
       "source_local_path": "~/.claude/skills/my-llm-wiki-maintainer",
       "collection_path": "skills/my-llm-wiki-maintainer",
       "lifecycle": "active",
@@ -79,7 +79,22 @@
       "license": "MIT",
       "tags": ["knowledge-base", "wiki", "compile", "review", "deep-research", "lint", "dedup", "citations"],
       "last_synced_at": "2026-06-24",
-      "updated_at": "2026-07-08"
+      "updated_at": "2026-07-10"
+    },
+    {
+      "slug": "my-llm-wiki-search",
+      "title": "my-llm-wiki-search — LLM Wiki 只读检索与带引用回答",
+      "summary": "很薄的只读公共能力：跨库定位、top-k 全文检索、有界候选页读取、带引用回答。三层检索（Browser MCP → browser-search HTTP → 本地有界 local-search），Browser 是可选组件、fallback 完整可用；硬上下文预算（默认 8 候选、读 3–5 页、单页/总字符封顶），永不整库读 index。不抓取、不写 RAW、不改 wiki（分别归 my-llm-wiki 与 my-llm-wiki-maintainer）。",
+      "source_local_path": "~/.claude/skills/my-llm-wiki-search",
+      "collection_path": "skills/my-llm-wiki-search",
+      "requires": ["my-llm-wiki-maintainer"],
+      "lifecycle": "active",
+      "sync_status": "unpublished",
+      "github_repo": "llm-wiki-suite",
+      "github_url": "https://github.com/dake6767/llm-wiki-suite/tree/main/skills/my-llm-wiki-search",
+      "license": "MIT",
+      "tags": ["knowledge-base", "wiki", "search", "query", "citations", "read-only", "mcp"],
+      "updated_at": "2026-07-10"
     }
   ]
 }

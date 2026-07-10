@@ -1,0 +1,41 @@
+{
+  "_comment": "Route-regression cases for my-llm-wiki-search. should_trigger = read-only wiki lookups / cited answers from the existing wiki. near_neighbor = the two siblings that must NOT route here: my-llm-wiki capture (save/clip a NEW source into RAW) and my-llm-wiki-maintainer write/maintain operations (ingest/review/lint/dedup/save-back), plus generic WEB search. should_not_trigger = generic summarize/translate/explain/code asks. Run with yao-meta-skill scripts/trigger_eval.py against evals/route/semantic_config.json.",
+  "recommended_threshold": 0.33,
+  "should_trigger": [
+    { "text": "查一下知识库里有没有关于 MCP 的内容。", "family": "query" },
+    { "text": "查一下我的 wiki，之前存过 SpaceX 的文章吗？", "family": "query" },
+    { "text": "wiki 里搜一下 top-k 检索。", "family": "query" },
+    { "text": "知识库里有没有讲 SEO 的页面？", "family": "query" },
+    { "text": "从我的 wiki 里查一下明朝内阁相关的页面。", "family": "query" },
+    { "text": "我的知识库怎么说 agent skills？", "family": "query" },
+    { "text": "What does my wiki say about prompt caching?", "family": "query" },
+    { "text": "Search my knowledge base for notes on Rust async.", "family": "query" },
+    { "text": "Search my wiki for Claude and answer with citations.", "family": "query" },
+    { "text": "Did I save anything about LangChain before?", "family": "query" },
+    { "text": "Answer this question from the wiki with citations and wikilinks.", "family": "query" }
+  ],
+  "near_neighbor": [
+    { "text": "把这个链接存进知识库。", "family": "capture" },
+    { "text": "Save this article to my wiki.", "family": "capture" },
+    { "text": "沉淀这篇公众号文章，存成 raw。", "family": "capture" },
+    { "text": "Sync my Twitter bookmarks into the RAW layer.", "family": "capture" },
+    { "text": "把这个视频存进知识库。", "family": "capture" },
+    { "text": "Ingest the new raw sources into wiki pages and run the review queue.", "family": "maintain" },
+    { "text": "对知识库做 lint，检查坏链和缺失的 frontmatter。", "family": "maintain" },
+    { "text": "跑一遍 review 队列，处理收件箱里的新源。", "family": "maintain" },
+    { "text": "对这个知识库去重，把重名的实体页合并成一个。", "family": "maintain" },
+    { "text": "从 wiki 里带引用回答这个问题，然后把答案回存。", "family": "maintain" },
+    { "text": "Save that answer back into the wiki so the knowledge compounds.", "family": "maintain" },
+    { "text": "Refresh the overview page for this wiki.", "family": "maintain" },
+    { "text": "搜一下最新的 AI 新闻。", "family": "websearch" },
+    { "text": "Search the web for LLM benchmark results.", "family": "websearch" }
+  ],
+  "should_not_trigger": [
+    { "text": "Summarize this article for me.", "family": "summarize" },
+    { "text": "解释一下知识库是什么意思。", "family": "explain" },
+    { "text": "把这段翻译成中文。", "family": "translate" },
+    { "text": "帮我写一个全文搜索功能的代码。", "family": "code" },
+    { "text": "总结一下这篇文章的重点。", "family": "summarize" },
+    { "text": "Explain what an LLM wiki is in simple terms.", "family": "explain" }
+  ]
+}

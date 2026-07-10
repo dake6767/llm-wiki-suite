@@ -1,5 +1,5 @@
 {
-  "_comment": "Route-regression cases for my-llm-wiki-maintainer. should_trigger = real maintainer operations. near_neighbor = my-llm-wiki capture requests (fetch/clip/archive a NEW source into RAW) that must NOT route here. should_not_trigger = generic explain/summarize/translate. Run with yao-meta-skill scripts/trigger_eval.py against evals/route/semantic_config.json.",
+  "_comment": "Route-regression cases for my-llm-wiki-maintainer. should_trigger = real maintainer operations (write/maintain). near_neighbor = my-llm-wiki capture requests (fetch/clip/archive a NEW source into RAW) AND my-llm-wiki-search read-only lookups (查一下知识库 / wiki 里搜 / what does my wiki say) that must NOT route here. should_not_trigger = generic explain/summarize/translate. Run with yao-meta-skill scripts/trigger_eval.py against evals/route/semantic_config.json.",
   "recommended_threshold": 0.33,
   "should_trigger": [
     { "text": "Ingest the new raw sources into wiki pages and run the review queue.", "family": "ingest" },
@@ -10,7 +10,6 @@
     { "text": "Sweep the stale review items and resolve the ones that are done.", "family": "review" },
     { "text": "Dedup the wiki — merge the duplicate entity pages saved under different names.", "family": "dedup" },
     { "text": "Lint my knowledge base and show me the broken wikilinks.", "family": "lint" },
-    { "text": "Answer this question from the wiki with citations and wikilinks.", "family": "query" },
     { "text": "Save that answer back into the wiki so the knowledge compounds.", "family": "save" },
     { "text": "Refresh the overview page for this wiki.", "family": "overview" },
     { "text": "Initialize a new LLM Wiki with purpose.md, schema.md, and wiki/index.md.", "family": "init" },
@@ -32,7 +31,13 @@
     { "text": "把这个链接存进知识库，存成 raw。", "family": "capture" },
     { "text": "同步我的 X 收藏到 RAW。", "family": "capture" },
     { "text": "把这个视频存进知识库。", "family": "capture" },
-    { "text": "记一下我的想法，存个 idea 到 wiki。", "family": "capture" }
+    { "text": "记一下我的想法，存个 idea 到 wiki。", "family": "capture" },
+    { "text": "Answer this question from the wiki with citations and wikilinks.", "family": "query-readonly" },
+    { "text": "查一下知识库里有没有关于 MCP 的内容。", "family": "query-readonly" },
+    { "text": "What does my wiki say about prompt caching?", "family": "query-readonly" },
+    { "text": "wiki 里搜一下 SpaceX。", "family": "query-readonly" },
+    { "text": "之前存过关于 SEO 的文章吗？", "family": "query-readonly" },
+    { "text": "Search my knowledge base for notes on Rust async.", "family": "query-readonly" }
   ],
   "should_not_trigger": [
     { "text": "Summarize this article for me.", "family": "summarize" },
