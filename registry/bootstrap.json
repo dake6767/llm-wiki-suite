@@ -49,6 +49,7 @@
         "config_path": "~/.hermes/config.yaml",
         "registered_check": {"format": "text", "marker": "my-llm-wiki"},
         "register_command": "hermes mcp add my-llm-wiki --url {endpoint} --auth header",
+        "register_note": "Pitfall: Hermes' httpx routes loopback through the macOS system proxy (bypass list ignored — NousResearch/hermes-agent#31421 #14451), so with a local proxy (Clash etc.) the URL form 502s at probe AND runtime. Workaround until upstream adds a loopback bypass to the MCP path: register a stdio bridge instead — hermes mcp add my-llm-wiki --command npx --args -y mcp-remote {endpoint} --header \"Authorization:Bearer {token}\" --transport http-only",
         "unregister_command": "hermes mcp remove my-llm-wiki"
       },
       "codex": {
