@@ -1078,6 +1078,47 @@ def cmd_review(args: argparse.Namespace) -> None:
         if not found:
             die(f"Review id not found: {args.id}")
         write_text(path, json.dumps(items, indent=2, ensure_ascii=False) + "\n")
+    elif review_cmd == "get":
+        # 单条取用：处理一个待办不需要把整个 review.json 读进上下文。
+        items = load_json(path, [])
+        for item in items:
+            if item.get("id") == args.id:
+                print(json.dumps(item, indent=2, ensure_ascii=False))
+                return
+        die(f"Review id not found: {args.id}")
+    elif review_cmd == "find":
+        # 过滤取用：按类型/状态/关键词圈出少量条目，JSON 输出完整字段。
+        items = load_json(path, [])
+        terms = [t.lower() for t in (args.q or "").split() if t.strip()]
+        matches = []
+        for item in items:
+            if args.status != "all" and review_status(item) != args.status:
+                continue
+            if args.type and item.get("type") != args.type:
+                continue
+            if terms:
+                haystack = " ".join(
+                    str(v)
+                    for v in (
+                        item.get("title"),
+                        item.get("description"),
+                        item.get("sourcePath"),
+                        " ".join(item.get("affectedPages") or []),
+                        " ".join(item.get("searchQueries") or []),
+                    )
+                    if v
+                ).lower()
+                if not all(term in haystack for term in terms):
+                    continue
+            matches.append(item)
+        limit = max(1, args.limit)
+        print(
+            json.dumps(
+                {"total": len(matches), "items": matches[:limit]},
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
     else:
         die(f"Unknown review command: {args.review_cmd}")
 
@@ -2117,6 +2158,19 @@ def cmd_trace(args: argparse.Namespace) -> None:
         "outputChars": args.output_chars,
         "createdAt": dt.datetime.now(dt.timezone.utc).isoformat(),
     }
+    # Retrieval/token metrology — the runtime-agnostic counters that make
+    # cross-host before/after comparison possible (host-side token accounting
+    # like Hermes' state.db only measures that one host).
+    for key, value in (
+        ("backend", args.backend),
+        ("candidates", args.candidates),
+        ("pagesRead", args.pages_read),
+        ("contextChars", args.context_chars),
+        ("promptTokens", args.prompt_tokens),
+        ("cacheReadTokens", args.cache_read_tokens),
+    ):
+        if value is not None:
+            record[key] = value
     extra = json.loads(args.extra) if args.extra else {}
     record.update(extra)
     path = agent_state_path(root, "token-trace.jsonl")
@@ -2425,6 +2479,171 @@ def cmd_browser_search(args: argparse.Namespace) -> None:
     print(json.dumps(result, ensure_ascii=False))
 
 
+NON_CONTENT_BASENAMES = {"index.md", "log.md", "overview.md"}
+
+
+def cmd_local_search(args: argparse.Namespace) -> None:
+    """Bounded keyword retrieval over wiki/ — the LAST tier of the retrieval
+    chain (Browser MCP → browser-search → this). No Browser required: it must
+    keep every SOP fully usable, just a bit more expensive. Bounds: per-file
+    scan chars, top-k hits, snippet-sized output — never whole files, never the
+    full index.
+    """
+    root = resolve_root(Path(args.project_root))
+    terms = [t.lower() for t in args.q.split() if t.strip()]
+    if not terms:
+        die("query must not be empty")
+    query_lower = args.q.strip().lower()
+    per_file = max(500, args.max_file_chars)
+    scored: list[tuple[float, dict[str, Any]]] = []
+    for path in wiki_files(root):
+        if path.name in NON_CONTENT_BASENAMES:
+            continue
+        try:
+            text = read_text(path)[:per_file]
+        except OSError:
+            continue
+        title = frontmatter_value(text, "title") or path.stem
+        _, body = strip_frontmatter(text)
+        title_lower = title.lower()
+        body_lower = body.lower()
+        score = 0.0
+        first_hit = -1
+        for term in terms:
+            in_title = term in title_lower
+            occurrences = body_lower.count(term)
+            if not in_title and not occurrences:
+                continue
+            score += (5.0 if in_title else 0.0) + float(min(occurrences, 5))
+            if occurrences:
+                pos = body_lower.find(term)
+                if first_hit < 0 or pos < first_hit:
+                    first_hit = pos
+        if score <= 0:
+            continue
+        if title_lower == query_lower:
+            score += 20.0
+        elif title_lower.startswith(query_lower):
+            score += 10.0
+        if first_hit < 0:
+            snippet = truncate(first_body_paragraph(body) or "", 120)
+        else:
+            start = max(0, first_hit - 60)
+            snippet = ("…" if start else "") + body[start:first_hit + 120].strip().replace("\n", " ")
+            snippet = truncate(snippet, 180)
+        scored.append(
+            (
+                score,
+                {
+                    "file": rel_to_root(root, path),
+                    "title": title,
+                    "type": frontmatter_value(text, "type"),
+                    "snippet": snippet,
+                    "score": score,
+                },
+            )
+        )
+    scored.sort(key=lambda pair: -pair[0])
+    top = max(1, min(args.top, 50))
+    print(
+        json.dumps(
+            {
+                "available": True,
+                "backend": "local",
+                "query": args.q,
+                "total": len(scored),
+                "hits": [hit for _, hit in scored[:top]],
+            },
+            ensure_ascii=False,
+        )
+    )
+
+
+def _read_pages_paths(args: argparse.Namespace) -> list[str]:
+    values: list[str] = []
+    if args.paths:
+        values.extend(part.strip() for part in args.paths.split(","))
+    if args.paths_file:
+        text = read_text(Path(args.paths_file))
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            data = text.splitlines()
+        if not isinstance(data, list):
+            die("--paths-file must be a JSON array or one path per line")
+        values.extend(str(item).strip() for item in data)
+    return [v for v in values if v]
+
+
+def cmd_read_pages(args: argparse.Namespace) -> None:
+    """Budgeted batch page read from disk — the local mirror of the Browser
+    MCP `read_pages` tool: at most --max-pages pages, each truncated to
+    --max-chars-per-page, the whole result capped at --max-total-chars.
+    Use it to pack search candidates into a bounded context instead of
+    cat-ing whole files.
+    """
+    root = resolve_root(Path(args.project_root))
+    requested = _read_pages_paths(args)
+    if not requested:
+        die("no page paths given (use --paths or --paths-file)")
+    max_pages = max(1, min(args.max_pages, 20))
+    per_page = max(200, min(args.max_chars_per_page, 20000))
+    total_budget = max(min(per_page, 1000), min(args.max_total_chars, 100000))
+
+    pages: list[dict[str, Any]] = []
+    missing: list[str] = []
+    omitted: list[str] = []
+    seen: set[str] = set()
+    total_chars = 0
+    for raw_rel in requested:
+        rel = ensure_md_page(normalize_rel(raw_rel))
+        if not rel.startswith("wiki/"):
+            rel = f"wiki/{rel}"
+        if rel in seen:
+            continue
+        seen.add(rel)
+        path = safe_project_path(root, rel)
+        if not path.is_file():
+            missing.append(rel)
+            continue
+        if len(pages) >= max_pages or total_budget - total_chars < 200:
+            omitted.append(rel)
+            continue
+        text = read_text(path)
+        _, body = strip_frontmatter(text)
+        budget = min(per_page, total_budget - total_chars)
+        truncated = len(body) > budget
+        clipped = body[:budget] + ("…" if truncated else "")
+        total_chars += min(len(body), budget)
+        pages.append(
+            {
+                "file": rel,
+                "title": frontmatter_value(text, "title") or path.stem,
+                "type": frontmatter_value(text, "type"),
+                "sources": extract_frontmatter_list(text, "sources"),
+                "chars": min(len(body), budget),
+                "truncated": truncated,
+                "body": clipped,
+            }
+        )
+    print(
+        json.dumps(
+            {
+                "budget": {
+                    "maxPages": max_pages,
+                    "maxCharsPerPage": per_page,
+                    "maxTotalChars": total_budget,
+                },
+                "totalChars": total_chars,
+                "pages": pages,
+                "missing": missing,
+                "omitted": omitted,
+            },
+            ensure_ascii=False,
+        )
+    )
+
+
 # High-frequency wrong command names weaker models guess, mapped to the real
 # subcommand. The real names are also registered as argparse `aliases=` below so
 # these exact strings just work (0 round-trips); this map additionally lets the
@@ -2570,6 +2789,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--source")
     p.add_argument("--input-chars", type=int)
     p.add_argument("--output-chars", type=int)
+    p.add_argument("--backend", choices=["mcp", "browser", "local"],
+                   help="retrieval backend that served this step")
+    p.add_argument("--candidates", type=int, help="search hits considered")
+    p.add_argument("--pages-read", type=int, help="pages actually read into context")
+    p.add_argument("--context-chars", type=int, help="chars packed into the prompt context")
+    p.add_argument("--prompt-tokens", type=int, help="prompt tokens if the host reports them")
+    p.add_argument("--cache-read-tokens", type=int, help="cache-read tokens if the host reports them")
     p.add_argument("--extra")
     p.set_defaults(func=cmd_trace)
 
@@ -2620,6 +2846,31 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--timeout", type=float, default=3.0)
     p.set_defaults(func=cmd_browser_search)
 
+    p = sub.add_parser(
+        "local-search",
+        help="bounded keyword retrieval over wiki/ — last-tier fallback when the Browser is absent",
+    )
+    p.add_argument("project_root")
+    p.add_argument("--q", required=True, help="search query (space-separated terms, all scored)")
+    p.add_argument("--top", type=int, default=8, help="max hits to return (clamped to 50)")
+    p.add_argument(
+        "--max-file-chars", type=int, default=8000,
+        help="per-file scan budget in chars (default 8000)",
+    )
+    p.set_defaults(func=cmd_local_search)
+
+    p = sub.add_parser(
+        "read-pages",
+        help="budgeted batch page read (local mirror of the Browser MCP read_pages tool)",
+    )
+    p.add_argument("project_root")
+    p.add_argument("--paths", help="comma-separated wiki page paths, e.g. wiki/concepts/a.md,wiki/entities/b.md")
+    p.add_argument("--paths-file", help="JSON array or one path per line (for CJK-heavy lists)")
+    p.add_argument("--max-pages", type=int, default=5, help="max pages to read (clamped to 20)")
+    p.add_argument("--max-chars-per-page", type=int, default=6000)
+    p.add_argument("--max-total-chars", type=int, default=24000)
+    p.set_defaults(func=cmd_read_pages)
+
     p = sub.add_parser("review")
     review_sub = p.add_subparsers(dest="review_cmd", required=True)
     r = review_sub.add_parser("list")
@@ -2637,6 +2888,22 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("project_root")
     r.add_argument("id")
     r.add_argument("--action", default="resolved")
+    r.set_defaults(func=cmd_review)
+    r = review_sub.add_parser(
+        "get", help="print ONE review item as JSON (avoid reading all of review.json)"
+    )
+    r.add_argument("project_root")
+    r.add_argument("id")
+    r.set_defaults(func=cmd_review)
+    r = review_sub.add_parser(
+        "find", aliases=["search", "filter"],
+        help="filter review items by type/status/keywords; JSON output",
+    )
+    r.add_argument("project_root")
+    r.add_argument("--q", help="space-separated keywords, all must match title/description/pages")
+    r.add_argument("--type", help="filter by review type (suggestion/contradiction/…)")
+    r.add_argument("--status", choices=["open", "resolved", "all"], default="open")
+    r.add_argument("--limit", type=int, default=10)
     r.set_defaults(func=cmd_review)
 
     p = sub.add_parser("cache")
