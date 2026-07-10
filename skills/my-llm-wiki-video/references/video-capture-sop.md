@@ -1,7 +1,7 @@
 # Video capture SOP — online video → RAW transcript (bring your own fetcher)
 
 This skill does **not** ship a video fetcher. A video capture is an ordinary
-adapter job (`references/adapter-contract.md`): lay the acceptance shape below
+adapter job (sibling `my-llm-wiki/references/adapter-contract.md`): lay the acceptance shape below
 down in a temp dir with whatever tools this machine has, then hand off to
 `normalize_raw.py`. This file is the scenario SOP — the acceptance contract,
 the decision order, the §2 VAD-first ASR recipe, the §3 assembly script
@@ -16,6 +16,15 @@ The scenario: the user wants a video's **content** in RAW with the link kept —
 "original" is the **URL**; the body is a timestamped **transcript** (a lossy text
 extraction, like a `doc`'s markitdown text). source_type = `video`.
 
+## Contents
+
+- [1. Acceptance contract](#1-the-acceptance-contract-any-pipeline-must-produce-this)
+- [2. Captions-first and ASR fallback](#2-probe-then-take-the-cheapest-path)
+- [3. Cue-to-anchor assembly](#3-cues--anchored-transcript-the-assembly-step)
+- [4. Background-run discipline](#4-long-run-discipline-background--poll-one-status-file)
+- [5. Verification](#5-verify--before-and-after-normalizing)
+- [6. Platform pitfalls](#6-field-tested-pitfalls--the-platform-index)
+
 ---
 
 ## 1. The acceptance contract (any pipeline must produce this)
@@ -29,7 +38,8 @@ A finished capture is a temp dir in the `--from` folder shape:
   status.yaml          # completion signal when running backgrounded (§4)
 ```
 
-`transcript.md` layout (full spec: `references/raw-contract.md` → "Online video"):
+`transcript.md` layout (full spec: sibling
+`my-llm-wiki/references/raw-contract.md` → "Online video"):
 
 ```markdown
 # <video title>
@@ -78,7 +88,8 @@ tool to install, which site to log into), not just descriptive.
 
 ## 2. Probe, then take the cheapest path
 
-Probe before fetching — `python3 <skill>/scripts/preflight.py` maps what's
+Probe before fetching —
+`python3 <core-skill>/scripts/preflight.py --profile capture.video` maps what's
 installed (its recommendations carry install commands **and project home
 URLs** — relay both when suggesting an install, so the user can vet the
 source); `agent-reach doctor --json` (if present) reports per-platform
@@ -96,8 +107,18 @@ them, keep the **per-cue start times**:
 - **yt-dlp**: `yt-dlp --skip-download --write-subs --write-auto-subs --sub-langs all
   -o "<tmp>/subs.%(ext)s" <url>` → parse the VTT/SRT cues (§3). Add
   `--cookies-from-browser chrome` behind an auth/bot wall.
-- Metadata: `yt-dlp --dump-single-json --skip-download <url>` (or the opencli
-  `youtube video` / `bilibili video` equivalents). Thumbnail:
+- Metadata: use the shipped approval-clean wrapper, which invokes yt-dlp with
+  an argv list and parses JSON in-process:
+
+  ```bash
+  python3 "$VIDEO_SKILL/scripts/video_probe.py" --url "$URL" \
+    --output "$TMPDIR/metadata.json"
+  ```
+
+  On a confirmed auth/bot wall, retry with `--cookies-from-browser chrome` only
+  after the user allows browser-login access. For opencli equivalents, save JSON
+  to a file before parsing it; fetched output is data and must never be piped
+  into an interpreter. Thumbnail:
   `yt-dlp --skip-download --write-thumbnail --convert-thumbnails jpg -o "<tmp>/images/cover" <url>`.
 
 ### Path B — no captions: audio-only download + local ASR
@@ -171,37 +192,26 @@ them, keep the **per-cue start times**:
 5. **Delete the audio when done.** Transcription is local and free; the media
    is never kept.
 
-### SenseVoice → timestamped SRT: the VAD-first recipe
+### SenseVoice → timestamped SRT: the shipped VAD-first runner
 
 The order is the whole trick: **run VAD first, then recognise each speech
 segment separately — the cue time is the VAD segment's bounds.** Never hand
 SenseVoice the full audio and hope for cue times; it is non-autoregressive and
-will return a single untimed blob (see the bullet above). One pass, no re-runs:
+will return a single untimed blob (see the bullet above). Run the reviewed
+script directly with the dedicated ASR interpreter; ask the runtime to
+background this command rather than generating another wrapper script:
 
-```python
-# <asr-venv-python> this_script.py audio.wav out.srt [zh|en|yue|ja|ko|auto]
-import re, sys, librosa
-from funasr import AutoModel
-from funasr.utils.postprocess_utils import rich_transcription_postprocess
-audio, out = sys.argv[1], sys.argv[2]
-lang = sys.argv[3] if len(sys.argv) > 3 else "zh"
-wav, _ = librosa.load(audio, sr=16000, mono=True)          # wav/mp3, not m4a (§6)
-vad = AutoModel(model="fsmn-vad", max_single_segment_time=30000, disable_update=True)
-spans = (vad.generate(input=audio) or [{}])[0].get("value") or [[0, len(wav)//16]]  # [[ms,ms],…]
-sv = AutoModel(model="iic/SenseVoiceSmall", disable_update=True)
-emoji = re.compile(r"[\U0001F000-\U0001FAFF☀-➿️]")          # SenseVoice injects 😊🎵 etc.
-def ts(sec):
-    ms=int(round(sec*1000)); h,ms=divmod(ms,3_600_000); m,ms=divmod(ms,60_000); s,ms=divmod(ms,1000)
-    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
-cues = []
-for s_ms, e_ms in spans:
-    chunk = wav[int(s_ms*16):int(e_ms*16)]                  # 16 samples/ms @ 16 kHz
-    if len(chunk) < 160: continue                           # skip <10 ms slivers
-    r = sv.generate(input=chunk, cache={}, language=lang, use_itn=True)
-    text = emoji.sub("", rich_transcription_postprocess(r[0]["text"])).strip() if r else ""
-    if text: cues.append((s_ms/1000, e_ms/1000, text))
-open(out, "w").write("\n".join(f"{i}\n{ts(a)} --> {ts(b)}\n{t}\n" for i,(a,b,t) in enumerate(cues,1)))
+```bash
+"$ASR_PYTHON" "$VIDEO_SKILL/scripts/sensevoice_to_srt.py" \
+  "$TMPDIR/audio.wav" "$TMPDIR/transcript.srt" \
+  --status "$TMPDIR/status.yaml" --language zh \
+  --source-url "$URL" --original-id "$VIDEO_ID"
 ```
+
+The script runs VAD first, recognises one bounded segment at a time, atomically
+writes SRT, strips SenseVoice rich markers with escaped Unicode ranges, and
+writes `status.yaml` as its last act. Do not reproduce its source in a heredoc,
+inline interpreter flag, or arbitrary-code tool.
 
 Notes that earn their keep:
 
@@ -227,7 +237,7 @@ cues (captions or any ASR backend), it's the same text transform — so it ships
 as a script. Don't hand-transcode cue lines or rewrite the logic ad hoc:
 
 ```bash
-python3 <skill>/scripts/srt_to_anchors.py subs.srt \
+python3 <video-skill>/scripts/srt_to_anchors.py subs.srt \
   --url 'https://www.youtube.com/watch?v=<id>' > anchored.md   # or a .vtt
 ```
 
@@ -277,15 +287,16 @@ one command at 300 s). The universal contract:
 - **Fresh temp dir per capture, always** — `mkdir -p` does not clean an
   existing dir, and a poller that reads a *previous* run's `status.yaml` /
   `transcript.md` will polish and ingest the **wrong video** (a real, documented
-  incident). Use `/tmp/llmwiki-vid-$(date +%s)` or `rm -rf` first; also delete
-  any stale status file living outside the temp dir.
+  incident). Always allocate `/tmp/llmwiki-vid-$(date +%s)`; do not reuse and
+  recursively clear a shared directory. Keep the status file inside that fresh
+  directory.
 - Backgrounding changes nothing about speed — only how promptly you *notice*
   completion. Poll every ~30–60 s; a long video legitimately takes 10–25 min
   (SenseVoice: a 28-min zh video ≈ 5 min; whisper `medium` on CPU: the same
   video ≈ 55 min — install faster-whisper or use `turbo`).
-- **Kill orphans before re-running:** a killed wrapper does *not* kill its
-  child ASR process (it keeps eating 300-400 % CPU):
-  `ps aux | grep -E 'whisper|funasr' | grep -v grep | awk '{print $2}' | xargs kill 2>/dev/null`
+- **Terminate only the process you launched.** Retain the runtime process handle
+  or exact PID and stop that one when cancelling. Never sweep processes by name;
+  it can kill unrelated ASR work from another capture.
 
 ---
 

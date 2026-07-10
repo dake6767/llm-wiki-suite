@@ -1,36 +1,19 @@
 #!/usr/bin/env python3
-"""Capability probe — what can this machine capture, and with which tools?
+"""Profile-aware capture toolchain probe.
 
-The skill ships no fetchers (see references/adapter-contract.md): every capture
-scenario is an SOP with recipes per available tool. So on any given machine the
-best path per source type depends on what's installed. This script probes the
-toolchain once and reports, per source type, the recommended path and whether
-it's fully capable, degraded, or unavailable — so the agent picks the best
-existing recipe and only asks the user to install something when a source they
-actually want has *no* path.
+Skills declare capability profile ids in ``registry/skills.json``. This script
+evaluates only the requested profiles, using the sibling
+``references/toolchain.json`` as the single source for tool descriptions,
+project homes, and normal/mainland-China install commands.
 
-Run it at the start of a capture session (especially the first time on a new
-machine):
+Examples:
 
-    python3 <skill>/scripts/preflight.py            # human-readable YAML
-    python3 <skill>/scripts/preflight.py --quiet     # same, machine-friendly
+    python3 <skill>/scripts/preflight.py
+    python3 <skill>/scripts/preflight.py --profile capture.video
+    python3 <skill>/scripts/preflight.py --profile capture.x.single --json
 
-It NEVER installs anything — it only reports. Install hints are suggestions for
-the user/agent to act on deliberately. `agent-reach doctor --json` (when
-agent-reach is installed) complements this with per-platform availability.
-
-Capability model (cheapest viable path always exists for web/x/note; video/doc
-can be genuinely blocked):
-  web/公众号/小红书 — opencli `web read` (browser, localizes images) → best;
-                       else agent-reach / the agent's own WebFetch (text-mostly).
-  x               — opencli `twitter` / agent-reach → best; else the fxtwitter
-                       fallback (network only).
-  video           — captions via opencli or yt-dlp → best; no-caption fallback
-                       needs yt-dlp + ffmpeg + a local ASR backend, language-
-                       routed: Chinese → SenseVoice (funasr), else
-                       faster-whisper/whisper. See references/video-capture-sop.md.
-  doc             — markitdown (no browser needed). Blocked without it.
-  note            — no tool needed.
+The probe never installs anything. A recommendation is an opt-in handoff to the
+user, not permission to mutate the machine.
 """
 
 from __future__ import annotations
@@ -38,20 +21,65 @@ from __future__ import annotations
 import argparse
 import functools
 import glob
+import json
 import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-# ---------------------------------------------------------------------------
-# Tool resolution — tools are frequently installed but missing from a sandboxed
-# agent's PATH (npm CLIs in an nvm bin; yt-dlp/ffmpeg in Homebrew; pip CLIs in
-# ~/.local/bin; on Windows, winget drops binaries under WinGet/Packages and the
-# Links shim dir that a Git Bash session may not have on PATH — a documented
-# capture ran every ffmpeg call through a hand-exported path because of this).
-# Probe the usual bin dirs, not just PATH.
-# ---------------------------------------------------------------------------
+
+SKILL_DIR = Path(__file__).resolve().parent.parent
+DEFAULT_CATALOG = SKILL_DIR / "references" / "toolchain.json"
+PROFILE_ALIASES = {
+    "web": "capture.web",
+    "doc": "capture.doc",
+    "note": "capture.note",
+    "x": "capture.x.single",
+    "x-single": "capture.x.single",
+    "x-bookmarks": "capture.x.bookmarks",
+    "video": "capture.video",
+}
+PRIORITY_ORDER = {"optional": 0, "recommended": 1, "required": 2}
+
+
+def load_catalog(path: Path | str | None = None) -> dict:
+    catalog_path = Path(path) if path else DEFAULT_CATALOG
+    try:
+        data = json.loads(catalog_path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 - surface read/parse failures
+        raise ValueError(f"cannot read toolchain catalog {catalog_path}: {exc}") from exc
+    if not isinstance(data.get("profiles"), dict) or not isinstance(data.get("tools"), dict):
+        raise ValueError(f"invalid toolchain catalog shape: {catalog_path}")
+    for profile, spec in data["profiles"].items():
+        if not isinstance(spec, dict) or not isinstance(spec.get("tools", []), list):
+            raise ValueError(f"invalid profile definition: {profile}")
+        unknown = sorted(set(spec.get("tools", [])) - set(data["tools"]))
+        if unknown:
+            raise ValueError(f"{profile} references unknown tool(s): {', '.join(unknown)}")
+    return data
+
+
+def normalize_profiles(catalog: dict, profiles: list[str] | None = None) -> list[str]:
+    if not profiles:
+        return list(catalog["profiles"])
+    out = []
+    for raw in profiles:
+        profile = PROFILE_ALIASES.get(raw, raw)
+        if profile not in catalog["profiles"]:
+            raise ValueError(f"unknown capture profile: {raw}")
+        if profile not in out:
+            out.append(profile)
+    return out
+
+
+def profile_tool_names(catalog: dict, profiles: list[str]) -> list[str]:
+    names = []
+    for profile in profiles:
+        for name in catalog["profiles"][profile].get("tools", []):
+            if name not in names:
+                names.append(name)
+    return names
 
 
 def _candidate_dirs() -> list[str]:
@@ -60,13 +88,13 @@ def _candidate_dirs() -> list[str]:
         local = os.environ.get("LOCALAPPDATA", f"{home}/AppData/Local")
         roaming = os.environ.get("APPDATA", f"{home}/AppData/Roaming")
         dirs = [
-            f"{local}/Microsoft/WinGet/Links",          # winget's shim dir (new shells only)
-            f"{local}/Microsoft/WinGet/Packages/*",     # portable exes sit at the package root…
-            f"{local}/Microsoft/WinGet/Packages/*/*/bin",  # …or nested (ffmpeg builds)
+            f"{local}/Microsoft/WinGet/Links",
+            f"{local}/Microsoft/WinGet/Packages/*",
+            f"{local}/Microsoft/WinGet/Packages/*/*/bin",
             f"{home}/scoop/shims",
             "C:/ProgramData/chocolatey/bin",
-            f"{roaming}/npm",                            # npm -g shims (opencli.cmd)
-            f"{roaming}/Python/Python3*/Scripts",        # pip --user CLIs
+            f"{roaming}/npm",
+            f"{roaming}/Python/Python3*/Scripts",
             f"{local}/Programs/Python/Python3*/Scripts",
         ]
     else:
@@ -78,291 +106,431 @@ def _candidate_dirs() -> list[str]:
             f"{home}/Library/Python/3.*/bin",
         ]
     out = []
-    for d in dirs:
-        out += glob.glob(d) if "*" in d else [d]
+    for directory in dirs:
+        out += glob.glob(directory) if "*" in directory else [directory]
     return out
 
 
-# On Windows a "binary" may be tool.exe (native), tool.cmd (npm shim) or
-# tool.bat; shutil.which handles PATHEXT but our candidate-dir walk must too.
 _EXTS = ("", ".exe", ".cmd", ".bat") if os.name == "nt" else ("",)
 
 
 def find_tool(name: str) -> str | None:
-    p = shutil.which(name)
-    if p:
-        return p
-    for d in _candidate_dirs():
+    path = shutil.which(name)
+    if path:
+        return path
+    for directory in _candidate_dirs():
         for ext in _EXTS:
-            cand = Path(d) / (name + ext)
-            if cand.is_file() and os.access(cand, os.X_OK):
-                return str(cand)
+            candidate = Path(directory) / (name + ext)
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
     return None
 
 
-# Conventional home for a dedicated SenseVoice venv, so a user can install funasr
-# off to the side (it's a heavy, optional dep) and the probe finds it with no env
-# var: `python3 -m venv <here> && <here>/bin/pip install funasr torch`.
-# Windows venvs put the interpreter under Scripts\, not bin/ — a venv at the
-# conventional home was invisible to this probe until that was accounted for.
 _ASR_VENV = Path.home() / ".local" / "share" / "llm-wiki" / "asr-venv"
-SENSEVOICE_VENV_PYTHON = _ASR_VENV / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+SENSEVOICE_VENV_PYTHON = _ASR_VENV / (
+    "Scripts/python.exe" if os.name == "nt" else "bin/python"
+)
 
 
 @functools.lru_cache(maxsize=1)
 def _funasr_python() -> str:
-    """An interpreter that can import funasr (SenseVoice's backend), or '' if none.
-    SenseVoice may live in a different env than this script's python, so we probe,
-    in order: an explicit LLM_WIKI_ASR_PYTHON override, our own interpreter, a plain
-    python3, then the conventional dedicated venv (SENSEVOICE_VENV_PYTHON)."""
-    cands = [os.environ.get("LLM_WIKI_ASR_PYTHON", ""), sys.executable, "python3",
-             str(SENSEVOICE_VENV_PYTHON)]
+    candidates = [
+        os.environ.get("LLM_WIKI_ASR_PYTHON", ""),
+        sys.executable,
+        "python3",
+        str(SENSEVOICE_VENV_PYTHON),
+    ]
     seen = set()
-    for c in cands:
-        if not c or c in seen:
+    for candidate in candidates:
+        if not candidate or candidate in seen:
             continue
-        seen.add(c)
+        seen.add(candidate)
         try:
-            r = subprocess.run(
-                [c, "-c", "import importlib.util as u,sys; sys.exit(0 if u.find_spec('funasr') else 1)"],
-                capture_output=True, timeout=30)
-            if r.returncode == 0:
-                return c
-        except Exception:
+            result = subprocess.run(
+                [candidate, "-c", "import importlib.util as u,sys; "
+                 "sys.exit(0 if u.find_spec('funasr') else 1)"],
+                capture_output=True,
+                timeout=30,
+            )
+            if result.returncode == 0:
+                return candidate
+        except Exception:  # noqa: BLE001 - a candidate interpreter may be unusable
             pass
     return ""
 
 
-def sensevoice_available() -> bool:
-    return bool(_funasr_python())
+def _torch_version(python: str) -> str:
+    if not python:
+        return ""
+    try:
+        result = subprocess.run(
+            [python, "-c", "import torch; print(torch.__version__)"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        return result.stdout.strip() if result.returncode == 0 else ""
+    except Exception:  # noqa: BLE001 - diagnostic only
+        return ""
 
 
 @functools.lru_cache(maxsize=1)
-def _github_reachable(timeout: float = 3.0) -> bool:
-    """One cheap connectivity probe: install recommendations differ on networks
-    where GitHub/PyPI/npm are blocked or throttled (mainland China). Deliberately
-    inline & stdlib-only — no dependency on the cn-mirrors skill being installed;
-    that skill carries the full playbook, this just picks which commands to print."""
+def github_reachable(timeout: float = 3.0) -> bool:
     import urllib.error
     import urllib.request
-    req = urllib.request.Request(
-        "https://api.github.com/", method="HEAD",
-        headers={"User-Agent": "llm-wiki-preflight"})
+
+    request = urllib.request.Request(
+        "https://api.github.com/",
+        method="HEAD",
+        headers={"User-Agent": "llm-wiki-preflight"},
+    )
     try:
-        urllib.request.urlopen(req, timeout=timeout)
+        urllib.request.urlopen(request, timeout=timeout)
         return True
     except urllib.error.HTTPError:
-        return True  # an HTTP response means reachable
-    except Exception:
+        return True
+    except Exception:  # noqa: BLE001 - timeout/offline/restricted all mean unreachable
         return False
 
 
-# Where each tool lives — cite these when recommending an install, so the user
-# can vet the source instead of blind-running a pip/npm/brew line.
-TOOL_HOMES = {
-    "opencli": "https://www.npmjs.com/package/@jackwener/opencli",
-    "agent-reach": "https://github.com/Panniantong/agent-reach",
-    "yt-dlp": "https://github.com/yt-dlp/yt-dlp",
-    "ffmpeg": "https://ffmpeg.org",
-    "whisper": "https://github.com/openai/whisper",
-    "whisper-ctranslate2": "https://github.com/Softcatala/whisper-ctranslate2",
-    "sensevoice": "https://github.com/FunAudioLLM/SenseVoice (via FunASR: https://github.com/modelscope/FunASR)",
-    "markitdown": "https://github.com/microsoft/markitdown",
-}
-
-# Tools we probe. Value = a short note on what it's for.
-TOOLS = {
-    "opencli": "web/social fetch (real logged-in browser, localizes images)",
-    "agent-reach": "multi-platform fetch routing (X/Reddit/YouTube/小红书/…; has its own doctor)",
-    "yt-dlp": "video/audio download + subtitles (no browser)",
-    "ffmpeg": "audio decode for local transcription",
-    "whisper": "openai-whisper ASR (local, free)",
-    "whisper-ctranslate2": "faster-whisper ASR (local, faster — afford large-v3)",
-    "sensevoice": "SenseVoice/FunASR ASR (local; best & ~15x faster for CHINESE video)",
-    "markitdown": "local document → Markdown (PDF/docx/pptx/…)",
-}
-
-
-def _torch_version(py: str) -> str:
-    """torch version as reported by the funasr interpreter, '' if unavailable.
-    SenseVoice's torch lives in ITS venv — checking with the system python3 (a
-    common mistake) falsely reports 'No module named torch'. This probes the
-    right interpreter so the report is authoritative."""
-    if not py:
-        return ""
-    try:
-        r = subprocess.run([py, "-c", "import torch; print(torch.__version__)"],
-                           capture_output=True, text=True, timeout=30)
-        return r.stdout.strip() if r.returncode == 0 else ""
-    except Exception:
-        return ""
-
-
-def probe() -> dict:
-    # Most tools are PATH binaries; SenseVoice is a Python lib (funasr) reachable
-    # via a possibly-separate interpreter, so probe it specially. Its "path" is
-    # the funasr-capable interpreter (what LLM_WIKI_ASR_PYTHON would point at).
-    out = {}
-    for name in TOOLS:
-        if name == "sensevoice":
-            out[name] = _funasr_python()
+def probe(catalog: dict, profiles: list[str]) -> dict:
+    """Probe only tools relevant to the requested profiles."""
+    tools = {}
+    for name in profile_tool_names(catalog, profiles):
+        spec = catalog["tools"][name]
+        probe_name = spec.get("probe", name)
+        if probe_name == "python:funasr":
+            tools[name] = _funasr_python()
+            tools["_sensevoice_torch"] = _torch_version(tools[name])
         else:
-            out[name] = find_tool(name) or ""
-    # Confirm torch in the funasr interpreter, so the report can tell the agent
-    # exactly where SenseVoice's deps live (and not to probe the system python3).
-    out["_sensevoice_torch"] = _torch_version(out["sensevoice"])
-    return out
+            tools[name] = find_tool(probe_name) or ""
+    return tools
 
 
-def assess(tools: dict, github_ok: bool = True) -> tuple[dict, list[str]]:
-    """Return (per-source-type capability, recommendations)."""
-    have = {k: bool(v) for k, v in tools.items()}
-    asr = ("faster-whisper" if have["whisper-ctranslate2"]
-           else "whisper" if have["whisper"] else "")
-    # ASR is language-routed: Chinese → SenseVoice, else Whisper-family. Either one
-    # alone can drive the no-caption audio fallback (SenseVoice only covers zh well).
-    asr_any = bool(asr) or have["sensevoice"]
-    if asr and have["sensevoice"]:
-        asr_desc = f"zh→SenseVoice, else {asr}"
-    elif have["sensevoice"]:
-        asr_desc = "SenseVoice (Chinese; add whisper for other languages)"
+def _add_recommendation(
+    recommendations: list[dict],
+    catalog: dict,
+    tool: str,
+    profile: str,
+    reason: str,
+    priority: str,
+    github_ok: bool,
+) -> None:
+    spec = catalog["tools"][tool]
+    existing = next((r for r in recommendations if r["tool"] == tool), None)
+    install_key = "install" if github_ok else "install_cn"
+    install = spec.get(install_key) or spec.get("install", "")
+    if existing is None:
+        recommendations.append({
+            "tool": tool,
+            "priority": priority,
+            "profiles": [profile],
+            "reasons": [reason],
+            "install": install,
+            "home": spec.get("home", ""),
+        })
+        return
+    if PRIORITY_ORDER[priority] > PRIORITY_ORDER[existing["priority"]]:
+        existing["priority"] = priority
+    if profile not in existing["profiles"]:
+        existing["profiles"].append(profile)
+    if reason not in existing["reasons"]:
+        existing["reasons"].append(reason)
+
+
+def assess_profiles(
+    tools: dict,
+    catalog: dict,
+    profiles: list[str],
+    github_ok: bool = True,
+) -> tuple[dict, list[dict]]:
+    """Return profile results and structured, deduplicated recommendations."""
+    have = lambda name: bool(tools.get(name))  # noqa: E731 - compact capability checks
+    capabilities: dict[str, dict] = {}
+    recommendations: list[dict] = []
+
+    for profile in profiles:
+        if profile == "capture.web":
+            if have("opencli"):
+                capabilities[profile] = {
+                    "status": "ok",
+                    "via": "opencli web read",
+                    "note": "browser render + image localization",
+                }
+            elif have("agent-reach"):
+                capabilities[profile] = {
+                    "status": "degraded",
+                    "via": "agent-reach / agent WebFetch",
+                    "note": "text works; media localization needs extra work",
+                }
+            else:
+                capabilities[profile] = {
+                    "status": "degraded",
+                    "via": "agent WebFetch / tavily-extract",
+                    "note": "text-mostly; JS/auth pages and images are weaker",
+                }
+            if not have("opencli"):
+                _add_recommendation(
+                    recommendations, catalog, "opencli", profile,
+                    "cleaner Web/WeChat/Xiaohongshu capture with localized images",
+                    "recommended", github_ok,
+                )
+
+        elif profile == "capture.doc":
+            if have("markitdown"):
+                capabilities[profile] = {"status": "ok", "via": "markitdown"}
+            else:
+                capabilities[profile] = {
+                    "status": "unavailable",
+                    "missing": ["markitdown"],
+                    "note": "local documents cannot be converted",
+                }
+                _add_recommendation(
+                    recommendations, catalog, "markitdown", profile,
+                    "required for local PDF/docx/pptx/xlsx/epub capture",
+                    "required", github_ok,
+                )
+
+        elif profile == "capture.note":
+            capabilities[profile] = {"status": "ok", "via": "no external tool"}
+
+        elif profile == "capture.x.single":
+            if have("opencli"):
+                capabilities[profile] = {"status": "ok", "via": "opencli twitter/web"}
+            elif have("agent-reach"):
+                capabilities[profile] = {"status": "ok", "via": "agent-reach twitter"}
+            else:
+                capabilities[profile] = {
+                    "status": "ok",
+                    "via": "fxtwitter fallback",
+                    "note": "browser-free; login-gated/protected content remains limited",
+                }
+                _add_recommendation(
+                    recommendations, catalog, "opencli", profile,
+                    "preferred for logged-in X pages and automatic media localization",
+                    "optional", github_ok,
+                )
+
+        elif profile == "capture.x.bookmarks":
+            if have("opencli"):
+                capabilities[profile] = {
+                    "status": "ok",
+                    "via": "opencli twitter bookmarks",
+                    "note": "a one-time platform login may still be required",
+                }
+            else:
+                capabilities[profile] = {
+                    "status": "unavailable",
+                    "missing": ["opencli"],
+                    "note": "no adapter can list the logged-in user's bookmarks",
+                }
+                _add_recommendation(
+                    recommendations, catalog, "opencli", profile,
+                    "required to list and incrementally sync logged-in X bookmarks",
+                    "required", github_ok,
+                )
+
+        elif profile == "capture.video":
+            asr = (
+                "faster-whisper" if have("whisper-ctranslate2")
+                else "whisper" if have("whisper") else ""
+            )
+            asr_any = bool(asr) or have("sensevoice")
+            if asr and have("sensevoice"):
+                asr_desc = f"zh→SenseVoice, else {asr}"
+            elif have("sensevoice"):
+                asr_desc = "SenseVoice (Chinese only; add Whisper for other languages)"
+            else:
+                asr_desc = asr or "none"
+
+            caption_path = have("opencli") or have("yt-dlp")
+            audio_fallback = have("yt-dlp") and have("ffmpeg") and asr_any
+            caption_detail = {
+                "status": "ok" if caption_path else "unavailable",
+                "via": (
+                    "opencli captions" if have("opencli")
+                    else "yt-dlp subtitles" if have("yt-dlp") else ""
+                ),
+            }
+            missing = []
+            if not have("yt-dlp"):
+                missing.append("yt-dlp")
+            if not have("ffmpeg"):
+                missing.append("ffmpeg")
+            if not asr_any:
+                missing.append("ASR backend")
+            no_caption_detail = {
+                "status": "ok" if audio_fallback else "unavailable",
+                "via": f"yt-dlp + ffmpeg + {asr_desc}" if audio_fallback else "",
+                "missing": missing,
+            }
+
+            if not caption_path:
+                status = "unavailable"
+                note = "no caption retrieval path; video capture cannot start"
+            elif not audio_fallback:
+                status = "degraded"
+                note = "captioned videos work; videos without captions fail"
+            else:
+                status = "ok"
+                note = "captioned and no-caption paths available"
+            capabilities[profile] = {
+                "status": status,
+                "via": "captions first, audio/ASR fallback",
+                "asr": asr_desc,
+                "note": note,
+                "details": {
+                    "captioned": caption_detail,
+                    "no_captions": no_caption_detail,
+                },
+            }
+
+            if not have("yt-dlp"):
+                _add_recommendation(
+                    recommendations, catalog, "yt-dlp", profile,
+                    "caption retrieval and the audio-only fallback",
+                    "required" if not caption_path else "recommended", github_ok,
+                )
+            if not have("ffmpeg"):
+                _add_recommendation(
+                    recommendations, catalog, "ffmpeg", profile,
+                    "audio conversion for videos without captions",
+                    "recommended", github_ok,
+                )
+            if not have("sensevoice"):
+                _add_recommendation(
+                    recommendations, catalog, "sensevoice", profile,
+                    "preferred local ASR for Chinese videos without captions",
+                    "recommended", github_ok,
+                )
+            if not have("whisper-ctranslate2"):
+                _add_recommendation(
+                    recommendations, catalog, "whisper-ctranslate2", profile,
+                    "preferred local ASR for non-Chinese videos without captions",
+                    "recommended", github_ok,
+                )
+        else:  # guarded by normalize_profiles; protects direct callers too
+            raise ValueError(f"unsupported capture profile: {profile}")
+
+    return capabilities, recommendations
+
+
+def build_report(
+    profiles: list[str] | None = None,
+    catalog_path: Path | str | None = None,
+    *,
+    tools: dict | None = None,
+    github_ok: bool | None = None,
+) -> dict:
+    catalog = load_catalog(catalog_path)
+    profiles = normalize_profiles(catalog, profiles)
+    tools = probe(catalog, profiles) if tools is None else tools
+    if github_ok is None:
+        capabilities, recommendations = assess_profiles(tools, catalog, profiles, True)
+        if recommendations:
+            github_ok = github_reachable()
+            if not github_ok:
+                capabilities, recommendations = assess_profiles(
+                    tools, catalog, profiles, False
+                )
     else:
-        asr_desc = asr or "none"
-    recs: list[str] = []
-    cap: dict = {}
+        capabilities, recommendations = assess_profiles(tools, catalog, profiles, github_ok)
 
-    # web / 公众号 / 小红书 — never blocked (agent always has WebFetch).
-    if have["opencli"]:
-        cap["web"] = {"status": "ok", "via": "opencli web read",
-                      "note": "browser render + auto image localization"}
-    elif have["agent-reach"]:
-        cap["web"] = {"status": "degraded", "via": "agent-reach (check `agent-reach doctor`)",
-                      "note": "text-mostly; localize images yourself for a faithful capture"}
-    else:
-        cap["web"] = {"status": "degraded", "via": "agent WebFetch / tavily-extract",
-                      "note": "text-mostly; images not auto-localized; JS/auth pages weaker"}
-        recs.append("install opencli for cleaner web/公众号/小红书 captures with images: "
-                    f"`npm install -g @jackwener/opencli` (optional; {TOOL_HOMES['opencli']})")
+    relevant_tools = profile_tool_names(catalog, profiles)
+    tool_report = {}
+    for name in relevant_tools:
+        spec = catalog["tools"][name]
+        item = {
+            "status": "ok" if tools.get(name) else "missing",
+            "path": tools.get(name, ""),
+            "description": spec.get("description", ""),
+            "home": spec.get("home", ""),
+        }
+        if name == "sensevoice" and tools.get(name):
+            item["torch"] = tools.get("_sensevoice_torch", "")
+        tool_report[name] = item
 
-    # x / twitter — never blocked (fxtwitter needs only network).
-    if have["opencli"]:
-        cap["x"] = {"status": "ok", "via": "opencli twitter"}
-    elif have["agent-reach"]:
-        cap["x"] = {"status": "ok", "via": "agent-reach (twitter channel)"}
-    else:
-        cap["x"] = {"status": "ok", "via": "fxtwitter fallback",
-                    "note": "see references/x-fallback-capture.md"}
-
-    # doc — needs markitdown.
-    if have["markitdown"]:
-        cap["doc"] = {"status": "ok", "via": "markitdown"}
-    else:
-        cap["doc"] = {"status": "unavailable", "via": "", "install": "pipx install markitdown"}
-        recs.append("install markitdown to capture local documents (PDF/docx/…): "
-                    f"`pipx install markitdown` ({TOOL_HOMES['markitdown']})")
-
-    # video — captions via opencli/yt-dlp; the no-caption fallback needs
-    # yt-dlp + ffmpeg + a local ASR backend (see references/video-capture-sop.md).
-    caption_path = have["opencli"] or have["yt-dlp"]
-    audio_fallback = have["yt-dlp"] and have["ffmpeg"] and asr_any
-    if not caption_path:
-        cap["video"] = {"status": "unavailable", "via": "", "asr": asr_desc,
-                        "install": "brew install yt-dlp ffmpeg "
-                                   "(+ an ASR backend for no-caption videos)"}
-        recs.append("install yt-dlp + ffmpeg + an ASR backend to capture video: "
-                    f"`brew install yt-dlp ffmpeg` ({TOOL_HOMES['yt-dlp']}) "
-                    "+ see the ASR hints below")
-    elif audio_fallback:
-        via = ("opencli captions + yt-dlp/ASR fallback" if have["opencli"]
-               else "yt-dlp subtitles + ASR fallback")
-        cap["video"] = {"status": "ok", "via": via, "asr": asr_desc}
-    else:
-        # Captions reachable but no audio fallback → no-caption videos will fail.
-        missing = []
-        if not have["yt-dlp"]:
-            missing.append("yt-dlp")
-        if not have["ffmpeg"]:
-            missing.append("ffmpeg")
-        if not asr_any:
-            missing.append("an ASR backend (funasr for zh / whisper-ctranslate2 / openai-whisper)")
-        cap["video"] = {"status": "degraded",
-                        "via": ("opencli captions only" if have["opencli"]
-                                else "yt-dlp subtitles only"),
-                        "asr": asr_desc,
-                        "note": "captioned videos work; no-caption videos will fail",
-                        "install": "add " + " + ".join(missing)}
-        recs.append("for videos without captions, install: " + " + ".join(missing))
-
-    # ASR hints, Chinese-first: this skill's corpora are mostly zh, and SenseVoice
-    # is both faster and better there — recommend it before the whisper family.
-    if not have["sensevoice"] and caption_path:
-        recs.append("recommended for CHINESE video (much faster & more accurate; route "
-                    "zh audio here): install SenseVoice into the auto-discovered venv: "
-                    "`python3 -m venv ~/.local/share/llm-wiki/asr-venv && "
-                    "~/.local/share/llm-wiki/asr-venv/bin/pip install funasr torch` "
-                    "— use python 3.11/3.12 (3.13 lacks a prebuilt editdistance wheel "
-                    "and the install rolls back); Windows venv python is Scripts\\python.exe "
-                    "(or set LLM_WIKI_ASR_PYTHON to any python that has funasr; "
-                    f"{TOOL_HOMES['sensevoice']}).")
-    if not have["whisper-ctranslate2"] and (have["whisper"] or have["yt-dlp"]):
-        recs.append("optional: `pip install whisper-ctranslate2` (faster-whisper) for "
-                    "faster, higher-quality NON-Chinese video transcription "
-                    f"({TOOL_HOMES['whisper-ctranslate2']})")
-
-    cap["note"] = {"status": "ok", "via": "no tool needed"}
-
-    # Restricted network (github unreachable ⇒ PyPI/npm/HF likely throttled too):
-    # every install command above needs mirror routing or a different channel.
-    if not github_ok:
-        recs.insert(0,
-            "github.com is UNREACHABLE from here (mainland-China network profile?) — "
-            "route installs through domestic mirrors: pip `-i https://pypi.tuna.tsinghua.edu.cn/simple`, "
-            "npm `--registry=https://registry.npmmirror.com`, HF models `HF_ENDPOINT=https://hf-mirror.com`; "
-            "prefer `pip install -U yt-dlp` over brew/winget (its self-update hits GitHub Releases). "
-            "SenseVoice models need nothing — funasr pulls from ModelScope (domestic CDN). "
-            "Full playbook: the cn-mirrors skill (if installed).")
-    return cap, recs
+    status = "ok"
+    if any(c.get("status") in ("degraded", "unavailable") for c in capabilities.values()):
+        status = "warn"
+    return {
+        "status": status,
+        "network": {
+            "github.com": (
+                "not-probed" if github_ok is None
+                else "reachable" if github_ok else "unreachable"
+            ),
+            "install_variant": (
+                "none" if github_ok is None
+                else "install" if github_ok else "install_cn"
+            ),
+        },
+        "profiles": profiles,
+        "tools": tool_report,
+        "capabilities": capabilities,
+        "recommendations": recommendations,
+    }
 
 
-def emit(tools: dict, cap: dict, recs: list[str], github_ok: bool = True) -> None:
-    def line(k, v, ind=0):
-        print("  " * ind + f"{k}: {v}")
+def emit_human(report: dict) -> None:
     print("network:")
-    line("github.com", "reachable" if github_ok
-         else "unreachable  # mirror-route installs; see recommendations", 1)
+    for key, value in report["network"].items():
+        print(f"  {key}: {value}")
+    print("profiles:")
+    for profile in report["profiles"]:
+        print(f"  - {profile}")
     print("tools:")
-    for name, note in TOOLS.items():
-        path = tools[name]
-        if name == "sensevoice" and path:
-            tv = tools.get("_sensevoice_torch", "")
-            dep = f"funasr+torch {tv} ✓" if tv else "funasr ✓ (torch import FAILED in this interp!)"
-            # Tell the agent which interpreter owns SenseVoice's deps, so a torch
-            # check uses THIS python — never the system python3 (false 'no torch').
-            line(name, f"{path}  # {dep} — check ASR deps with THIS python, not system python3", 1)
-        else:
-            line(name, f'{path}' if path else f'absent  # {note}', 1)
-    print("adapters:")
-    for st, info in cap.items():
-        print(f"  {st}:")
-        for k, v in info.items():
-            line(k, v, 2)
-    print("recommendations:")
-    if recs:
-        for r in recs:
-            print(f"  - {r}")
+    if report["tools"]:
+        for name, info in report["tools"].items():
+            value = info["path"] if info["path"] else f"missing  # {info['description']}"
+            print(f"  {name}: {value}")
     else:
-        print("  []  # everything needed is installed")
+        print("  {}")
+    print("capabilities:")
+    for profile, info in report["capabilities"].items():
+        print(f"  {profile}:")
+        for key, value in info.items():
+            if isinstance(value, (dict, list)):
+                print(f"    {key}: {json.dumps(value, ensure_ascii=False)}")
+            else:
+                print(f"    {key}: {value}")
+    print("recommendations:")
+    if report["recommendations"]:
+        for rec in report["recommendations"]:
+            reasons = "; ".join(rec["reasons"])
+            print(f"  - {rec['tool']} [{rec['priority']}]: {reasons}")
+            if rec["install"]:
+                print(f"    install: {rec['install']}")
+            if rec["home"]:
+                print(f"    home: {rec['home']}")
+    else:
+        print("  []")
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser(description="Probe the capture toolchain and report per-source capability.")
-    ap.add_argument("--quiet", action="store_true", help="(reserved) same output, no extra chatter")
-    ap.parse_args()
-    tools = probe()
-    github_ok = _github_reachable()
-    cap, recs = assess(tools, github_ok)
-    emit(tools, cap, recs, github_ok)
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Probe capture capability profiles.")
+    ap.add_argument(
+        "--profile",
+        action="append",
+        default=[],
+        help="profile id or alias; repeat to select several (default: all)",
+    )
+    ap.add_argument("--json", action="store_true", help="machine-readable report")
+    ap.add_argument("--quiet", action="store_true", help="deprecated; retained for compatibility")
+    ap.add_argument("--catalog", type=Path, default=DEFAULT_CATALOG)
+    args = ap.parse_args()
+
+    try:
+        report = build_report(args.profile, args.catalog)
+    except ValueError as exc:
+        print(f"preflight error: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        emit_human(report)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -25,7 +25,8 @@
 # Examples:
 #   scripts/install.sh                      # symlink all active skills to defaults
 #   scripts/install.sh --dry-run            # preview
-#   scripts/install.sh my-llm-wiki          # just one skill
+#   scripts/install.sh my-llm-wiki          # facade + bundled video/X leaf skills
+#   scripts/install.sh my-llm-wiki-video    # leaf + required my-llm-wiki core
 #   scripts/install.sh --target ~/.codex/skills --target ~/.agents/skills
 #   scripts/install.sh --copy --force       # isolated copies, replacing existing
 set -euo pipefail
@@ -72,29 +73,34 @@ BACKUP_ROOT="$HOME/.skill-install-backups"
 PY_BIN="$(command -v python3 || command -v python || true)"
 [ -n "$PY_BIN" ] || { echo "python3/python not found on PATH" >&2; exit 1; }
 
-PY_ROOT="$ROOT"
-if [ "$IS_WINDOWS" -eq 1 ]; then PY_ROOT="$(cygpath -m "$ROOT")"; fi
+PY_GRAPH="$ROOT/scripts/skill_graph.py"
+PY_DOCTOR="$ROOT/scripts/doctor.py"
+PY_REGISTRY="$REGISTRY"
+if [ "$IS_WINDOWS" -eq 1 ]; then
+  PY_GRAPH="$(cygpath -m "$PY_GRAPH")"
+  PY_DOCTOR="$(cygpath -m "$PY_DOCTOR")"
+  PY_REGISTRY="$(cygpath -m "$PY_REGISTRY")"
+fi
 
-# Emit "slug<TAB>abs_src" for each active skill (optionally filtered to WANT_SLUGS).
-# 输出统一用正斜杠：Git Bash 和原生 Windows 工具都认 C:/Users 这种混合式路径。
+# Emit "slug<TAB>role<TAB>abs_src" from the shared graph resolver. Roles keep
+# runtime-only `requires` separate from user-facing `requested` / `bundled`
+# skills, which later determines the relevant toolchain profiles.
 ENTRIES=()
-while IFS= read -r line; do ENTRIES+=("$line"); done < <(
-  ROOT="$PY_ROOT" "$PY_BIN" - ${WANT_SLUGS[@]+"${WANT_SLUGS[@]}"} <<'PY'
-import json, os, sys
-root = os.environ["ROOT"]
-want = set(sys.argv[1:])
-data = json.load(open(os.path.join(root, "registry", "skills.json"), encoding="utf-8"))
-for s in data.get("skills", []):
-    if s.get("lifecycle", "active") != "active":
-        continue
-    if want and s["slug"] not in want:
-        continue
-    src = os.path.join(root, s["collection_path"])
-    print(f"{s['slug']}\t{src.replace(os.sep, '/')}")
-PY
-)
+GRAPH_OUTPUT="$("$PY_BIN" "$PY_GRAPH" \
+  --registry "$PY_REGISTRY" --format install-tsv \
+  ${WANT_SLUGS[@]+"${WANT_SLUGS[@]}"})"
+while IFS= read -r line; do
+  [ -n "$line" ] && ENTRIES+=("$line")
+done <<< "$GRAPH_OUTPUT"
 
 [ ${#ENTRIES[@]} -gt 0 ] || { echo "no matching active skills in registry." >&2; exit 1; }
+
+SKILL_SUMMARY=()
+for entry in "${ENTRIES[@]}"; do
+  slug="${entry%%$'\t'*}"; rest="${entry#*$'\t'}"
+  role="${rest%%$'\t'*}"
+  SKILL_SUMMARY+=("$slug[$role]")
+done
 
 ts() { date +%Y%m%d%H%M%S; }
 act() { if [ "$DRY" -eq 1 ]; then echo "  [dry-run] $*"; else eval "$@"; fi; }
@@ -135,7 +141,7 @@ do_copy() {
 }
 
 echo "mode=$MODE  force=$FORCE  dry-run=$DRY"
-echo "skills: $(printf '%s ' "${ENTRIES[@]%%$'\t'*}")"
+echo "skills: ${SKILL_SUMMARY[*]}"
 echo
 
 n_ok=0; n_done=0; n_skip=0
@@ -144,7 +150,8 @@ for target in "${TARGETS[@]}"; do
   tag="$(basename "$(dirname "$target")")"; tag="${tag#.}"   # ~/.hermes/skills -> hermes
   act "mkdir -p '$target'"
   for entry in "${ENTRIES[@]}"; do
-    slug="${entry%%$'\t'*}"; src="${entry#*$'\t'}"
+    slug="${entry%%$'\t'*}"; rest="${entry#*$'\t'}"
+    role="${rest%%$'\t'*}"; src="${rest#*$'\t'}"
     dest="$target/$slug"
     if [ ! -e "$src" ]; then echo "  ✗ $slug: source missing ($src)"; n_skip=$((n_skip+1)); continue; fi
 
@@ -186,4 +193,9 @@ done
 
 echo "done. installed/updated=$n_done  already-ok=$n_ok  skipped=$n_skip"
 if [ "$DRY" -eq 1 ]; then echo "(dry-run: nothing changed)"; fi
+if [ ${#WANT_SLUGS[@]} -gt 0 ]; then
+  echo "toolchain check: $PY_BIN $PY_DOCTOR --skills ${WANT_SLUGS[*]}"
+else
+  echo "toolchain check: $PY_BIN $PY_DOCTOR"
+fi
 exit 0

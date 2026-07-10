@@ -1,0 +1,45 @@
+{
+  "optimizer_hints": {
+    "capability": "Capture X/Twitter posts and bookmarks into immutable wiki RAW",
+    "inputs": ["x.com URL", "twitter.com URL", "X post", "long-form X article", "X bookmarks"],
+    "trigger_actions": ["archive an X post", "save a tweet into RAW", "sync Twitter bookmarks"],
+    "exclusions": ["summarize only", "search X", "post or reply", "download media only"]
+  },
+  "fallback_positive_concepts": ["archive_x", "bookmark_sync"],
+  "positive_concepts": {
+    "archive_x": {
+      "weight": 0.42,
+      "phrases": ["archive this X post", "save this tweet into RAW", "clip this X thread", "存这条推文", "把这篇 X 长文沉淀", "归档这条 X"]
+    },
+    "bookmark_sync": {
+      "weight": 0.42,
+      "phrases": ["sync my X bookmarks", "import Twitter bookmarks", "bookmark folder into RAW", "同步我的 X 收藏", "推特收藏导入知识库", "批量同步收藏"]
+    },
+    "x_terms": {
+      "weight": 0.16,
+      "phrases": ["x.com", "twitter.com", "tweet", "Twitter", "推文", "X 长文", "收藏", "bookmarks"]
+    }
+  },
+  "negative_concepts": {
+    "summarize_only": {
+      "weight": 0.38,
+      "exclusive": true,
+      "phrases": ["summarize this tweet", "what does this tweet say", "总结这条推文", "分析这条 X"]
+    },
+    "search_only": {
+      "weight": 0.35,
+      "exclusive": true,
+      "phrases": ["search Twitter", "find posts on X", "搜索 X", "X 上搜"]
+    },
+    "outward_action": {
+      "weight": 0.45,
+      "exclusive": true,
+      "phrases": ["post a tweet", "reply on X", "follow this account", "发一条推文", "回复这条推文", "关注这个账号"]
+    },
+    "media_only": {
+      "weight": 0.3,
+      "exclusive": true,
+      "phrases": ["download tweet video", "save tweet image", "下载推文视频", "只下载媒体", "不用存知识库"]
+    }
+  }
+}

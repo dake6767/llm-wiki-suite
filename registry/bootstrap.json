@@ -1,7 +1,9 @@
 {
-  "version": 1,
-  "updated_at": "2026-07-09",
+  "version": 2,
+  "updated_at": "2026-07-10",
   "home": "~/.my-llm-wiki",
+  "repo_url": "https://github.com/dake6767/llm-wiki-suite.git",
+  "bootstrap_script_url": "https://raw.githubusercontent.com/dake6767/llm-wiki-suite/main/bootstrap.sh",
   "default_repo_home": "~/.my-llm-wiki/suite",
   "connector_dir": "~/.my-llm-wiki/connector",
   "wiki_registry_path": "~/.my-llm-wiki/wikis.json",
@@ -19,39 +21,8 @@
   ],
   "default_wiki_root": "~/wikis/my-llm-wiki",
   "capture_toolchain": {
-    "_note": "Fetchers the skills delegate to. `strongly_recommended` = near-mandatory for a smooth capture flow (AGENTS.md step 3): recommend loudly at install time with the home URL, but only install with the user's go-ahead. doctor.py reports these as core adapters. `install_cn` = mainland-China network variant — sometimes a different CHANNEL, not just a mirror flag (yt-dlp: the pip build self-updates through the PyPI mirror; brew/winget builds self-update against GitHub Releases and go stale). Probe first (cn-mirrors skill scripts/net_probe.py, or preflight.py's network line) and pick the matching variant.",
-    "strongly_recommended": [
-      {
-        "name": "opencli",
-        "install": "npm i -g @jackwener/opencli",
-        "install_cn": "npm i -g @jackwener/opencli --registry=https://registry.npmmirror.com",
-        "home": "https://www.npmjs.com/package/@jackwener/opencli",
-        "without_it": "公众号 images stay remote; 小红书/抖音 captures fail (login-walled); X degrades"
-      },
-      {
-        "name": "yt-dlp",
-        "install": "brew install yt-dlp",
-        "install_cn": "python3 -m pip install -U yt-dlp -i https://pypi.tuna.tsinghua.edu.cn/simple",
-        "home": "https://github.com/yt-dlp/yt-dlp",
-        "without_it": "no video→transcript path (captions and audio both come through it)"
-      },
-      {
-        "name": "ffmpeg",
-        "install": "brew install ffmpeg",
-        "install_cn": "brew install ffmpeg (macOS — slow bottles: set TUNA HOMEBREW_BOTTLE_DOMAIN); Windows: winget's FFmpeg fetches from GitHub and fails — use https://www.gyan.dev/ffmpeg/builds/ and put its bin on PATH",
-        "home": "https://ffmpeg.org",
-        "without_it": "no audio extraction / covers for the video path"
-      }
-    ],
-    "optional": [
-      {
-        "name": "markitdown",
-        "install": "pipx install markitdown",
-        "install_cn": "pipx install markitdown --pip-args '-i https://pypi.tuna.tsinghua.edu.cn/simple'",
-        "home": "https://github.com/microsoft/markitdown",
-        "without_it": "no local PDF/docx/pptx conversion"
-      }
-    ]
+    "_note": "Single machine-readable catalog for capture capability profiles, tool probes, install commands, and mainland-China variants. Skills declare profile ids in registry/skills.json; preflight.py evaluates only the requested profiles. Tool installation is always opt-in.",
+    "catalog": "skills/my-llm-wiki/references/toolchain.json"
   },
   "browser": {
     "slug": "my-llm-wiki-browser",

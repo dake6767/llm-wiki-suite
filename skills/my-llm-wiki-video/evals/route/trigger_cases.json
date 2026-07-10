@@ -1,0 +1,25 @@
+{
+  "recommended_threshold": 0.33,
+  "should_trigger": [
+    {"text": "把这个 YouTube 视频沉淀进知识库 https://youtu.be/xyz", "family": "video_to_raw"},
+    {"text": "存这个 B 站视频的内容到 RAW", "family": "video_to_raw"},
+    {"text": "Archive this video in my wiki as a timestamped transcript", "family": "video_to_raw"},
+    {"text": "把这条抖音的视频内容存进我的 llm-wiki", "family": "video_to_raw"},
+    {"text": "保存这个小红书视频笔记到知识库", "family": "video_to_raw"},
+    {"text": "/my-llm-wiki-video https://www.youtube.com/watch?v=abc", "family": "explicit"},
+    {"text": "抓取并理解这个视频，先存 RAW 再整理", "family": "capture_and_synthesize"}
+  ],
+  "should_not_trigger": [
+    {"text": "总结一下这个 YouTube 视频", "family": "summarize_only"},
+    {"text": "分析这个视频的论证", "family": "analyze_only"},
+    {"text": "下载这个视频，存成 mp4", "family": "rip_video_file"},
+    {"text": "临时帮我转写一下这个录音，不用保存", "family": "temporary_transcript"},
+    {"text": "搜索最近关于 AI agent 的视频", "family": "search_only"},
+    {"text": "把这篇公众号文章存进知识库", "family": "non_video_archive"}
+  ],
+  "near_neighbor": [
+    {"text": "transcribe this video", "family": "temporary_transcript"},
+    {"text": "下载 B 站视频", "family": "rip_video_file"},
+    {"text": "这期视频讲了什么", "family": "summarize_only"}
+  ]
+}

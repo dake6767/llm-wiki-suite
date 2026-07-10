@@ -24,13 +24,11 @@ This avoids post-hoc frontmatter edits and file renames:
 4. **Fix the header lines** in the `.md` (the `# untitled` H1 and the `author:` line).
 5. **Then normalize**: `normalize_raw.py --from <tmp>/<real-slug> ...`
 
-### Fix AFTER normalization (fallback)
+### If a bad RAW was already written
 
-If you already normalized with `untitled`:
-
-1. **Edit frontmatter title**: set `title:` to the real article title.
-2. **Rename the file**: `mv <path>/untitled.md <date>-<real-slug>.md`
-3. **Fix author if needed**: pass `--author` explicitly or edit frontmatter.
+Do not edit or rename immutable RAW. Repair the temp capture and normalize it again
+to create a versioned file. Leave the bad capture as provenance; remove it and its
+prefixed assets only when the user explicitly approves that destructive cleanup.
 
 ### Image download
 

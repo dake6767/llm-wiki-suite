@@ -1,0 +1,24 @@
+{
+  "recommended_threshold": 0.33,
+  "should_trigger": [
+    {"text": "存一下这条推文到 RAW https://x.com/foo/status/123", "family": "archive_x"},
+    {"text": "Archive this X thread into my knowledge base", "family": "archive_x"},
+    {"text": "把这篇 X 长文沉淀进知识库", "family": "archive_x"},
+    {"text": "同步我最近 50 条 X 收藏到 wiki", "family": "bookmark_sync"},
+    {"text": "import my Twitter bookmark folder into RAW", "family": "bookmark_sync"},
+    {"text": "/my-llm-wiki-x https://twitter.com/foo/status/123", "family": "explicit"}
+  ],
+  "should_not_trigger": [
+    {"text": "总结一下这条推文", "family": "summarize_only"},
+    {"text": "帮我搜索 X 上关于 agent 的讨论", "family": "search_only"},
+    {"text": "替我发一条推文", "family": "post_action"},
+    {"text": "下载这条推文里的视频，不用存知识库", "family": "media_only"},
+    {"text": "把这个 YouTube 视频存进知识库", "family": "non_x_archive"},
+    {"text": "把这篇公众号文章存进知识库", "family": "non_x_archive"}
+  ],
+  "near_neighbor": [
+    {"text": "summarize this tweet", "family": "summarize_only"},
+    {"text": "search Twitter for RAG", "family": "search_only"},
+    {"text": "download tweet video", "family": "media_only"}
+  ]
+}

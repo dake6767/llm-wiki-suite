@@ -147,27 +147,17 @@ Check that:
 
 ## Step 9 — Save ingest cache
 
-```python
-import subprocess, json
+Write `/tmp/pages.json` as a JSON array with the normal file-write tool, then:
 
-root = "/path/to/wiki"
-raw = "raw/sources/type/filename.md"
-pages = ["wiki/sources/...", "wiki/concepts/...", "wiki/entities/..."]
-
-result = subprocess.run(
-    ["python3", script, "cache", "save", root, raw, *pages],
-    check=True, timeout=30, capture_output=True, text=True,
-)
-
-# Verify cache landed
-with open(f"{root}/.llm-wiki/agent/ingest-cache.json") as f:
-    entries = json.load(f)["entries"]
-assert raw in entries and entries[raw].get("filesWritten") == pages
+```bash
+python3 "$MAINTAINER/scripts/wiki_ops.py" cache save "$ROOT" "$RAW" \
+  --files-file /tmp/pages.json
+python3 "$MAINTAINER/scripts/wiki_ops.py" cache check "$ROOT" "$RAW"
 ```
 
-**Pitfall**: CJK paths in shell args can hang. Always use a Python subprocess
-wrapper with args as a list (no shell expansion), not `terminal()` with string
-interpolation.
+Require the save output's `filesWritten` to match the JSON array and the check
+output's `hit` to be true. This keeps long CJK paths in a data file without an
+inline subprocess wrapper.
 
 ## Pitfalls recap
 
@@ -177,5 +167,5 @@ interpolation.
 | `apply-blocks` positional arg | Flag is `--blocks-file`, not positional |
 | `merge-page` flag | `--incoming-file`, not `--blocks-file` |
 | `merge-page` writes `---FILE:` wrapper | Strip with `sed -i '' '1{/^---FILE:/d;}' <file>` |
-| CJK paths in `cache save` | Use Python subprocess wrapper, not shell |
+| CJK paths in `cache save` | Use `--files-file`, then `cache check` |
 | `related:` uses `[[wikilink]]` | Use bare basename slugs: `related: [slug-a, slug-b]` |

@@ -1,6 +1,9 @@
-# Source capture SOPs — probe first, then the best available recipe
+# Default source capture SOPs — probe first, then the best available recipe
 
-This skill owns the **RAW contract**, not the fetchers. Every scenario below is
+This reference covers the facade's default Web/WeChat/document paths. X and
+online video are owned by the sibling `my-llm-wiki-x` and
+`my-llm-wiki-video` skills. This skill owns the **RAW contract**, not the
+fetchers. Every scenario below is
 one job: lay the source down in a temp dir in the `adapter-contract.md` shape
 (markdown + local media), then hand off to `normalize_raw.py`. *Which tool does
 the fetching is a property of the machine, not of this skill* — so each scenario
@@ -8,26 +11,39 @@ starts from a capability probe and lists recipes per tool, best first. Any tool
 that produces the shape is a valid adapter; when tools disagree with this file,
 trust their `--help` and note the drift.
 
+## Contents
+
+- [Common adapter rules](#common-adapter-rules)
+- [WeChat](#wechat-公众号--mpweixinqqcom)
+- [Ordinary web pages and Xiaohongshu articles](#any-web-page-incl-小红书-blogs-news--the-universal-fallback)
+- [Local documents](#local-documents-pdf-docx-pptx-xlsx-epub---markitdown)
+- [Source types](#choosing-source_type)
+
+## Common adapter rules
+
 **Probe before fetching** (once per session; especially on a fresh machine):
 
 ```bash
-python3 <skill>/scripts/preflight.py        # per-source-type capability map
+python3 <skill>/scripts/preflight.py --profile capture.web
+# or, for a local document:
+python3 <skill>/scripts/preflight.py --profile capture.doc
 agent-reach doctor --json 2>/dev/null       # per-platform availability, if installed
 ```
 
 Common fetch stacks, in rough order of capture cleanliness:
 
-| Stack | Install / home | What it gives you | Watch out |
-|------|------|--------------------|-----------|
-| **opencli** | `npm i -g @jackwener/opencli` · [npm](https://www.npmjs.com/package/@jackwener/opencli) | real logged-in browser: JS pages, auth-gated content, auto image download | an **npm** CLI — never pip-install it; needs its sibling `node` on PATH (put its bin dir on PATH, not just the binary) |
-| **agent-reach** | [github.com/Panniantong/agent-reach](https://github.com/Panniantong/agent-reach) (one-line agent install in its README) | maintained per-platform access (X, Reddit, YouTube, 小红书, …) with `doctor` self-check | output is text/markdown — images usually stay remote URLs; localize them yourself |
-| **bare CLIs** | [yt-dlp](https://github.com/yt-dlp/yt-dlp) · [ffmpeg](https://ffmpeg.org) · [markitdown](https://github.com/microsoft/markitdown) (`brew` / `pipx`) | video/audio/subtitles, docs | compose the shape yourself |
-| **agent built-ins** (WebFetch / tavily-extract) | none needed | zero-install text extraction for any URL | text-mostly; images stay remote; JS/auth pages weaker |
+| Stack | What it gives you | Watch out |
+|------|--------------------|-----------|
+| **opencli** | real logged-in browser: JS pages, auth-gated content, auto image download | an npm CLI; needs its sibling `node` on PATH, not only the binary |
+| **agent-reach** | maintained per-platform access with its own doctor | output is text/Markdown; media usually needs separate localization |
+| **bare CLIs** | video/audio/subtitles and local-document conversion | compose the Adapter Contract shape yourself |
+| **agent built-ins** | zero-install text extraction for ordinary URLs | text-mostly; images, JS, and auth pages are weaker |
 
 **When a scenario's best tool is missing, don't silently degrade** — tell the
 user what the recommended tool is, what it would improve for *this* capture, and
-give the install command **with the project's home URL** (above) so they can vet
-it. Then proceed with the best available path (or wait, their call).
+give the install command **with the project's home URL** from the structured
+preflight report so they can vet it. Then proceed with the best available path
+(or wait, their call).
 
 General rules, every scenario:
 
@@ -95,49 +111,9 @@ delegates to): check `whoami`, then `note '<full signed URL with xsec_token>'`
 for text/metadata (resolve the `xhslink.com` short link with
 `curl -w '%{url_effective}'` to get one — a bare note id is rejected) and
 `download '<xhslink or signed URL>' --output <tmpdir>` for images/video.
-**Video notes** are a video capture — follow
-`references/video-xiaohongshu.md` (+ the core `video-capture-sop.md` it plugs
-into). If none of that is available, you may
+**Video notes** are a video capture — use the sibling `my-llm-wiki-video`
+skill and its `references/video-xiaohongshu.md`. If none of that is available, you may
 only get text + cover; say so rather than pretending the capture is complete.
-
----
-
-## X / Twitter — single post
-
-source_type `x` · `original_id` = the numeric `/status/<id>`. An X post needs
-**composing**, not one command — the full rules (don't trust bookmark-listing
-text, video assembly, long-form `untitled` fix) are the scenario SOP regardless
-of tool:
-
-1. **Full text + images**: a per-tweet fetch of the rendered page —
-   `opencli web read --url "<tweet-url>" --download-images true` (best), or the
-   **fxtwitter API** (no browser needed): `references/x-fallback-capture.md`.
-   Never build the capture from a bookmarks-listing `text` field — it's lossy
-   (long-form posts show as a bare `t.co` link).
-2. **Video**: rendered-page fetchers leave X video as a `blob:` placeholder.
-   Download the mp4 separately (`opencli twitter download --tweet-url …`, or
-   fxtwitter's best mp4 variant), move it into the folder's `images/`, add a
-   `![video](images/<file>.mp4)` line to the md.
-3. **Normalize** with `--from <folder>` (or `--md tweet.md --assets <dir>` when
-   you composed the file yourself).
-
-Long-form/article posts can come back `title: untitled` — fix before
-normalizing: `references/x-article-pitfalls.md`.
-
----
-
-## Online video (YouTube, Bilibili, …) — transcript, never the file
-
-source_type `video`. The whole scenario — acceptance shape (timestamped
-`**[MM:SS](…&t=NNNs)**` anchors), captions-first decision order, language-routed
-local ASR (zh → SenseVoice, else faster-whisper), the anchor assembly recipe,
-and background+poll discipline — lives in
-**`references/video-capture-sop.md`**. Read it before any video capture; its §6
-indexes the per-platform files (Bilibili / 抖音 / 小红书 recipes and dead ends).
-
-The short version: probe → captions if they exist (free, seconds) → else
-audio-only download + local ASR → assemble the anchored transcript → verify
-duration/char-count → polish (SKILL.md §8) → normalize.
 
 ---
 

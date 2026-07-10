@@ -12,6 +12,17 @@ Obsidian vault, so a wiki the skill writes into opens cleanly in both.
 > what any fetch adapter (opencli or otherwise) must *hand to* the script. The
 > script is the seam between the two.
 
+## Contents
+
+- [Folder layout](#folder-layout)
+- [Frontmatter schema](#frontmatter-schema)
+- [Online video](#online-video-source_type-video)
+- [First-party notes](#first-party-notes-source_type-note)
+- [Naming](#naming)
+- [Immutability](#immutability)
+- [Media and video](#media--video)
+- [Readability cleanup](#readability-cleanup)
+
 ## Folder layout
 
 Captures live under `raw/sources/`, one self-described markdown file per item;
@@ -118,7 +129,8 @@ tags: [inbox]
 ---
 ```
 
-The body, produced by the capture pipeline (`references/video-capture-sop.md`)
+The body, produced by the `my-llm-wiki-video` capture pipeline
+(`my-llm-wiki-video/references/video-capture-sop.md`)
 + the agent, is:
 
 1. a localized cover image (`![](../../assets/<date>-<slug>--cover.jpg)`),
@@ -157,7 +169,8 @@ extraction whose faithful original is the **URL** — structurally identical to 
 `doc` (lossy markitdown text + an archived original file), except the original is
 a link rather than a stored file. The light polish is content-preserving (same
 spirit as `clean_md.py`); the translation is additive, never replacing the
-original. See my-llm-wiki SKILL.md §8 and `references/video-capture-sop.md`.
+original. See the `my-llm-wiki-video` skill and its
+`references/video-capture-sop.md`.
 
 ## First-party notes (`source_type: note`)
 
@@ -243,7 +256,8 @@ re-ingest — that's a deliberate act, not a default.
   capture. A dedicated `source_type: video` capture is different — there the video
   is deliberately not downloaded and the transcript is the content, so this
   machinery is suppressed; see "Online video" above.) The one exception is X, where `opencli twitter
-  download` (or the fallback in `references/x-fallback-capture.md`) can fetch
+  download` (or the `my-llm-wiki-x` fallback in
+  `references/x-fallback-capture.md`) can fetch
   video — place a local `![video](images/<file>.mp4)` link in the markdown and the
   script localizes it into `raw/assets/`.
 - **Local video uses an Obsidian embed.** When the script localizes a video it

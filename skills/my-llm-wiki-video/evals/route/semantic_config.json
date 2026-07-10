@@ -1,0 +1,40 @@
+{
+  "optimizer_hints": {
+    "capability": "Capture online-video content into immutable wiki RAW as a timestamped transcript",
+    "inputs": ["YouTube URL", "Bilibili video", "Douyin video", "Xiaohongshu video note", "online video URL"],
+    "trigger_actions": ["archive video content into RAW", "save a video into the wiki", "preserve a timestamped transcript"],
+    "exclusions": ["summarize or analyze only", "download the video file", "temporary transcription", "search for videos"]
+  },
+  "fallback_positive_concepts": ["video_to_raw"],
+  "positive_concepts": {
+    "video_to_raw": {
+      "weight": 0.55,
+      "phrases": ["archive this video in my wiki", "save this video into RAW", "timestamped transcript into the knowledge base", "把这个视频存进知识库", "沉淀这个视频", "存这个 B 站视频的内容", "视频内容存进 wiki"]
+    },
+    "video_platform": {
+      "weight": 0.2,
+      "phrases": ["YouTube", "youtu.be", "Bilibili", "B站", "抖音", "Douyin", "小红书视频", "online video"]
+    },
+    "wiki_terms": {
+      "weight": 0.15,
+      "phrases": ["RAW", "wiki", "llm-wiki", "knowledge base", "知识库", "沉淀", "归档"]
+    }
+  },
+  "negative_concepts": {
+    "summarize_only": {
+      "weight": 0.4,
+      "exclusive": true,
+      "phrases": ["summarize this video", "what does this video say", "总结这个视频", "这期视频讲了什么", "分析这个视频"]
+    },
+    "rip_video_file": {
+      "weight": 0.5,
+      "exclusive": true,
+      "phrases": ["download this video", "save as mp4", "rip the video", "下载这个视频", "存成 mp4", "保存视频文件"]
+    },
+    "temporary_transcript": {
+      "weight": 0.3,
+      "exclusive": true,
+      "phrases": ["transcribe this video", "temporary transcript", "不用保存", "临时转写"]
+    }
+  }
+}

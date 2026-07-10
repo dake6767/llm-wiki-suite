@@ -1,14 +1,14 @@
 # Video Ingest Workflow (YouTube/Bilibili)
 
 Optimized workflow for ingesting video transcripts into a wiki, developed from repeated
-batch sessions (6+ videos in one session). Combines `my-llm-wiki` §8 capture with
+batch sessions (6+ videos in one session). Combines `my-llm-wiki-video` capture with
 `my-llm-wiki-maintainer` ingest into a single streamlined flow.
 
 ## Quick Reference
 
 ```
 0. Pre-flight: check if video already captured (source-page + ingest cache)
-1. Background capture (per my-llm-wiki's video-capture-sop.md) → poll status.yaml
+1. Background capture (per my-llm-wiki-video's video-capture-sop.md) → poll status.yaml
 2. Polish transcript (ASR fixes, paragraph breaks, punctuation)
 3. Clean transcript trailing content
 4. Normalize into RAW (normalize_raw.py)
@@ -16,7 +16,7 @@ batch sessions (6+ videos in one session). Combines `my-llm-wiki` §8 capture wi
 6. Read existing index → plan new vs update pages
 7. Write blocks file → apply-blocks (new pages, no --overwrite)
 8. Write update blocks → apply-blocks (--overwrite for existing pages)
-9. Cache save via Python subprocess wrapper
+9. Cache save via `wiki_ops.py --files-file`
 10. Verify cache
 ```
 
@@ -49,7 +49,7 @@ new transcript reveals content the original missed.
 
 ### 1. Background Capture
 
-The capture itself is the `my-llm-wiki` skill's job — follow its
+The capture itself is the `my-llm-wiki-video` skill's job — follow its
 `references/video-capture-sop.md` (probe tools → captions first → else
 audio + local ASR → assemble the anchored transcript). The contract that
 matters here: run the long step as a **non-blocking background job** that
@@ -65,17 +65,13 @@ dir causes stale status.yaml from the previous video.
 directory. If `/tmp/llmwiki-vid/` already exists from a prior session, it contains old
 `status.yaml` and `transcript.md`. Reading those before the new background process
 completes gives you the WRONG video's data — and you may polish/normalize the wrong
-transcript without realizing it. **Always use a timestamped dir or `rm -rf` first:**
+transcript without realizing it. **Always use a timestamped directory:**
 ```bash
-# Option A: timestamped unique dir
 TMPDIR="/tmp/llmwiki-vid-$(date +%s)"
 mkdir -p "$TMPDIR"
-
-# Option B: clean existing dir
-rm -rf /tmp/llmwiki-vid && mkdir -p /tmp/llmwiki-vid
 ```
 After the background process completes, verify `status.yaml`'s `source_url` matches
-the URL you requested. See `my-llm-wiki` skill's `references/video-capture-sop.md`
+the URL you requested. See `my-llm-wiki-video` skill's `references/video-capture-sop.md`
 (§4, background + poll discipline) for the full incident report.
 
 **Pitfall: Bilibili silent partial download.** Without `--browser chrome`, yt-dlp
@@ -95,7 +91,7 @@ is a red flag. If truncated, re-run with `--browser chrome`.
 The `status.yaml` file is the completion signal. If it doesn't exist, shows a different
 video URL/ID than expected, or the process is still running — do NOT read `transcript.md`.
 Reading stale data from a previous capture and polishing it is a real, documented pitfall
-(see `my-llm-wiki` skill's `references/video-capture-sop.md` §4).
+(see `my-llm-wiki-video` skill's `references/video-capture-sop.md` §4).
 
 When `transcript_source: whisper(...)` or `sensevoice(...)`, the raw output has no
 punctuation, no paragraph breaks, and frequent ASR errors — especially for proper
@@ -106,7 +102,7 @@ SenseVoice mis-transcribe the same names differently, and the right corrections 
 entirely on the wiki's subject — do not hard-code a name table in this reference. Keep a
 correction table scoped to the corpus: `data/asr-corrections-zh-history.md` ships the
 Chinese-history (Qing/Ming) table accumulated from real sessions; start an analogous one
-per wiki. The upstream `my-llm-wiki` skill's `references/video-capture-sop.md` (§5)
+per wiki. The upstream `my-llm-wiki-video` skill's `references/video-capture-sop.md` (§5)
 describes how to build corrections from the full transcript.
 
 **Polish steps:**
@@ -121,16 +117,9 @@ describes how to build corrections from the full transcript.
 
 Caption/description-based pipelines often append repeated content from the video
 description at the end of the transcript. This isn't markdown-structural damage (so `clean_md.py` won't catch
-it) — it's content-level duplication. Clean it:
-
-```python
-with open('/tmp/llmwiki-vidN/transcript.md', 'r') as f:
-    content = f.read()
-lines = content.strip().split('\n')
-cleaned = '\n'.join(lines[:-1]) + '\n'
-with open('/tmp/llmwiki-vidN/transcript.md', 'w') as f:
-    f.write(cleaned)
-```
+it) — it's content-level duplication. Verify the exact duplicated tail, then
+rewrite the transcript as data with the runtime's normal file-edit/write tool.
+Do not create an inline script that blindly deletes the last line.
 
 ### 4. Normalize
 
@@ -244,31 +233,22 @@ and `reviews` must equal the number of REVIEW blocks you emitted — `"reviews":
 when you planned suggestions means they never left the chat. Then surface the new
 suggestions in the final response per SKILL.md workflow step 6 (「可深挖方向」).
 
-### 8. Cache Save (CJK-safe)
+### 8. Cache Save (CJK-safe and approval-clean)
 
-CJK paths in shell args can hang silently. Always use Python subprocess wrapper:
+Write the affected page paths as a JSON array or one path per line using the
+runtime's ordinary file-write tool, then pass that data file to `wiki_ops.py`.
+This avoids long/CJK shell argv without generating a Python subprocess wrapper:
 
-```python
-import subprocess, json
-
-root = "/path/to/wiki"
-raw = "raw/sources/video/<filename>.md"
-pages = ["wiki/sources/X.md", "wiki/concepts/Y.md", ...]
-
-script = "<maintainer>/scripts/wiki_ops.py"
-subprocess.run(
-    ["python3", script, "cache", "save", root, raw, *pages],
-    check=True, timeout=30,
-)
-
-# Verify cache landed
-with open(f"{root}/.llm-wiki/agent/ingest-cache.json") as f:
-    entries = json.load(f)["entries"]
-assert raw in entries
-assert entries[raw].get("filesWritten") == pages
+```bash
+python3 "$MAINTAINER/scripts/wiki_ops.py" cache save "$ROOT" "$RAW" \
+  --files-file "$TMPDIR/pages.json"
+python3 "$MAINTAINER/scripts/wiki_ops.py" cache check "$ROOT" "$RAW"
 ```
 
-**Pitfall: always verify.** Silent success is worse than loud failure.
+The save command prints the persisted source and `filesWritten`; require it to
+match the page list, then require `cache check` to report `hit: true`. Silent
+success is worse than loud failure. Do not use an arbitrary-code tool for this
+deterministic operation.
 
 ## Batch Processing Pattern
 

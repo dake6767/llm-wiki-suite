@@ -1107,12 +1107,34 @@ def cmd_cache(args: argparse.Namespace) -> None:
         ok = bool(entry and entry.get("hash") == current)
         print(json.dumps({"hit": ok, "entry": entry, "source": rel}, indent=2, ensure_ascii=False))
     elif cache_cmd == "save":
+        files = list(args.files)
+        files_file = getattr(args, "files_file", None)
+        if files_file:
+            if files:
+                die("Pass page paths as positional args or --files-file, not both")
+            payload = Path(files_file).read_text(encoding="utf-8").strip()
+            if payload.startswith("["):
+                try:
+                    decoded = json.loads(payload)
+                except json.JSONDecodeError as exc:
+                    die(f"--files-file contains invalid JSON: {exc.msg}")
+                if not isinstance(decoded, list) or not all(isinstance(x, str) for x in decoded):
+                    die("--files-file JSON must be an array of path strings")
+                files = decoded
+            else:
+                files = [line.strip() for line in payload.splitlines() if line.strip()]
+        normalized_files = [normalize_rel(x) for x in files]
         entries[rel] = {
             "hash": hash_file(source),
             "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(),
-            "filesWritten": [normalize_rel(x) for x in args.files],
+            "filesWritten": normalized_files,
         }
         write_text(cache_path, json.dumps(cache, indent=2, ensure_ascii=False) + "\n")
+        print(json.dumps({
+            "saved": True,
+            "source": rel,
+            "filesWritten": normalized_files,
+        }, indent=2, ensure_ascii=False))
     else:
         die(f"Unknown cache command: {args.cache_cmd}")
 
@@ -2627,6 +2649,10 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("project_root")
     c.add_argument("source")
     c.add_argument("files", nargs="*")
+    c.add_argument(
+        "--files-file",
+        help="newline-delimited paths or a JSON array; avoids long/dynamic shell argv",
+    )
     c.set_defaults(func=cmd_cache)
     c = cache_sub.add_parser("pending")
     c.add_argument("project_root")

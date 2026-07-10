@@ -239,7 +239,7 @@ scripts/wiki_ops.py stage-status $R --source $S           # → "ready": true
 scripts/wiki_ops.py source-page $R --raw $S --url https://x/report
 scripts/wiki_ops.py apply-blocks $R --blocks-file /tmp/blocks.txt --source $S
 scripts/wiki_ops.py lint $R
-scripts/wiki_ops.py cache save $R $R/$S wiki/sources/行业长报告.md wiki/entities/野生小虎.md ...
+scripts/wiki_ops.py cache save $R $R/$S --files-file /tmp/written-pages.json
 ```
 
 Expected: the recurring entity has exactly ONE page (cross-chunk dedup), the

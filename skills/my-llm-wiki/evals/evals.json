@@ -57,33 +57,6 @@
           "text": "body is faithful and substantial (>2000 chars of article text)"
         }
       ]
-    },
-    {
-      "id": 2,
-      "name": "x-bookmark-sync",
-      "prompt": "同步我最近 5 条 X 收藏到我的知识库（知识库根目录就是你的 outputs 目录，是一个 llm_wiki 项目：已有 schema.md、wiki/ 和 .llm-wiki/project.json）。",
-      "expected_output": "Each new bookmark becomes raw/sources/x/<date>-<slug>.md with frontmatter (source_type=x, source_url, original_id=tweet id), media downloaded into raw/assets/, dedup by tweet id so re-runs skip existing, and a summary of new vs skipped.",
-      "files": [],
-      "assertions": [
-        {
-          "text": "At least one raw/sources/x/*.md exists in the wiki"
-        },
-        {
-          "text": "each x item frontmatter has source_type: x and an original_id (numeric tweet id)"
-        },
-        {
-          "text": "each x item frontmatter has source_url pointing to the tweet"
-        },
-        {
-          "text": "tweet media (images/video) downloaded into raw/assets/ for items that have media"
-        },
-        {
-          "text": "items are uniquely keyed by tweet id (enables dedup on re-run)"
-        },
-        {
-          "text": "agent reported a summary of new vs already-in-RAW counts"
-        }
-      ]
     }
   ]
 }

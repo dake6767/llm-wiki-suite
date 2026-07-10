@@ -1,8 +1,8 @@
 # X/Twitter fallback capture without opencli
 
-Use this only when the preferred `opencli web read` path is unavailable or fails and the user still wants the source archived into RAW. Do not encode the temporary failure as a rule; this is a fallback recipe. (It's effectively a second, minimal adapter for one source — it satisfies the same `references/adapter-contract.md` by handing `normalize_raw.py --md … --assets …`.)
+Use this only when the preferred `opencli web read` path is unavailable or fails and the user still wants the source archived into RAW. Do not encode the temporary failure as a rule; this is a fallback recipe. It is a second, minimal adapter for one source: it satisfies sibling `my-llm-wiki/references/adapter-contract.md` by handing the core `normalize_raw.py --md … --assets …`.
 
-**First rule out a PATH problem.** `opencli` is an npm CLI that is frequently just not on the shell's `PATH` (agents that don't load the user's nvm/profile) — that is *not* a reason to fall back. Run the **Preflight** in `references/sources.md` first; opencli gives cleaner captures and localizes images for you. Only drop to this fxtwitter recipe when opencli is genuinely absent or the fetch truly fails.
+**First rule out a PATH problem.** `opencli` is an npm CLI that is frequently just not on the shell's `PATH` (agents that don't load the user's nvm/profile) — that is *not* a reason to fall back. Run the sibling core's `scripts/preflight.py --profile capture.x.single` first; opencli gives cleaner captures and localizes images for you. Only drop to this fxtwitter recipe when opencli is genuinely absent or the fetch truly fails.
 
 ## Long-form/article tweets via fxtwitter
 
@@ -24,7 +24,7 @@ Use this only when the preferred `opencli web read` path is unavailable or fails
 5. Normalize with:
 
 ```bash
-python3 <skill>/scripts/normalize_raw.py \
+python3 <core-skill>/scripts/normalize_raw.py \
   --md /tmp/llmwiki-x-<tweet_id>/tweet.md \
   --assets /tmp/llmwiki-x-<tweet_id>/images \
   --wiki <wiki> \

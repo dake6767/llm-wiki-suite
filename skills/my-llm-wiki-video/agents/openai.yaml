@@ -1,0 +1,4 @@
+interface:
+  display_name: "My LLM Wiki Video"
+  short_description: "Capture online videos as timestamped wiki transcripts"
+  default_prompt: "Use $my-llm-wiki-video to archive this online video as a timestamped RAW transcript."

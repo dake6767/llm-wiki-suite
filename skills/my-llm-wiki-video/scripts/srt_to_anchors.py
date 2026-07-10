@@ -9,7 +9,8 @@ cues into ~30 s chunks, and render each chunk as a bold clickable deep link:
     **[M:SS](<video-url>&t=<sec>s)** …that chunk's speech…
 
 This is the anchor layer that lets RAW answer "where, in which video, was
-this said?" (`references/raw-contract.md` → Online video). The rules:
+this said?" (sibling `my-llm-wiki/references/raw-contract.md` → Online video).
+The rules:
 
   1. Take each cue's START time; strip inline `<tags>`.
   2. Drop empty cues and consecutive exact duplicates (rolling auto-captions
