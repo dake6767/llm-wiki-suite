@@ -15,6 +15,11 @@ pub struct SearchDoc {
     pub text: String,
 }
 
+/// bm25 里标题列相对正文列的权重。标题短、命中一次就该显著胜过正文里的
+/// 零散提及；8.0 足以让「标题含词」压过「正文多次提及」，又不至于完全
+/// 淹没正文相关性排序。
+const TITLE_BM25_WEIGHT: f64 = 8.0;
+
 #[derive(Debug)]
 pub struct FullTextSearcher {
     conn: Connection,
@@ -110,7 +115,7 @@ impl FullTextSearcher {
 
         match build_match_query(query) {
             Some(match_expr) => {
-                self.search_match(&match_expr, &where_clause, filter_values, limit)
+                self.search_match(query, &match_expr, &where_clause, filter_values, limit)
             }
             None => self.search_like(query, &where_clause, filter_values, limit),
         }
@@ -133,23 +138,37 @@ impl FullTextSearcher {
 
     fn search_match(
         &self,
+        raw_query: &str,
         match_expr: &str,
         where_clause: &str,
         filter_values: Vec<String>,
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
+        // 标题加权分两层，治「高频词淹没精确同名页」（查 Codex 时，标题就叫
+        // Codex 的页被大量*提及* Codex 的页挤出 top-k）：
+        // 1. title_rank：标题与整条 query 精确相等 / 前缀命中的页硬置顶；
+        // 2. bm25 列权重：标题列命中权重远高于正文列。
         let sql = format!(
             r#"
             SELECT wiki, path, slug, title, type,
                    snippet(pages, 1, '<mark>', '</mark>', '…', 12) AS snip,
-                   bm25(pages) AS score
+                   bm25(pages, {TITLE_BM25_WEIGHT}, 1.0) AS score,
+                   CASE
+                     WHEN lower(title) = lower(?) THEN 0
+                     WHEN lower(title) LIKE lower(?) ESCAPE '\' THEN 1
+                     ELSE 2
+                   END AS title_rank
             FROM pages
             WHERE pages MATCH ? AND {where_clause}
-            ORDER BY score
+            ORDER BY title_rank, score
             LIMIT ?
             "#
         );
-        let mut values = vec![match_expr.to_string()];
+        let mut values = vec![
+            raw_query.to_string(),
+            format!("{}%", escape_like(raw_query)),
+            match_expr.to_string(),
+        ];
         values.extend(filter_values);
         values.push(limit.to_string());
         let mut stmt = self.conn.prepare(&sql)?;
@@ -174,16 +193,31 @@ impl FullTextSearcher {
         filter_values: Vec<String>,
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
+        // LIKE 回退同样做标题分层：精确标题 < 标题前缀 < 标题包含 < 仅正文命中。
         let sql = format!(
             r#"
-            SELECT wiki, path, slug, title, type, text, 0.0 AS score
+            SELECT wiki, path, slug, title, type, text, 0.0 AS score,
+                   CASE
+                     WHEN lower(title) = lower(?) THEN 0
+                     WHEN lower(title) LIKE lower(?) ESCAPE '\' THEN 1
+                     WHEN title LIKE ? ESCAPE '\' THEN 2
+                     ELSE 3
+                   END AS title_rank
             FROM pages
-            WHERE (title LIKE ? OR text LIKE ?) AND {where_clause}
+            WHERE (title LIKE ? ESCAPE '\' OR text LIKE ? ESCAPE '\') AND {where_clause}
+            ORDER BY title_rank
             LIMIT ?
             "#
         );
-        let like = format!("%{query}%");
-        let mut values = vec![like.clone(), like];
+        let escaped = escape_like(query);
+        let like = format!("%{escaped}%");
+        let mut values = vec![
+            query.to_string(),
+            format!("{escaped}%"),
+            like.clone(),
+            like.clone(),
+            like,
+        ];
         values.extend(filter_values);
         values.push(limit.to_string());
         let mut stmt = self.conn.prepare(&sql)?;
@@ -250,6 +284,14 @@ fn is_term_separator(c: char) -> bool {
 
 fn escape_match(query: &str) -> String {
     format!("\"{}\"", query.replace('"', "\"\""))
+}
+
+/// LIKE 模式转义：把 query 当字面量用在 `LIKE ... ESCAPE '\'` 里。
+fn escape_like(query: &str) -> String {
+    query
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 fn make_snippet(text: &str, query: &str, width: usize) -> String {
@@ -411,6 +453,108 @@ mod tests {
             build_match_query("模型上下文协议"),
             Some("\"模型上下文协议\"".to_string())
         );
+    }
+
+    #[test]
+    fn exact_title_match_outranks_frequent_mentions() {
+        // Test A 的 miss 根因复现：精确同名页被大量“提及该词”的页挤出 top-k。
+        // 标题加权后，标题就叫 Codex 的页必须置顶。
+        let searcher = FullTextSearcher::in_memory().unwrap();
+        let mut docs = vec![SearchDoc {
+            wiki: "demo".to_string(),
+            path: "entities/codex".to_string(),
+            slug: "codex".to_string(),
+            title: "Codex".to_string(),
+            page_type: "entities".to_string(),
+            tags: Vec::new(),
+            text: "OpenAI 的编码 agent。".to_string(),
+        }];
+        for i in 0..10 {
+            docs.push(SearchDoc {
+                wiki: "demo".to_string(),
+                path: format!("concepts/mention-{i}"),
+                slug: format!("mention-{i}"),
+                title: format!("工程实践 {i}"),
+                page_type: "concepts".to_string(),
+                tags: Vec::new(),
+                text: "Codex Codex Codex Codex Codex 在工作流里的多次提及，Codex 反复出现。"
+                    .to_string(),
+            });
+        }
+        searcher.reindex_wiki("demo", &docs).unwrap();
+
+        let hits = searcher.search(Some("demo"), "Codex", None, None, 5).unwrap();
+        assert_eq!(hits[0].path, "entities/codex");
+    }
+
+    #[test]
+    fn title_hit_outranks_body_only_mentions() {
+        // 别名场景（Test B）：查询词出现在标题里的页应排在只在正文提及的页前面。
+        let searcher = FullTextSearcher::in_memory().unwrap();
+        searcher
+            .reindex_wiki(
+                "demo",
+                &[
+                    SearchDoc {
+                        wiki: "demo".to_string(),
+                        path: "concepts/body-only".to_string(),
+                        slug: "body-only".to_string(),
+                        title: "发射系统总览".to_string(),
+                        page_type: "concepts".to_string(),
+                        tags: Vec::new(),
+                        text: "Starship Starship Starship 多次提及但标题无关。".to_string(),
+                    },
+                    SearchDoc {
+                        wiki: "demo".to_string(),
+                        path: "entities/starship".to_string(),
+                        slug: "starship".to_string(),
+                        title: "星舰（Starship）".to_string(),
+                        page_type: "entities".to_string(),
+                        tags: Vec::new(),
+                        text: "SpaceX 的可复用运载火箭。".to_string(),
+                    },
+                ],
+            )
+            .unwrap();
+
+        let hits = searcher
+            .search(Some("demo"), "Starship", None, None, 5)
+            .unwrap();
+        assert_eq!(hits[0].path, "entities/starship");
+    }
+
+    #[test]
+    fn like_fallback_pins_exact_title_first() {
+        // 短词（<3 字符）走 LIKE 回退，同样要求精确标题置顶。
+        let searcher = FullTextSearcher::in_memory().unwrap();
+        searcher
+            .reindex_wiki(
+                "demo",
+                &[
+                    SearchDoc {
+                        wiki: "demo".to_string(),
+                        path: "concepts/other".to_string(),
+                        slug: "other".to_string(),
+                        title: "别的页".to_string(),
+                        page_type: "concepts".to_string(),
+                        tags: Vec::new(),
+                        text: "正文里提到 AI 很多次，AI AI AI。".to_string(),
+                    },
+                    SearchDoc {
+                        wiki: "demo".to_string(),
+                        path: "concepts/ai".to_string(),
+                        slug: "ai".to_string(),
+                        title: "AI".to_string(),
+                        page_type: "concepts".to_string(),
+                        tags: Vec::new(),
+                        text: "人工智能条目。".to_string(),
+                    },
+                ],
+            )
+            .unwrap();
+
+        let hits = searcher.search(Some("demo"), "AI", None, None, 5).unwrap();
+        assert_eq!(hits[0].path, "concepts/ai");
     }
 
     #[test]
