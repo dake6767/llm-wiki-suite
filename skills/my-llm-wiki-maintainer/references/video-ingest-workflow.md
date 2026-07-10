@@ -54,7 +54,13 @@ The capture itself is the `my-llm-wiki-video` skill's job — follow its
 audio + local ASR → assemble the anchored transcript). The contract that
 matters here: run the long step as a **non-blocking background job** that
 writes a `status.yaml` into a **fresh** temp dir (`/tmp/llmwiki-vidN`) as its
-last act, then **poll that file yourself** — don't wait to be notified.
+last act, then **poll that file yourself** — don't wait to be notified. When
+this same turn will continue into polishing and ingest, launch it with
+asynchronous completion delivery disabled (`notify_on_complete=false` in
+Hermes). After the matching status appears, wait/reap the retained process
+handle and confirm it has exited before sending the final result; a read-only
+poll or timed-out wait can leave a stale completion push queued behind the real
+conclusion.
 Captions finish in seconds; an ASR pass takes minutes to tens of minutes.
 
 **Pitfall: unique temp dir per video.** When processing multiple videos in one session,

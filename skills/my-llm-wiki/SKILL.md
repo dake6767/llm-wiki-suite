@@ -42,6 +42,14 @@ executing it. Authentication walls, browser-cookie access, tool installation,
 and writes outside the selected wiki/temp directory remain real consent
 boundaries—surface them instead of weakening the runtime's guardrails.
 
+When the current turn owns a long background command, keep its completion inside
+the same turn: disable the runtime's asynchronous completion push
+(`notify_on_complete=false` in Hermes), poll/wait the retained process handle,
+and confirm it has exited before the final report. Enable completion pushes only
+when deliberately returning before the job finishes and a later user-facing
+follow-up is wanted. Mixing active polling with a completion push creates a
+second, stale reply after the real result has already been delivered.
+
 ## Dispatch by intent
 
 | Input | Owner | Result |

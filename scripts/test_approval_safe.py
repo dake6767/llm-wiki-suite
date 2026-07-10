@@ -136,6 +136,28 @@ class ApprovalSafetyTests(unittest.TestCase):
             self.assertIn("plain-http-url", rules)
 
 
+class BackgroundLifecycleTests(unittest.TestCase):
+    def test_self_managed_video_jobs_disable_async_completion_pushes(self) -> None:
+        docs = (
+            ROOT / "skills" / "my-llm-wiki" / "SKILL.md",
+            ROOT / "skills" / "my-llm-wiki-video" / "SKILL.md",
+            ROOT / "skills" / "my-llm-wiki-video" / "references" / "video-capture-sop.md",
+            ROOT / "skills" / "my-llm-wiki-maintainer" / "references" / "video-ingest-workflow.md",
+        )
+        for path in docs:
+            with self.subTest(path=path):
+                text = path.read_text(encoding="utf-8")
+                self.assertIn("notify_on_complete=false", text)
+
+    def test_video_sop_requires_process_reap_before_final_report(self) -> None:
+        path = (
+            ROOT / "skills" / "my-llm-wiki-video" / "references" / "video-capture-sop.md"
+        )
+        text = path.read_text(encoding="utf-8")
+        self.assertIn("Reap before the final answer", text)
+        self.assertIn("`process poll` is intentionally read-only", text)
+
+
 class CacheFilesFileTests(unittest.TestCase):
     def test_cache_save_accepts_json_files_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

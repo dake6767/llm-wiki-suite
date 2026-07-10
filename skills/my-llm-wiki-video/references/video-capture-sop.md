@@ -281,9 +281,22 @@ one command at 300 s). The universal contract:
 - **Launch the download+ASR as a non-blocking job** (plain shell: `nohup … &`;
   other runtimes: their background-exec primitive) that writes a status file
   (e.g. `status.yaml`) as its **last** act, atomically.
+- **Choose exactly one completion owner.** For the normal capture-and-organize
+  flow, the current turn owns the job: launch with asynchronous completion
+  delivery disabled (`notify_on_complete=false` in Hermes) and poll/wait it
+  yourself. Enable a completion push only when intentionally ending the turn
+  before the job finishes and a later follow-up is desired. Do not combine a
+  push with active polling; Hermes will otherwise queue a second agent turn even
+  if the result was already consumed and reported.
 - **Poll that file yourself** with short commands until it appears. Do **not**
   rely on the runtime's completion notification — observed failure: an agent
   waiting to be *told* sat idle long after the transcript was ready.
+- **Reap before the final answer.** Once the matching status file appears, wait
+  on or read the retained process handle until it is terminal, then verify the
+  output. In Hermes, `process poll` is intentionally read-only and does not
+  consume a queued completion notification; a timed-out `process wait` also does
+  not prove exit. Never send the capture/synthesis conclusion while a self-owned
+  process can still generate a delayed notification.
 - **Fresh temp dir per capture, always** — `mkdir -p` does not clean an
   existing dir, and a poller that reads a *previous* run's `status.yaml` /
   `transcript.md` will polish and ingest the **wrong video** (a real, documented
