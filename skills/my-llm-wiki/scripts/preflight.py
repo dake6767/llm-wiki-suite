@@ -303,7 +303,7 @@ def assess_profiles(
                 capabilities[profile] = {
                     "status": "ok",
                     "via": "fxtwitter fallback",
-                    "note": "browser-free; login-gated/protected content remains limited",
+                    "note": "browser-free via my-llm-wiki-x scripts/fx_capture.py; login-gated/protected content remains limited",
                 }
                 _add_recommendation(
                     recommendations, catalog, "opencli", profile,

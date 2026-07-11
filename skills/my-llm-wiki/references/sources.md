@@ -30,6 +30,16 @@ python3 <skill>/scripts/preflight.py --profile capture.doc
 agent-reach doctor --json 2>/dev/null       # per-platform availability, if installed
 ```
 
+**The probe is a hard gate, not a suggestion.** Do not pick a fetcher from
+habit before it runs. In particular, a generic text extractor
+(tavily-extract / WebFetch / built-in browser) is only a valid choice after
+the probe shows the scenario's preferred adapter missing or broken — reaching
+for it while opencli is installed is exactly the silent degradation the rule
+below forbids (remote images, missing `公众号:/发布时间:` metadata). Measured
+live: a WeChat capture went straight to `tvly extract`, skipped the probe, and
+committed a RAW with a remote cover and an empty publish time while opencli
+sat unused on the machine.
+
 Common fetch stacks, in rough order of capture cleanliness:
 
 | Stack | What it gives you | Watch out |
@@ -49,6 +59,11 @@ General rules, every scenario:
 
 - **Temp dir first** (`/tmp/llmwiki-<x>`), then `normalize_raw.py` commits. A
   failed fetch never touches RAW.
+- **Disk-first, context-cheap.** Fetch output goes into the temp dir via the
+  tool's own output flag, never to stdout — a dumped page/API payload becomes
+  prompt prefix re-billed on every later call (`| head` does not fix this).
+  Verify from the adapter's status/file size/grep, and let only compact
+  metadata excerpts into the conversation.
 - **Media must end up local.** The core does not download remote media — a
   capture whose images are still `https://` links is degraded (the core flags it
   via `capture_health`, but localizing is the fetch step's job).
@@ -77,10 +92,14 @@ source_type `wechat` · `original_id` = the `/s/<token>` URL segment.
   (`opencli web read --url … --download-images true --wait 5`) and normalize
   from that folder instead, carrying `--author` / `--publish-time` from the
   first pass (web read's header lacks them).
-- **No browser tool:** WebFetch / tavily-extract → save markdown to
+- **No browser tool** (only after the probe shows opencli
+  unavailable/broken): WebFetch / tavily-extract → save markdown to
   `/tmp/llmwiki-wx/page.md`, download the visible images into the dir, rewrite
   to relative links, pass metadata via flags. mp.weixin pages are largely
-  static, so text comes through well.
+  static, so text comes through well — but these extractors do not localize
+  images or parse the WeChat header, so downloading media and passing
+  `--author` / `--publish-time` is on you; a commit with `https://mmbiz.qpic.cn`
+  links left in the body is a degraded capture and will be flagged.
 
 A pure-text article legitimately has no images; when in doubt a web-read retry
 is harmless. web read pulls a little chrome (avatar, 打赏 UI) — trim the obvious
@@ -98,7 +117,8 @@ source_type: `xiaohongshu` for xiaohongshu.com, else `web`.
   ```
   Slow/JS pages: `--wait-until networkidle`, `--wait <s>`,
   `--wait-for "<css>"`, `--frames all-same-origin` for iframe articles.
-- **agent-reach / WebFetch / tavily-extract**: get clean markdown → write to
+- **agent-reach / WebFetch / tavily-extract** (only after the probe shows
+  opencli unavailable/broken): get clean markdown → write to
   `/tmp/llmwiki-web/page.md` → download must-keep images into the dir and
   rewrite to relative links (or accept text-only; the core will flag it) →
   `normalize_raw.py --md … --source-type web` with metadata flags.

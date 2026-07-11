@@ -235,7 +235,10 @@ def slugify(title: str) -> str:
 
 
 CHROME_MARKERS = re.compile(r"(微信扫一扫|赞赏作者|名称已清空|最低赞赏|喜欢作者|其它金额)")
-UNLOCALIZED_IMG = re.compile(r"(<img\b|data-src=|!\[[^\]]*\]\(https?://[^)]*\.(?:png|jpe?g|gif|webp))", re.I)
+# The ![..](..) markup already declares an image, so any remote URL there is
+# un-localized media — do not require a file extension (WeChat/CDN image URLs
+# carry the format in a query param, e.g. mmbiz.qpic.cn/.../0?wx_fmt=jpeg).
+UNLOCALIZED_IMG = re.compile(r"(<img\b|data-src=|!\[[^\]]*\]\(https?://)", re.I)
 
 # Working-file names a pipeline uses for its intermediates. When the title
 # would fall back to one of these (no --title, no H1), the capture step was
