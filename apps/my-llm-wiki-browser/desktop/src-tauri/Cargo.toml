@@ -23,6 +23,7 @@ tauri-plugin-notification = "2"
 tauri-plugin-updater = "2"
 tokio.workspace = true
 tracing.workspace = true
+tracing-appender.workspace = true
 tracing-subscriber.workspace = true
 url.workspace = true
 
