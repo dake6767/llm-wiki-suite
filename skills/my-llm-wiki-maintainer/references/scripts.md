@@ -208,8 +208,8 @@ wiki_ops.py browser-search /path/to/wiki --q "检索词" --type concept --tag se
 wiki_ops.py browser-search --wiki <browser-wiki-key> --q "检索词"   # skip root resolution
 ```
 
-`browser-search` is the **first retrieval tier of the Query SOP** (see
-`lint-query-save.md`): it queries the browser's full-text index
+`browser-search` is the Browser-only diagnostic primitive underneath
+`retrieval-search`: it queries the browser's full-text index
 (`/api/v1/wikis/<key>/search`) instead of hand-scanning `wiki/`, so candidate
 retrieval costs stay flat as the wiki grows. Connection and auth resolution are
 identical to `browser-share`. The project root (or `--wiki`) picks which
@@ -221,6 +221,24 @@ directly), `title`, `type`, `snippet` (with `<mark>` highlights), `score`. On
 `available: false` (`browser-unavailable`, `wiki-key-unresolved`,
 `unauthorized`, …) **fall back silently** to `local-search` below — the browser
 is optional and its absence is a normal state, not an error to surface.
+
+## Deterministic Retrieval Search (normal CLI entry point)
+
+```bash
+wiki_ops.py retrieval-search /path/to/wiki --q "检索词" --top 8
+```
+
+Use this command for normal ingest/query CLI retrieval. It calls
+`browser-search` first and, only when the Browser reports `available: false`,
+runs the bounded `local-search` fallback. Its JSON always includes `backend` as
+`browser` or `local`; copy that value into the retrieval trace. Keeping the
+choice inside the deterministic helper prevents agents from skipping the
+Browser after seeing two apparently equivalent example commands.
+
+Call `browser-search` or `local-search` directly only for diagnostics or when a
+workflow explicitly needs one backend. A connected MCP registration does not
+prove the current agent/subagent turn has MCP tools; prefer MCP only when
+`search_wiki` is actually exposed in that turn.
 
 ## Local Bounded Search (retrieval fallback tier)
 

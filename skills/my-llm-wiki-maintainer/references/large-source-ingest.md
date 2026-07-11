@@ -143,7 +143,7 @@ Only start when `stage-status` reports `ready: true` (`pending == 0 && stale == 
 3. **Check candidates against the existing wiki with bounded retrieval** — the
    deduped candidate names are exactly the "extracted names" of the ingest
    retrieval discipline (`ingest-update.md` step 5): per name, one
-   `browser-search`/`local-search --top 8` plus the disk grep sentinel
+   `retrieval-search --top 8` (Browser-first, local fallback) plus the disk grep sentinel
    (`grep -F "[[entities/<name>" wiki/index.md`), then `read-pages` the top
    3–5 pages that overlap. Never load the whole index to "see what exists".
 4. Run source identity first (dedup one source → one page):
@@ -242,7 +242,7 @@ scripts/wiki_ops.py split-source $R --raw $S --url https://x/report --write
 # MAP each of 18 chunks (index-free) → map/chunk-NNN.json ; --mark-done NNN each
 scripts/wiki_ops.py stage-status $R --source $S           # → "ready": true
 # REDUCE: read all map/*.json, dedup (e.g. 野生小虎 in chunks 2/9/17 → one page)
-scripts/wiki_ops.py browser-search $R --q "野生小虎" --top 8   # per deduped name (fallback: local-search)
+scripts/wiki_ops.py retrieval-search $R --q "野生小虎" --top 8   # per deduped name
 scripts/wiki_ops.py source-page $R --raw $S --url https://x/report
 scripts/wiki_ops.py apply-blocks $R --blocks-file /tmp/blocks.txt --source $S
 scripts/wiki_ops.py lint $R

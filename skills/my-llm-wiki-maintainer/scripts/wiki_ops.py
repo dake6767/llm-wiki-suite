@@ -2405,7 +2405,7 @@ def cmd_browser_share(args: argparse.Namespace) -> None:
     print(json.dumps(result, ensure_ascii=False))
 
 
-def cmd_browser_search(args: argparse.Namespace) -> None:
+def _browser_search_result(args: argparse.Namespace) -> dict[str, Any]:
     """Full-text search through the optional desktop browser's index.
 
     First-tier retrieval for the Query SOP: ask the browser's search index for
@@ -2421,15 +2421,13 @@ def cmd_browser_search(args: argparse.Namespace) -> None:
         headers["Authorization"] = f"Bearer {token}"
     root = _optional_root(args.project_root)
 
-    def fail(reason: str, **extra: Any) -> None:
-        result = {"available": False, "reason": reason, "hits": [], **extra}
-        print(json.dumps(result, ensure_ascii=False))
+    def fail(reason: str, **extra: Any) -> dict[str, Any]:
+        return {"available": False, "reason": reason, "hits": [], **extra}
 
     try:
         wiki_key = _resolve_browser_wiki_key(base_url, headers, args.timeout, root, args.wiki)
         if not wiki_key:
-            fail("wiki-key-unresolved")
-            return
+            return fail("wiki-key-unresolved")
         params = {"q": args.q, "limit": str(max(1, min(args.top, 50)))}
         if args.page_type:
             params["type"] = args.page_type
@@ -2441,18 +2439,14 @@ def cmd_browser_search(args: argparse.Namespace) -> None:
         )
         payload = _fetch_browser_json(base_url, search_path, headers, args.timeout)
     except urllib.error.HTTPError as err:
-        fail("unauthorized" if err.code == 401 else f"http-{err.code}")
-        return
+        return fail("unauthorized" if err.code == 401 else f"http-{err.code}")
     except (urllib.error.URLError, TimeoutError, OSError) as err:
-        fail("browser-unavailable", error=str(err))
-        return
+        return fail("browser-unavailable", error=str(err))
     except json.JSONDecodeError as err:
-        fail("invalid-response", error=str(err))
-        return
+        return fail("invalid-response", error=str(err))
 
     if not isinstance(payload, dict) or not isinstance(payload.get("hits"), list):
-        fail("invalid-response")
-        return
+        return fail("invalid-response")
 
     hits = []
     for hit in payload["hits"]:
@@ -2469,20 +2463,25 @@ def cmd_browser_search(args: argparse.Namespace) -> None:
                 "score": hit.get("score"),
             }
         )
-    result = {
+    return {
         "available": True,
+        "backend": "browser",
         "wiki": wiki_key,
         "query": payload.get("query", args.q),
         "total": payload.get("total", len(hits)),
         "hits": hits,
     }
-    print(json.dumps(result, ensure_ascii=False))
+
+
+def cmd_browser_search(args: argparse.Namespace) -> None:
+    """Search only the optional Browser index; report unavailable without fallback."""
+    print(json.dumps(_browser_search_result(args), ensure_ascii=False))
 
 
 NON_CONTENT_BASENAMES = {"index.md", "log.md", "overview.md"}
 
 
-def cmd_local_search(args: argparse.Namespace) -> None:
+def _local_search_result(args: argparse.Namespace) -> dict[str, Any]:
     """Bounded keyword retrieval over wiki/ — the LAST tier of the retrieval
     chain (Browser MCP → browser-search → this). No Browser required: it must
     keep every SOP fully usable, just a bit more expensive. Bounds: per-file
@@ -2545,18 +2544,39 @@ def cmd_local_search(args: argparse.Namespace) -> None:
         )
     scored.sort(key=lambda pair: -pair[0])
     top = max(1, min(args.top, 50))
-    print(
-        json.dumps(
-            {
-                "available": True,
-                "backend": "local",
-                "query": args.q,
-                "total": len(scored),
-                "hits": [hit for _, hit in scored[:top]],
-            },
-            ensure_ascii=False,
-        )
-    )
+    return {
+        "available": True,
+        "backend": "local",
+        "query": args.q,
+        "total": len(scored),
+        "hits": [hit for _, hit in scored[:top]],
+    }
+
+
+def cmd_local_search(args: argparse.Namespace) -> None:
+    """Search only the bounded local fallback."""
+    print(json.dumps(_local_search_result(args), ensure_ascii=False))
+
+
+def _retrieval_search_result(args: argparse.Namespace) -> dict[str, Any]:
+    """Deterministic Browser-first retrieval with a bounded local fallback.
+
+    Keeping the backend choice here prevents an agent from treating the two
+    documented commands as peers and skipping the cheaper Browser path. MCP is
+    still preferable when a host actually exposes its tools to the turn; this
+    command is the runtime-neutral CLI path used otherwise.
+    """
+    browser = _browser_search_result(args)
+    if browser.get("available"):
+        return browser
+    local = _local_search_result(args)
+    local["fallbackFrom"] = "browser"
+    local["fallbackReason"] = browser.get("reason", "unavailable")
+    return local
+
+
+def cmd_retrieval_search(args: argparse.Namespace) -> None:
+    print(json.dumps(_retrieval_search_result(args), ensure_ascii=False))
 
 
 def _read_pages_paths(args: argparse.Namespace) -> list[str]:
@@ -2845,6 +2865,23 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--token", help="override browser auth token")
     p.add_argument("--timeout", type=float, default=3.0)
     p.set_defaults(func=cmd_browser_search)
+
+    p = sub.add_parser(
+        "retrieval-search",
+        help="deterministic Browser-first search with bounded local fallback",
+    )
+    p.add_argument("project_root", help="wiki root used for Browser resolution and local fallback")
+    p.add_argument("--q", required=True, help="search query")
+    p.add_argument("--top", type=int, default=8, help="max hits to return (clamped to 50)")
+    p.add_argument("--wiki", help="browser wiki key override")
+    p.add_argument("--base-url", help="override local browser base URL")
+    p.add_argument("--token", help="override browser auth token")
+    p.add_argument("--timeout", type=float, default=3.0)
+    p.add_argument(
+        "--max-file-chars", type=int, default=8000,
+        help="per-file scan budget used only by the local fallback",
+    )
+    p.set_defaults(page_type=None, tag=None, func=cmd_retrieval_search)
 
     p = sub.add_parser(
         "local-search",

@@ -173,8 +173,7 @@ retrieval — do NOT read the full `wiki/index.md` into context (retrieval
 discipline, `ingest-update.md` step 5):
 
 ```bash
-python3 <maintainer>/scripts/wiki_ops.py browser-search <root> --q "<name>" --top 8
-python3 <maintainer>/scripts/wiki_ops.py local-search <root> --q "<name>" --top 8   # Browser absent
+python3 <maintainer>/scripts/wiki_ops.py retrieval-search <root> --q "<name>" --top 8
 grep -F "[[entities/<name>" <root>/wiki/index.md                                    # disk sentinel, zero context
 ```
 

@@ -69,17 +69,17 @@ Answer from the compiled wiki, not raw sources, unless the user explicitly asks 
 1. Resolve project root.
 2. Read `purpose.md` (O(1)). Do **not** read `wiki/index.md` — full or compact —
    into context; candidates come from bounded retrieval below.
-3. Retrieve candidate pages — three tiers, same backend and budgets, cheapest
-   connected tier first; **fall back silently**, the Browser is optional and its
-   absence only makes retrieval slightly more expensive, never a failure:
+3. Retrieve candidate pages — cheapest connected tier first, with a
+   deterministic silent fallback:
    - **Browser MCP** (when the host has it connected): `search_wiki`
-     (default top 8) — hits carry `path`/`snippet`/`score`.
-   - **Browser HTTP via CLI**: `wiki_ops.py browser-search <root> --q "<keywords>" --top 8`
-     — `available: true` → use `hits[].file` as the candidate set; retrieval cost
-     stays flat as the wiki grows. Run 1–2 keyword variants if the first query misses.
-   - **Local bounded fallback** (no Browser required):
-     `wiki_ops.py local-search <root> --q "<keywords>" --top 8` — bounded keyword
-     scan over `wiki/`, same output shape.
+     (default top 8) — use it only when `search_wiki` is actually exposed to
+     the current turn; registration in host config alone is not sufficient.
+   - **Runtime-neutral CLI**:
+     `wiki_ops.py retrieval-search <root> --q "<keywords>" --top 8` — one
+     command that tries the Browser HTTP index first and runs the bounded local
+     fallback only when Browser is unavailable. Its returned `backend` is
+     authoritative for tracing. Do not select `local-search` directly during
+     normal query work. Run 1–2 keyword variants if the first query misses.
 4. Expand through graph signals where cheap:
    - direct wikilinks;
    - shared `sources[]`;
