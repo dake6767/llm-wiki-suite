@@ -91,16 +91,19 @@
     "release_strategy": "download-release-first",
     "asset_patterns": {
       "darwin-arm64": [
+        "My.LLM.Wiki.Browser*_aarch64.dmg",
         "My LLM Wiki Browser*_aarch64.dmg",
         "My-LLM-Wiki-Browser*_aarch64.dmg",
         "*macos*aarch64*.dmg"
       ],
       "darwin-x64": [
+        "My.LLM.Wiki.Browser*_x64.dmg",
         "My LLM Wiki Browser*_x64.dmg",
         "My-LLM-Wiki-Browser*_x64.dmg",
         "*macos*x64*.dmg"
       ],
       "darwin-universal": [
+        "My.LLM.Wiki.Browser*_universal.dmg",
         "My LLM Wiki Browser*_universal.dmg",
         "My-LLM-Wiki-Browser*_universal.dmg",
         "*macos*universal*.dmg"
@@ -108,14 +111,18 @@
       "windows-x64": [
         "My-LLM-Wiki-Browser*_x64-portable.zip",
         "My LLM Wiki Browser*_x64-portable.zip",
+        "My.LLM.Wiki.Browser*_x64-setup.exe",
         "My LLM Wiki Browser*_x64-setup.exe",
         "My-LLM-Wiki-Browser*_x64-setup.exe",
+        "My.LLM.Wiki.Browser*_x64.msi",
         "My LLM Wiki Browser*_x64.msi",
         "My-LLM-Wiki-Browser*_x64.msi"
       ],
       "linux-x64": [
+        "My.LLM.Wiki.Browser*_amd64.AppImage",
         "My LLM Wiki Browser*_amd64.AppImage",
         "My-LLM-Wiki-Browser*_amd64.AppImage",
+        "My.LLM.Wiki.Browser*_amd64.deb",
         "My LLM Wiki Browser*_amd64.deb",
         "My-LLM-Wiki-Browser*_amd64.deb"
       ]

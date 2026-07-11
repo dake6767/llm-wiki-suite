@@ -6,6 +6,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 SCRIPT = Path(__file__).with_name("install-browser.py")
@@ -16,6 +17,23 @@ SPEC.loader.exec_module(installer)
 
 
 class McpRegistrationTests(unittest.TestCase):
+    def test_release_patterns_match_tauri_canonical_asset_names(self):
+        patterns = installer.load_bootstrap()["browser"]["asset_patterns"]
+        cases = {
+            "darwin-arm64": "My.LLM.Wiki.Browser_1.0.6_aarch64.dmg",
+            "darwin-x64": "My.LLM.Wiki.Browser_1.0.6_x64.dmg",
+            "windows-x64": "My.LLM.Wiki.Browser_1.0.6_x64-setup.exe",
+            "linux-x64": "My.LLM.Wiki.Browser_1.0.6_amd64.AppImage",
+        }
+        for platform_key, asset_name in cases.items():
+            with self.subTest(platform=platform_key), mock.patch.object(
+                installer, "platform_keys", return_value=[platform_key]
+            ):
+                selected = installer.pick_asset(
+                    {"assets": [{"name": asset_name}]}, patterns
+                )
+                self.assertEqual(selected["name"], asset_name)
+
     def test_registry_defaults_every_local_host_to_suite_bridge(self):
         mcp = installer.load_bootstrap()["mcp"]
         self.assertEqual(mcp["local_default_transport"], "stdio")
