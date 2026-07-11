@@ -59,13 +59,15 @@ only its script is shared; keep it out of context.)
    was that in?" answer.
 2. **Read `purpose.md`** of the chosen wiki (O(1)) if disambiguation or domain
    vocabulary helps the query. Nothing bigger.
-3. **Search — three tiers, same backend and budgets, cheapest connected tier
-   first, silent fallback:**
+3. **Search — cheapest connected tier first, deterministic silent fallback:**
    - **Browser MCP** (host has it connected): `search_wiki` with `limit` 8.
-   - **Browser HTTP via CLI**:
-     `python3 "$OPS" browser-search <root> --q "<keywords>" --top 8`
-   - **Local bounded fallback** (no Browser):
-     `python3 "$OPS" local-search <root> --q "<keywords>" --top 8`
+     Use it only when the current turn actually exposes that tool; registration
+     in host config alone is not proof that a subagent received it.
+   - **Runtime-neutral CLI**:
+     `python3 "$OPS" retrieval-search <root> --q "<keywords>" --top 8`.
+     This one command tries Browser HTTP first and runs the bounded local scan
+     only when Browser reports unavailable. Read its returned `backend` for the
+     trace; do not choose `local-search` directly during normal lookup.
    Run 1–2 keyword variants if the first query misses; keep each query short
    and specific (entity names beat sentences).
 4. **Expand cheaply when needed**: one hop of graph signals —

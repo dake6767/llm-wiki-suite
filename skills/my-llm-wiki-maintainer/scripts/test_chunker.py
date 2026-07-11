@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import sys
 import unittest
+from argparse import Namespace
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -170,6 +172,30 @@ class TestBrowserShareHelpers(unittest.TestCase):
             w._markdown_link("https://wiki.example/p?token=secret", "点击查看总结"),
             "[点击查看总结](https://wiki.example/p?token=secret)",
         )
+
+
+class TestRetrievalSearch(unittest.TestCase):
+    def setUp(self):
+        self.args = Namespace(q="乾隆", top=8)
+
+    def test_browser_result_wins_without_local_scan(self):
+        browser = {"available": True, "backend": "browser", "hits": [{"file": "wiki/a.md"}]}
+        with mock.patch.object(w, "_browser_search_result", return_value=browser), \
+             mock.patch.object(w, "_local_search_result") as local:
+            result = w._retrieval_search_result(self.args)
+        self.assertEqual(result, browser)
+        local.assert_not_called()
+
+    def test_unavailable_browser_falls_back_to_local(self):
+        local_result = {"available": True, "backend": "local", "hits": []}
+        with mock.patch.object(
+            w, "_browser_search_result",
+            return_value={"available": False, "reason": "browser-unavailable", "hits": []},
+        ), mock.patch.object(w, "_local_search_result", return_value=local_result):
+            result = w._retrieval_search_result(self.args)
+        self.assertEqual(result["backend"], "local")
+        self.assertEqual(result["fallbackFrom"], "browser")
+        self.assertEqual(result["fallbackReason"], "browser-unavailable")
 
 
 if __name__ == "__main__":

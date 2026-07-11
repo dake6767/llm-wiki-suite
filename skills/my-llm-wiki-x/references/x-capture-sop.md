@@ -28,7 +28,9 @@ Never construct the body from a bookmark, timeline, search, or list result: its
 text and media flags are discovery hints and are known to truncate long-form posts.
 
 If opencli is genuinely unavailable or the fetch fails after PATH/login checks,
-read `x-fallback-capture.md` and assemble the same temp shape from fxtwitter.
+read `x-fallback-capture.md` and run its `scripts/fx_capture.py` — it lands the
+fxtwitter payload on disk and assembles the same temp shape deterministically.
+Never dump the fxtwitter API JSON to stdout/context.
 
 ## 3. Repair long-form metadata before commit
 

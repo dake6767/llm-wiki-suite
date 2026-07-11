@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import contextlib
 import io
 import json
 import os
@@ -99,6 +100,19 @@ class BridgeTests(unittest.TestCase):
         result = bridge.probe(bridge.LocalHttpClient(self.mcp, timeout=1))
         self.assertTrue(result["ok"])
         self.assertEqual(result["tools"], ["list_wikis", "search_wiki"])
+
+    def test_lifecycle_diagnostics_are_secret_free(self):
+        source = io.BytesIO(b"")
+        output = io.BytesIO()
+        stderr = io.StringIO()
+        client = bridge.LocalHttpClient(self.mcp, timeout=1)
+        with contextlib.redirect_stderr(stderr):
+            self.assertEqual(bridge.bridge_stream(client, source, output), 0)
+        logs = stderr.getvalue()
+        self.assertIn('"event":"start"', logs)
+        self.assertIn('"event":"stdin-eof"', logs)
+        self.assertIn('"tokenPresent":true', logs)
+        self.assertNotIn(self.token_file.read_text(encoding="utf-8").strip(), logs)
 
 
 if __name__ == "__main__":

@@ -93,7 +93,8 @@ scraping around an auth wall.
 
 - `references/x-capture-sop.md` — complete single-post composition and commit flow.
 - `references/x-bookmarks.md` — stateful bookmark discovery, dedup, batching, and report.
-- `references/x-fallback-capture.md` — browser-free fxtwitter adapter.
+- `references/x-fallback-capture.md` — browser-free fxtwitter adapter
+  (`scripts/fx_capture.py`, disk-first).
 - `references/x-article-pitfalls.md` — long-form title/author repair before commit.
 - Sibling `my-llm-wiki/references/routing.md` — shared multi-wiki routing.
 - Sibling `my-llm-wiki/references/adapter-contract.md` — accepted temp shapes.

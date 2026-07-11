@@ -102,6 +102,25 @@ when deliberately returning before the job finishes and a later user-facing
 follow-up is wanted. Mixing active polling with a completion push creates a
 second, stale reply after the real result has already been delivered.
 
+## Fetch payloads are disk-first
+
+The staging rule above is also a context-budget rule, not only a safety rule.
+Anything printed to stdout enters the conversation and is re-billed as prompt
+prefix on every later call in the session (a measured fallback fetch put ~49KB
+of raw API JSON into context this way). So:
+
+- **Fetchers write to files, never to stdout.** Use the tool's own output flag
+  (`--output`, `-o`, `>file`) into the temp capture dir. Piping through `head`
+  is not a budget — a truncated dump is still tens of KB of prompt prefix.
+- **Verify with bounded probes.** Confirm a fetch from file size, the adapter's
+  own status field, or a grep for the specific field you need — not by printing
+  the payload.
+- **Only compact excerpts enter context**: title, author, publish time, media
+  counts, health warnings — what routing and verification actually need.
+- When the only available fetcher returns content in-band (an agent built-in
+  like WebFetch), that one pass is the price of the path; save it to the temp
+  file immediately and do not additionally print the file back.
+
 ## Dispatch by intent
 
 | Input | Owner | Result |
@@ -157,6 +176,11 @@ python3 <skill>/scripts/preflight.py --profile capture.web
 python3 <skill>/scripts/preflight.py --profile capture.doc
 agent-reach doctor --json 2>/dev/null
 ```
+
+The probe is a hard gate: do not select a fetcher before it runs, and do not
+fall back to a generic extractor (tavily/WebFetch/built-in browser) while the
+probe shows the scenario's preferred adapter installed — that is silent
+degradation, not a fallback.
 
 Use the best available adapter, always writing into a fresh temp directory. A
 valid adapter produces Markdown plus local media in one of the shapes defined by

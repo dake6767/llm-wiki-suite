@@ -19,13 +19,21 @@ Goal: compile one raw source into durable wiki pages while preserving traceabili
       entity/concept names this source touches (the same names steps 6–7 will
       decide pages for).
    2. **Per extracted name, one bounded search** — this retrieval discipline is
-      the load-bearing rule:
+      the load-bearing rule. If the host actually exposes Browser MCP tools to
+      this turn, use `search_wiki`. Otherwise run the single deterministic CLI
+      entry point below; it always tries Browser HTTP first and falls back to
+      local only when its JSON result says the Browser is unavailable:
 
       ```bash
-      python3 scripts/wiki_ops.py browser-search <root> --q "<name>" --top 8
-      # Browser absent (available: false) → same shape, local fallback:
-      python3 scripts/wiki_ops.py local-search <root> --q "<name>" --top 8
+      python3 scripts/wiki_ops.py retrieval-search <root> --q "<name>" --top 8
       ```
+
+      Read the returned `backend` (`browser` or `local`) and use that exact
+      value in the retrieval trace. Do not call `local-search` directly during
+      normal ingest; it is a diagnostic/explicit fallback command. MCP being
+      registered in host config is not sufficient evidence that the current
+      turn can call it — use MCP only when `search_wiki` is actually present in
+      the turn's tools.
 
       Fall back silently; the Browser is optional and every step here must work
       without it (just slightly more expensive). Do NOT compress this into one
@@ -38,7 +46,7 @@ Goal: compile one raw source into durable wiki pages while preserving traceabili
         --max-pages 5 --max-chars-per-page 6000 --max-total-chars 24000
       ```
 
-      (When the Browser MCP is connected, `search_wiki` + `read_pages` are the
+      (When the Browser MCP tools are exposed to the turn, `search_wiki` + `read_pages` are the
       same two operations as MCP tools — same backend, same budgets.)
    4. **Disk grep sentinel (keep it).** Before creating any new content page,
       check for an existing page with a disk grep — zero context cost:

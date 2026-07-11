@@ -23,7 +23,7 @@ python3 scripts/wiki_ops.py resolve-root <path>
 Read `purpose.md` and `schema.md` from the wiki root — what the wiki is about
 and what page types exist. Do **not** read `wiki/index.md` into context:
 "what's already there" comes from bounded retrieval in Step 5 (per-name
-`browser-search` / `local-search` + `read-pages`) plus the zero-cost disk grep
+`retrieval-search` + `read-pages`) plus the zero-cost disk grep
 sentinel (`grep -F "[[entities/<name>" wiki/index.md`). On a grown wiki a full
 index in the prompt is re-billed on every subsequent call of the session.
 
@@ -52,8 +52,7 @@ touches. Then, **per extracted name, one bounded search** (never a single topic
 query for the whole source — that collapses working-set recall from ~97% to ~28%):
 
 ```bash
-python3 scripts/wiki_ops.py browser-search <root> --q "朱元璋" --top 8
-python3 scripts/wiki_ops.py local-search <root> --q "朱元璋" --top 8   # Browser absent
+python3 scripts/wiki_ops.py retrieval-search <root> --q "朱元璋" --top 8
 ```
 
 Pack the top 3–5 candidate pages with `read-pages` (defaults: 5 pages / 6000

@@ -49,8 +49,9 @@ These principles are runtime-agnostic; each host applies them with its own
 mechanism (a subagent, a delegated task, an independent session — the SOP only
 mandates "a clean context", never a specific feature):
 
-- **Retrieval is O(top-k), never O(wiki).** Search first (`browser-search` /
-  `local-search` / Browser MCP `search_wiki`), then read only the top 3–5
+- **Retrieval is O(top-k), never O(wiki).** Search first (Browser MCP
+  `search_wiki` when actually exposed to the turn; otherwise the deterministic
+  Browser-first `retrieval-search` CLI), then read only the top 3–5
   candidate pages under an explicit budget (`read-pages`). The full `index.md`,
   a full tree listing, and the whole `review.json` stay on disk.
 - **Each ingest/review/research task deserves a fresh context.** Do not append a
