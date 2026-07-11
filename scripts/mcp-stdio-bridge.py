@@ -18,6 +18,7 @@ diagnostics go to stderr.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import os
 import sys
@@ -34,6 +35,21 @@ PROTOCOL_ERROR = -32000
 
 class BridgeError(RuntimeError):
     """A runtime/configuration error that can be returned as JSON-RPC."""
+
+
+def diagnostic(event: str, **fields: object) -> None:
+    """Write one secret-free lifecycle record to stderr."""
+    record = {
+        "ts": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "event": event,
+        "pid": os.getpid(),
+        **fields,
+    }
+    print(
+        "mcp-stdio-bridge: " + json.dumps(record, ensure_ascii=False, separators=(",", ":")),
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 def _expand(path: str) -> Path:
@@ -142,19 +158,33 @@ class LocalHttpClient:
 
 
 def bridge_stream(client: LocalHttpClient, stdin: BinaryIO, stdout: BinaryIO) -> int:
+    request_count = 0
+    diagnostic(
+        "start",
+        ppid=os.getppid(),
+        endpoint=resolve_endpoint(client.mcp, client.endpoint_override),
+        tokenPresent=bool(read_token(client.mcp, client.token_file_override)),
+    )
     for raw_line in stdin:
         payload = raw_line.strip()
         if not payload:
             continue
+        request_count += 1
         try:
             message = json.loads(payload)
         except json.JSONDecodeError as exc:
+            diagnostic("invalid-json", request=request_count, detail=exc.msg)
             reply = error_reply(None, f"invalid JSON from MCP client: {exc.msg}")
-            stdout.write(json.dumps(reply, separators=(",", ":")).encode("utf-8") + b"\n")
-            stdout.flush()
+            try:
+                stdout.write(json.dumps(reply, separators=(",", ":")).encode("utf-8") + b"\n")
+                stdout.flush()
+            except (BrokenPipeError, OSError) as write_exc:
+                diagnostic("stdout-closed", request=request_count, error=type(write_exc).__name__)
+                return 1
             continue
 
         message_id = rpc_id(message)
+        method = message.get("method") if isinstance(message, dict) else None
         try:
             status, body = client.post(payload)
             if status == 202:
@@ -167,6 +197,13 @@ def bridge_stream(client: LocalHttpClient, stdin: BinaryIO, stdout: BinaryIO) ->
                 detail = detail or f"Browser MCP returned HTTP {status}"
                 reply = error_reply(message_id, f"HTTP {status}: {detail}")
         except (BridgeError, json.JSONDecodeError) as exc:
+            diagnostic(
+                "request-error",
+                request=request_count,
+                method=method,
+                error=type(exc).__name__,
+                detail=str(exc),
+            )
             if message_id is None:
                 print(f"mcp-stdio-bridge: {exc}", file=sys.stderr, flush=True)
                 continue
@@ -176,8 +213,18 @@ def bridge_stream(client: LocalHttpClient, stdin: BinaryIO, stdout: BinaryIO) ->
         # unexpected body.  This preserves stdio JSON-RPC notification semantics.
         if message_id is None:
             continue
-        stdout.write(json.dumps(reply, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n")
-        stdout.flush()
+        try:
+            stdout.write(json.dumps(reply, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n")
+            stdout.flush()
+        except (BrokenPipeError, OSError) as exc:
+            diagnostic(
+                "stdout-closed",
+                request=request_count,
+                method=method,
+                error=type(exc).__name__,
+            )
+            return 1
+    diagnostic("stdin-eof", requests=request_count)
     return 0
 
 
