@@ -141,7 +141,7 @@ class BackgroundLifecycleTests(unittest.TestCase):
         docs = (
             ROOT / "skills" / "my-llm-wiki" / "SKILL.md",
             ROOT / "skills" / "my-llm-wiki-video" / "SKILL.md",
-            ROOT / "skills" / "my-llm-wiki-video" / "references" / "video-capture-sop.md",
+            ROOT / "skills" / "my-llm-wiki-video" / "references" / "video-asr.md",
             ROOT / "skills" / "my-llm-wiki-maintainer" / "references" / "video-ingest-workflow.md",
         )
         for path in docs:
@@ -151,7 +151,7 @@ class BackgroundLifecycleTests(unittest.TestCase):
 
     def test_video_sop_requires_process_reap_before_final_report(self) -> None:
         path = (
-            ROOT / "skills" / "my-llm-wiki-video" / "references" / "video-capture-sop.md"
+            ROOT / "skills" / "my-llm-wiki-video" / "references" / "video-asr.md"
         )
         text = path.read_text(encoding="utf-8")
         self.assertIn("Reap before the final answer", text)

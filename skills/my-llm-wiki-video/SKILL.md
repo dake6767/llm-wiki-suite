@@ -40,7 +40,9 @@ automatically.
 
 1. **Read the complete SOP.** Always read
    `references/video-capture-sop.md`. For Bilibili, Douyin, or Xiaohongshu also
-   read the matching platform reference listed below.
+   read the matching platform reference listed below. Read
+   `references/video-asr.md` only when the SOP lands on the no-captions path
+   (Path B) — the captions path never needs it.
 2. **Probe capability.** Run
    `python3 "$CORE_SKILL/scripts/preflight.py" --profile capture.video` and
    inspect `capabilities.capture.video`.
@@ -54,6 +56,10 @@ automatically.
    yt-dlp/opencli/network output into an interpreter.
 4. **Build the temp acceptance shape.** Produce a fresh directory containing
    `transcript.md`, `images/cover.jpg`, and `status.yaml` as specified by the SOP.
+   Fetch caption tracks with the shipped `scripts/caption_fetch.py` — the
+   payload and a normalized `subs.srt` land in the temp dir; only its compact
+   JSON summary enters the conversation. Never dump or pipe the fetched
+   captions into context to inspect them.
    For Chinese local ASR, invoke the shipped
    `scripts/sensevoice_to_srt.py`; never copy its implementation into a temporary
    script or an arbitrary-code tool. Write semantic transcript repairs as data
@@ -108,8 +114,11 @@ automatically.
 
 ## Reference map
 
-- `references/video-capture-sop.md` — acceptance shape, captions/ASR decision,
-  anchor assembly, background discipline, verification, and platform index.
+- `references/video-capture-sop.md` — acceptance shape, captions-first
+  decision, anchor assembly, verification, and platform index.
+- `references/video-asr.md` — the no-captions fallback: audio download,
+  language→backend routing gate, VAD-first SenseVoice runner, background
+  discipline for long ASR runs, audio-specific checks. Read only on Path B.
 - `references/video-bilibili-pitfalls.md` — Bilibili-specific traps.
 - `references/video-douyin.md` — Douyin share-link recipes and dead ends.
 - `references/video-xiaohongshu.md` — Xiaohongshu video-note recipe and dead ends.

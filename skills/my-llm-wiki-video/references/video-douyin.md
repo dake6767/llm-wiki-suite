@@ -62,7 +62,7 @@ used. Download it with the same mobile UA + `Referer: https://www.douyin.com/`.
 ## Common tail (both recipes)
 
 - Download the mp4 (`curl -sL`), then `ffprobe` its duration against the
-  metadata duration (SOP §5) before spending ASR time on it.
+  metadata duration (`video-asr.md` §5) before spending ASR time on it.
 - Extract audio, take the cover from frame 0, and **delete the mp4** — the
   media is never kept:
   ```bash
@@ -72,7 +72,7 @@ used. Download it with the same mobile UA + `Referer: https://www.douyin.com/`.
   ```
   (Recipe B's `cover_url` serves **WebP** regardless of extension — if you use
   it instead of frame 0, convert: `ffmpeg -i cover.webp cover.jpg`.)
-- Run the SOP §2 VAD-first SenseVoice recipe, then SOP §3
+- Run the VAD-first SenseVoice recipe (`references/video-asr.md` §3), then SOP §3
   `srt_to_anchors.py --url 'https://www.douyin.com/video/<aweme_id>'` —
   anchors get best-effort `?t=<sec>s` links (the Douyin web player ignores
   them today, but the MM:SS text still indexes the video).
