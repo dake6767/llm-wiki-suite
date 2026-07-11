@@ -66,6 +66,27 @@ Agents can query the authenticated local API endpoint
 `/api/v1/config/share` to check whether the relay is connected and, when it is,
 retrieve the tokenized online wiki URL for the user-facing final response.
 
+## Relay Reliability And Logs
+
+The desktop app persists tracing output under
+`~/.my-llm-wiki/logs/browser-relay.YYYY-MM-DD.log`. Logs rotate daily and the
+seven most recent files are retained. Relay lifecycle entries carry a
+`connection_id` and record reconnect reasons, heartbeats, request counts,
+in-flight work, and send-queue capacity. Connector keys, Bearer tokens, URL
+credentials, and `token` query values are never written.
+
+The connector treats the relay as unhealthy and reconnects when any of these
+conditions occurs:
+
+- no inbound Worker frame arrives for 60 seconds;
+- a WebSocket write exceeds 15 seconds, the writer task exits, or the bounded
+  send queue remains blocked for 10 seconds;
+- the Worker deployment version changes;
+- two consecutive one-minute end-to-end probes fail. The probe calls the public
+  relay URL's `/api/v1/healthz` route with the token in the Authorization header,
+  so it covers Worker routing, WebSocket transport, local origin, and the return
+  path rather than merely checking that heartbeat frames still arrive.
+
 ## Current Release Gates
 
 - Rust/Tauri desktop build works from inside the suite.

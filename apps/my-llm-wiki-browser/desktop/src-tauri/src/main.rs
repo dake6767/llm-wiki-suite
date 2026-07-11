@@ -19,6 +19,8 @@ use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Manager, Url, WindowEvent};
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::fmt::writer::MakeWriterExt as _;
 // macOS 专属：控制 Dock 图标与激活策略（Accessory=托盘常驻不占 Dock）。
 // 其它平台没有这个概念，相关调用一并 cfg 掉。
 #[cfg(target_os = "macos")]
@@ -75,10 +77,13 @@ fn save_persisted_port(port: u16) -> std::io::Result<()> {
 }
 
 fn main() {
-    tracing_subscriber::fmt::init();
     // One-time move of legacy ~/.llm-wiki-connector and ~/.config/llm-wiki into
     // the unified ~/.my-llm-wiki home, before anything reads those paths.
     llm_wiki_core::paths::migrate_legacy();
+    // Release GUI processes have stdout/stderr connected to /dev/null on macOS
+    // and Windows. Persist synchronously because relay logs are low-volume and
+    // the final pre-crash/watchdog event must survive an abrupt process stop.
+    init_logging();
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
@@ -154,6 +159,68 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("failed to run LLM-Wiki desktop app");
+}
+
+fn init_logging() {
+    let filter = relay_log_filter();
+    let Some(log_dir) = llm_wiki_core::paths::suite_home().map(|home| home.join("logs")) else {
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_ansi(false)
+            .init();
+        return;
+    };
+    if let Err(err) = std::fs::create_dir_all(&log_dir) {
+        eprintln!("logging: cannot create {}: {err}", log_dir.display());
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_ansi(false)
+            .init();
+        return;
+    }
+
+    let appender = match tracing_appender::rolling::RollingFileAppender::builder()
+        .rotation(tracing_appender::rolling::Rotation::DAILY)
+        .filename_prefix("browser-relay")
+        .filename_suffix("log")
+        .max_log_files(7)
+        .build(&log_dir)
+    {
+        Ok(appender) => appender,
+        Err(err) => {
+            eprintln!("logging: cannot open {}: {err}", log_dir.display());
+            tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .with_ansi(false)
+                .init();
+            return;
+        }
+    };
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_ansi(false)
+        .with_target(true)
+        .with_writer(appender.and(std::io::stderr))
+        .init();
+    tracing::info!(
+        log_dir = %log_dir.display(),
+        retained_files = 7,
+        "persistent browser logging initialized"
+    );
+}
+
+fn relay_log_filter() -> EnvFilter {
+    // Preserve caller-provided filtering for dependencies, but relay health
+    // snapshots are an operational contract and must not disappear under a
+    // broad `RUST_LOG=warn` inherited from an agent/launcher process.
+    ["llm_wiki_connector=info", "llm_wiki_desktop=info"]
+        .into_iter()
+        .fold(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+            |filter, directive| {
+                filter.add_directive(directive.parse().expect("valid relay log directive"))
+            },
+        )
 }
 
 struct DesktopState {
@@ -445,6 +512,7 @@ fn connector_config() -> ConnectorConfig {
         config.worker_ws = worker_ws;
     }
     config.origin = local_base_url().trim_end_matches('/').to_string();
+    config.probe_token = auth_token();
     if let Some(dir) = llm_wiki_core::paths::connector_dir() {
         config.identity_file = dir.join("identity.json");
     }
@@ -721,6 +789,13 @@ fn online_url(worker_ws: &str, uid: &str, auth_token: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relay_targets_stay_visible_in_persistent_logs() {
+        let filter = relay_log_filter().to_string();
+        assert!(filter.contains("llm_wiki_connector=info"));
+        assert!(filter.contains("llm_wiki_desktop=info"));
+    }
 
     #[test]
     fn local_url_keeps_plain_when_token_empty() {
