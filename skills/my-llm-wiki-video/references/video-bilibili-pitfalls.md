@@ -3,7 +3,8 @@
 Platform notes for `references/video-capture-sop.md` — the recipes themselves
 are the SOP's Path A/B (Bilibili often *has* captions, including the AI `ai-zh`
 track, so try Path A first); these are the traps Bilibili adds on top. Generic
-any-platform pitfalls stay in the SOP §6.
+any-platform pitfalls stay in the SOP §5; the ASR-path recipe and audio checks
+are in `references/video-asr.md`.
 
 - **`-x` is not audio-only on Bilibili.** `yt-dlp -x` can pick a merged
   video+audio DASH format (280 MiB, 30-min download) whose audio extraction
@@ -19,7 +20,7 @@ any-platform pitfalls stay in the SOP §6.
   truncates **everything downstream** at the damage point — ffmpeg
   conversion, funasr's internal loader, a VAD pass (one 67-min capture
   "stopped" at 20 min this way and was misdiagnosed as a VAD length limit;
-  the SOP §5 fraction-of-duration check is the tell).
+  the fraction-of-duration check in `video-asr.md` §5 is the tell).
 - **HTTP 412 = Bilibili bot protection.** Wait a few minutes, retry with
   `--cookies-from-browser chrome`. `--cookies-from-browser` itself can hang
   10-30 s when Chrome holds many cookies — close Chrome or use another browser.
@@ -32,5 +33,5 @@ any-platform pitfalls stay in the SOP §6.
   after the last real sentence. (Distinct from the normal ~80-85 % non-speech
   outro cutoff, where ASR simply emits nothing.)
 - **A cookie-less download can silently truncate** — 2 min fetched of a 25-min
-  video, ASR reports `ok` on the fragment. The SOP §5 duration check catches
-  this; never skip it on Bilibili.
+  video, ASR reports `ok` on the fragment. The audio-duration check in
+  `video-asr.md` §5 catches this; never skip it on Bilibili.

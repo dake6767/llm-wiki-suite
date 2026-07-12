@@ -39,7 +39,7 @@ opencli xiaohongshu download 'https://xhslink.com/o/<code>' --output <tmpdir> \
 
 Redirect the output: the progress bar spams `\r` frames (hundreds of KB) that
 will flood an agent transcript. A 200 MB video takes a few minutes — for long
-notes apply the SOP §4 background+poll discipline.
+notes apply the background+poll discipline (`references/video-asr.md` §4).
 
 Metadata comes from `note`, which does **not** take a bare note id — it wants a
 full signed URL (`xsec_token` included). Resolve the short link to get one:
@@ -61,9 +61,9 @@ command substitution.
 ## Common tail
 
 Same as Douyin (`references/video-douyin.md`): `ffprobe` the mp4 duration for
-sanity (SOP §5), extract 16 kHz mono wav, keep the downloaded cover jpg (or
-take frame 0), **delete the mp4**, run the SOP §2 SenseVoice recipe, then SOP
-§3 `srt_to_anchors.py --url
+sanity (`video-asr.md` §5), extract 16 kHz mono wav, keep the downloaded cover
+jpg (or take frame 0), **delete the mp4**, run the SenseVoice recipe
+(`video-asr.md` §3), then SOP §3 `srt_to_anchors.py --url
 'https://www.xiaohongshu.com/discovery/item/<note_id>'` — the 小红书 player
 ignores `?t=` params today, so anchors are index-only, same as Douyin. Then
 assemble the SOP §1 `transcript.md` around the anchored output (real `# title`

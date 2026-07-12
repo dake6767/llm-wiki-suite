@@ -77,7 +77,7 @@ TMPDIR="/tmp/llmwiki-vid-$(date +%s)"
 mkdir -p "$TMPDIR"
 ```
 After the background process completes, verify `status.yaml`'s `source_url` matches
-the URL you requested. See `my-llm-wiki-video` skill's `references/video-capture-sop.md`
+the URL you requested. See `my-llm-wiki-video` skill's `references/video-asr.md`
 (§4, background + poll discipline) for the full incident report.
 
 **Pitfall: Bilibili silent partial download.** Without `--browser chrome`, yt-dlp
@@ -97,7 +97,7 @@ is a red flag. If truncated, re-run with `--browser chrome`.
 The `status.yaml` file is the completion signal. If it doesn't exist, shows a different
 video URL/ID than expected, or the process is still running — do NOT read `transcript.md`.
 Reading stale data from a previous capture and polishing it is a real, documented pitfall
-(see `my-llm-wiki-video` skill's `references/video-capture-sop.md` §4).
+(see `my-llm-wiki-video` skill's `references/video-asr.md` §4).
 
 When `transcript_source: whisper(...)` or `sensevoice(...)`, the raw output has no
 punctuation, no paragraph breaks, and frequent ASR errors — especially for proper
@@ -108,7 +108,7 @@ SenseVoice mis-transcribe the same names differently, and the right corrections 
 entirely on the wiki's subject — do not hard-code a name table in this reference. Keep a
 correction table scoped to the corpus: `data/asr-corrections-zh-history.md` ships the
 Chinese-history (Qing/Ming) table accumulated from real sessions; start an analogous one
-per wiki. The upstream `my-llm-wiki-video` skill's `references/video-capture-sop.md` (§5)
+per wiki. The upstream `my-llm-wiki-video` skill's `references/video-capture-sop.md` (§4)
 describes how to build corrections from the full transcript.
 
 **Polish steps:**
