@@ -60,9 +60,9 @@
     },
     {
       "id": 2,
-      "name": "note-capture-and-synthesize-same-turn",
-      "prompt": "/my-llm-wiki 抓取并整理这条我自己的笔记：\"检索系统的质量上限取决于可观测性；没有失败样本回流，调参只是在猜。\" 知识库根目录就是你的 outputs 目录（已有 schema.md、wiki/ 和 .llm-wiki/project.json）。这是一个组合请求，请在同一轮完成，不要只停在 RAW。",
-      "expected_output": "The note is first normalized into immutable raw/sources/note/, then that exact RAW file is ingested by my-llm-wiki-maintainer into derived wiki pages in the same turn. The ingest ledger records a cache hit, and the single final response reports both capture and synthesis without asking the user to say 整理 again.",
+      "name": "note-capture-and-synthesize-one-request",
+      "prompt": "/my-llm-wiki 抓取并整理这条我自己的笔记：\"检索系统的质量上限取决于可观测性；没有失败样本回流，调参只是在猜。\" 知识库根目录就是你的 outputs 目录（已有 schema.md、wiki/ 和 .llm-wiki/project.json）。这是一个组合请求，一次请求完成即可，不要只停在 RAW 或要求我重复说整理。",
+      "expected_output": "The note is first normalized into immutable raw/sources/note/. When delegation is available, the parent hands only the wiki root and exact RAW path to a fresh worker, which loads my-llm-wiki-maintainer and creates the derived pages; without delegation it continues in-session. The ingest ledger records a cache hit. One user request is sufficient: synchronous hosts return one combined final response, while background-only hosts may acknowledge progress and issue the terminal report from the completion turn without asking the user to repeat 整理.",
       "files": [],
       "assertions": [
         {
@@ -78,7 +78,7 @@
           "text": "wiki_ops.py cache check for the exact RAW note reports hit: true"
         },
         {
-          "text": "The only user-facing completion response reports both RAW capture and wiki synthesis"
+          "text": "The terminal completion response reports both RAW capture and wiki synthesis; a background dispatch acknowledgement, if any, does not claim full completion"
         },
         {
           "text": "The response does not ask the user to say 整理, 综合, ingest, or otherwise repeat the already requested second stage"
@@ -103,6 +103,27 @@
         },
         {
           "text": "The response accurately reports a capture-only result and does not claim synthesis completed"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "name": "capture-synthesis-delegates-from-payload-heavy-parent",
+      "prompt": "/my-llm-wiki 抓取并整理 https://example.com/long-report 到我的知识库。当前对话前面已经做了很长的搜索和调试；宿主现在提供可创建隔离上下文的子代理工具。知识库根目录就是 outputs 目录（已有 schema.md、wiki/ 和 .llm-wiki/project.json）。",
+      "expected_output": "Capture and normalization occur in the parent. Before synthesis, the agent delegates one ingest task to a fresh worker and hands over only operation=ingest, the absolute wiki root, the exact new RAW path, required_skill=my-llm-wiki-maintainer, and completion gates. The parent does not load maintainer or paste the fetched body into the handoff. The worker completes ingest and verifies cache hit=true.",
+      "files": [],
+      "assertions": [
+        {
+          "text": "The parent delegates synthesis because an isolation mechanism is available"
+        },
+        {
+          "text": "The delegation handoff contains the absolute wiki root and exact newly written RAW path but not the fetched article body or prior conversation summary"
+        },
+        {
+          "text": "my-llm-wiki-maintainer is loaded by the fresh worker rather than redundantly loaded in the capture parent"
+        },
+        {
+          "text": "The terminal result is gated on cache check hit: true and reports the written pages"
         }
       ]
     }

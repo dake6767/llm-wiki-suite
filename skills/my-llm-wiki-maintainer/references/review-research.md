@@ -113,6 +113,13 @@ Run it as part of a periodic review batch (e.g. after a flush, or on an explicit
 
 Deep Research is **delegation-first**. This skill does NOT bundle a search engine or a domain tool registry. It owns exactly one thing: the **evidence contract** — the shape evidence must arrive in to be filed into the wiki — plus the filing, synthesis, and ingest-back. *How* the evidence is gathered is the orchestration layer's job: at run time the agent picks whatever domain-appropriate retrieval skill or MCP is available in the environment, exactly the way the wiki treats an upstream capture skill (see SKILL.md → Upstream capture). The retrieval producer is interchangeable; the contract is not.
 
+Select the execution context before starting this flow, using SKILL.md →
+**Choose the execution context before maintenance**. From a parent conversation,
+delegate the **entire** deep-research flow once; do not return a large retrieval
+payload to the parent for filing and synthesis. From an already-fresh delegated
+worker, continue here without another delegation. That worker owns steps 1–9 and
+returns only artifact paths, verification status, and concise warnings.
+
 This mirrors the capture pattern: a producer hands the maintainer a faithful, cited evidence bundle; the maintainer files it to immutable RAW, synthesizes a wiki page in the wiki's own voice and link convention, then ingests so knowledge compounds.
 
 ### Choosing a retrieval producer (orchestration layer)

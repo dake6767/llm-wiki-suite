@@ -10,10 +10,11 @@ description: >-
   Twitter capture, combine with my-llm-wiki-x. For online-video capture, combine
   with my-llm-wiki-video. When one request combines capture with downstream wiki
   synthesis—e.g. “抓取并整理”, “沉淀后直接整理”, “抓取并理解/读懂/吃透”, or
-  “capture then ingest/synthesize”—own the full same-turn chain: write RAW, hand the
-  exact wiki root and RAW path to my-llm-wiki-maintainer, verify its ingest ledger,
-  then report once. Do not stop after RAW or ask the user to repeat the synthesis
-  request. Do not use merely to summarize/analyze content, search the web, judge
+  “capture then ingest/synthesize”—own the full single-request chain: write RAW,
+  hand the exact wiki root and RAW path to my-llm-wiki-maintainer, verify its
+  ingest ledger, then issue the terminal report. Do not stop after RAW or ask the
+  user to repeat the synthesis request. Do not use merely to summarize/analyze
+  content, search the web, judge
   whether something is worth reading, rip a video file, convert a PDF only for
   reading, edit already-derived wiki pages, or sync notes between apps.
 ---
@@ -50,22 +51,51 @@ Read the whole request, not just the URL or the `/my-llm-wiki` command name.
   “抓取并整理”. The requested artifact includes derived `wiki/` pages, so RAW alone
   is an intermediate checkpoint, not a completed task.
 
-For capture + synthesize, record both completion gates in the working plan and
-load `my-llm-wiki-maintainer` as soon as the intent is recognized—even in a fresh
-session where it is not already in context. This early load keeps the second gate
-visible across a long fetch or transcription. After normalization, pass the exact
-resolved wiki root and the exact newly written RAW path into the maintainer's
-Ingest flow.
+For capture + synthesize, record both completion gates in the working plan before
+fetching. Choose the execution context at that point:
 
-**Run synthesis in a clean context where the host supports it.** The capture
-conversation typically carries the full fetched payload; dragging it into the
-synthesis phase re-bills that history on every maintainer tool call. When the
-host has a delegation mechanism (a subagent, a delegated task, an independent
-run), delegate the maintainer ingest to a fresh context and hand over **only the
-wiki root and the RAW path(s)** — RAW is the complete faithful record by design,
-so nothing is lost. This does NOT change the user-visible same-turn contract:
-both gates still complete, and one combined report still lands in the same turn.
-On hosts without delegation, proceed in-session as before.
+- **A delegation mechanism is available** (`Agent`, `delegate_task`, a subagent,
+  or an independent run): keep capture in the parent, then delegate synthesis
+  after normalization. **Do not load `my-llm-wiki-maintainer` in the parent**;
+  tell the fresh worker to load it. Loading it on both sides pays the same large
+  skill prefix twice without improving fidelity.
+- **No delegation mechanism is available:** load `my-llm-wiki-maintainer` in the
+  current context as soon as the combined intent is recognized, so the second
+  gate survives a long fetch or transcription.
+
+After normalization, pass the exact resolved wiki root and exact newly written
+RAW path into the maintainer's Ingest flow.
+
+## Fresh-context synthesis gate
+
+Capture and synthesis are separate token-cost phases. The capture conversation
+often contains fetched payloads, adapter diagnostics, or transcription recovery;
+running many maintainer calls behind that prefix re-bills irrelevant history.
+Therefore a capture + synthesize request **must use a fresh worker whenever the
+host exposes delegation**. This is task isolation, not optional parallelism.
+
+Send a compact, self-contained handoff containing only:
+
+```text
+operation: ingest
+wiki_root: <absolute resolved root>
+raw_paths: [<absolute newly written RAW path>]
+required_skill: my-llm-wiki-maintainer
+completion_gates: cache check hit=true; return written pages and warnings
+```
+
+Do not copy the fetched body, transcript, search output, or conversation summary
+into the handoff. RAW already contains the faithful source. The worker loads the
+maintainer skill and only the reference required for its operation, performs the
+write-backed flow, and returns a compact result with verifiable paths.
+
+If delegation is synchronous, wait for it and send one combined final report. If
+the host only supports background delegation (as some Hermes surfaces do), a
+successful dispatch is **not completion**: do not claim the request is done or
+send a capture-only success. Let the completion turn verify the ledger and own
+the terminal report. A short in-progress acknowledgement is acceptable only when
+the host requires a response; the user must never have to repeat the synthesis
+request.
 
 The combined request is complete only when:
 
@@ -228,9 +258,10 @@ idea; never edit its existing RAW file.
 
 - **Capture-only intent:** leave the new source pending and say how to request
   synthesis later.
-- **Capture + synthesize intent:** continue the already-planned
-  `my-llm-wiki-maintainer` Ingest flow in the same turn, passing the exact resolved
-  wiki root and new RAW path; verify the ingest-cache entry before the final reply.
+- **Capture + synthesize intent:** cross the Fresh-context synthesis gate above,
+  passing the exact resolved wiki root and new RAW path. Verify the ingest-cache
+  entry before the terminal reply; an async dispatch acknowledgement is not that
+  terminal reply.
 - **Explicit `/my-llm-wiki` query intent:** hand off to the maintainer's Query
   flow rather than scanning RAW directly.
 - **Backlog intent:** resolve the wiki, list pending sources from the maintainer's
