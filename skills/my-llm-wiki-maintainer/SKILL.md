@@ -49,22 +49,63 @@ These principles are runtime-agnostic; each host applies them with its own
 mechanism (a subagent, a delegated task, an independent session — the SOP only
 mandates "a clean context", never a specific feature):
 
+### Choose the execution context before maintenance
+
+Do this before loading an operation reference, reading Wiki pages, or invoking a
+maintainer script:
+
+1. **If this turn is already a fresh delegated worker** and its handoff contains
+   only the operation plus paths/IDs, execute here. Do not delegate again; nested
+   handoffs add cold-start cost without removing any meaningful history.
+2. **If delegation is available** (for example `Agent`, `delegate_task`, a
+   subagent, or an independent run) **and this is a heavy phase boundary**,
+   delegate the whole maintenance operation to one fresh worker. Heavy boundaries
+   are capture→synthesis handoffs, deep research, review processing,
+   flush-pending batches, large-source ingest, and any new task appended to an
+   unrelated or payload-heavy conversation.
+3. **Otherwise execute here.** Lightweight lint, one deterministic lookup, or a
+   small ingest already running in a fresh maintainer session does not need a new
+   worker merely to satisfy a slogan.
+
+The parent should not load operation references or retrieve candidate pages
+before delegating. Hand over only the explicit operation, absolute project root,
+RAW path(s) or review ID/topic, the required skill name, and completion gates.
+The child loads this skill and the single operation reference it needs. This
+avoids duplicating `skill_view` and keeps fetched/search payloads out of the
+parent prefix.
+
+For example:
+
+```text
+operation: ingest | deep-research | review | flush-pending
+wiki_root: <absolute path>
+raw_paths: [<absolute paths, when applicable>]
+review: <id or exact user topic, when applicable>
+required_skill: my-llm-wiki-maintainer
+completion_gates: <cache hit / research trilogy / review resolution / lint scope>
+```
+
+On synchronous hosts, the parent waits and verifies the returned paths. On
+background-only hosts, dispatch is not success: the completion turn owns final
+verification and reporting. Never report a heavy operation complete from the
+dispatch handle alone.
+
 - **Retrieval is O(top-k), never O(wiki).** Search first (Browser MCP
   `search_wiki` when actually exposed to the turn; otherwise the deterministic
   Browser-first `retrieval-search` CLI), then read only the top 3–5
   candidate pages under an explicit budget (`read-pages`). The full `index.md`,
   a full tree listing, and the whole `review.json` stay on disk.
-- **Each ingest/review/research task deserves a fresh context.** Do not append a
-  new maintenance task onto a long unrelated conversation: the old history is
-  re-billed on every call, and an expired cache re-charges the whole prefix at
-  uncached rates. When the current session already carries heavy history,
-  delegate the task to a fresh subagent/session.
+- **Each heavy ingest/review/research phase deserves a fresh context.** Do not
+  append it to a long unrelated conversation: the old history is re-billed on
+  every call, and an expired cache re-charges the whole prefix at uncached rates.
 - **Hand over paths, not content.** A delegated synthesis needs only the wiki
   root, the RAW source path(s), and (for review work) the review item via
   `review get`. RAW is the complete faithful record by design — the conversation
-  history adds cost, not fidelity. An upstream capture skill's same-turn
+  history adds cost, not fidelity. An upstream capture skill's single-request
   capture→synthesis contract is unaffected: capture completes, synthesis runs in
-  a fresh context, and one combined report still lands in the same turn.
+  a fresh context, and the user never repeats the request. Synchronous hosts can
+  return one combined response; background-only hosts finish through the later
+  completion turn.
 - **Large tool results are disk-first.** Web search / deep research payloads go
   to a file first; read back only the excerpts synthesis needs (see
   `references/review-research.md` → Context budget).
@@ -99,7 +140,13 @@ mandates "a clean context", never a specific feature):
 - **Flush pending (process the inbox)**: ingest every raw source not yet synthesized for a wiki. List them with `scripts/wiki_ops.py cache pending <root>` — it returns the sources with no cache entry (`new`) or a changed hash (`changed`) — then ingest each per the Ingest flow. `ingest-cache.json` is the authoritative "already synthesized" ledger; a RAW file's `tags: [inbox]` is only an upstream "freshly captured" hint, never the dedupe key. Operates on the one explicit `<root>` you are given — wiki selection is the caller's job. As the batch's last step, run a scoped semantic lint (`wiki_ops.py lint-scope <root>` → checks on `scope[]` → `--mark`; see `references/lint-query-save.md`) — a batch draining is the contradiction-prone moment.
 - **Update**: re-ingest only changed sources; merge existing content pages instead of overwriting.
 - **Review**: list, create, resolve, or sweep stale review items. Treat Deep Research as a review action. Resolving **marks** (`resolved:true` + `resolvedAction`) via `review resolve` — never hand-delete entries from `review.json`. See `references/review-research.md` → Resolving Items.
-- **Deep Research**: **delegation-first** — this skill defines the evidence contract and owns filing/synthesis/ingest-back, but does NOT bundle a search engine or domain tool registry. Infer the domain from `purpose.md`, route retrieval to whatever domain-appropriate skill/MCP exists in the environment (e.g. a finance retrieval skill, a general deep-research skill, a web/Tavily MCP), normalize the returned cited evidence into RAW, synthesize the wiki page yourself, then ingest. See `references/review-research.md` → Deep Research.
+- **Deep Research**: **fresh-worker first** — delegate the entire research
+  operation once when the parent has delegation; the fresh worker then owns the
+  evidence contract, retrieval routing, RAW filing, synthesis, ingest-back, and
+  trilogy verification. Do not delegate only retrieval and then drag its payload
+  back into a polluted parent. Inside an already-fresh worker, route retrieval to
+  whatever domain-appropriate skill/MCP exists without recursively delegating the
+  same workflow. See `references/review-research.md` → Deep Research.
 - **Lint**: run structural checks in code; use LLM semantic checks only for contradictions, stale claims, duplicates, and missing concepts.
 - **Query**: answer from retrieved wiki pages with citations and wikilinks; do not rederive from raw sources unless asked.
 - **Save**: save useful answers to `wiki/queries/`, then ingest the saved page so knowledge compounds.

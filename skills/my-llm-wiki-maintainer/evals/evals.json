@@ -1,0 +1,59 @@
+{
+  "skill_name": "my-llm-wiki-maintainer",
+  "evals": [
+    {
+      "id": 0,
+      "name": "research-from-polluted-parent-delegates-entire-flow",
+      "prompt": "research 清朝后妃制度研究：嫡福晋、侧福晋、格格的等级与待遇。当前是一个已经执行过视频抓取和多次搜索的长对话，宿主提供隔离上下文的子代理。Wiki root: /tmp/history-wiki.",
+      "expected_output": "Before loading review-research or searching, the parent delegates one complete deep-research operation to a fresh worker. The handoff contains the absolute root, exact topic (or matched review ID), required skill, and research-trilogy completion gate. The worker loads the skill/reference, produces research RAW + source summary + query synthesis, verifies them, and returns concise artifact paths. Retrieval evidence is not returned to the polluted parent for synthesis.",
+      "files": [],
+      "assertions": [
+        {
+          "text": "The entire deep-research workflow is delegated before the parent performs retrieval or loads operation references"
+        },
+        {
+          "text": "The handoff contains wiki_root, exact topic or review ID, required_skill, and the research-trilogy completion gate"
+        },
+        {
+          "text": "The fresh worker owns evidence RAW filing, synthesis, ingest-back, and trilogy verification"
+        },
+        {
+          "text": "The parent receives concise paths/status rather than the full search payload"
+        }
+      ]
+    },
+    {
+      "id": 1,
+      "name": "fresh-worker-does-not-redelegate",
+      "prompt": "You are already a fresh delegated worker. operation: ingest; wiki_root: /tmp/wiki; raw_paths: [/tmp/wiki/raw/sources/note/2026-07-12-example.md]; required_skill: my-llm-wiki-maintainer; completion_gates: cache check hit=true and return written pages.",
+      "expected_output": "The worker executes the ingest in its current clean context and does not spawn another child. It loads only the ingest/output references it needs, verifies cache hit=true, and returns a compact result.",
+      "files": [],
+      "assertions": [
+        {
+          "text": "The already-fresh worker does not recursively delegate the ingest"
+        },
+        {
+          "text": "Only references required for ingest are loaded"
+        },
+        {
+          "text": "Completion is gated on cache check hit: true"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "lightweight-lint-in-fresh-session-stays-local",
+      "prompt": "This is a newly opened clean maintainer session. Run the deterministic lint command for /tmp/wiki and report only broken links; do not perform semantic review or other maintenance.",
+      "expected_output": "The agent performs the small deterministic lint operation in the current clean session. It does not create a subagent solely for context isolation and does not expand scope.",
+      "files": [],
+      "assertions": [
+        {
+          "text": "No delegation is created for this lightweight operation in an already-clean session"
+        },
+        {
+          "text": "The operation stays scoped to deterministic lint and broken-link reporting"
+        }
+      ]
+    }
+  ]
+}
