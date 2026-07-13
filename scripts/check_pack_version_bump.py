@@ -11,7 +11,7 @@ Usage:
 
 ``--base`` is the target branch ref (e.g. ``origin/main``); ``--head`` defaults to
 the working tree. Reads both ``registry/skills.json`` blobs via ``git show`` /
-filesystem and compares the semver core triple.
+filesystem and compares full SemVer precedence.
 """
 
 from __future__ import annotations
@@ -31,7 +31,11 @@ REGISTRY_REL = "registry/skills.json"
 DIST_PREFIXES = ("skills/",)
 DIST_FILES = ("registry/skills.json", "registry/bootstrap.json")
 
-SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)")
+SEMVER_RE = re.compile(
+    r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
+    r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
+    r"(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$"
+)
 
 
 def git(*args: str) -> str:
@@ -48,6 +52,43 @@ def semver_core(v: object) -> tuple[int, int, int]:
     if not m:
         raise SystemExit(f"pack_version must be semver X.Y.Z, got {v!r}")
     return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+
+
+def semver_parts(v: object) -> tuple[tuple[int, int, int], list[str] | None]:
+    if not isinstance(v, str):
+        raise SystemExit(f"pack_version must be a string, got {v!r}")
+    m = SEMVER_RE.fullmatch(v)
+    if not m:
+        raise SystemExit(f"pack_version must be valid semver, got {v!r}")
+    pre = m.group(4).split(".") if m.group(4) else None
+    if pre and any(part.isdigit() and len(part) > 1 and part.startswith("0") for part in pre):
+        raise SystemExit(f"numeric prerelease identifiers cannot have leading zeroes: {v!r}")
+    return ((int(m.group(1)), int(m.group(2)), int(m.group(3))), pre)
+
+
+def semver_compare(left: object, right: object) -> int:
+    """Return -1/0/1 using SemVer precedence (build metadata is ignored)."""
+    left_core, left_pre = semver_parts(left)
+    right_core, right_pre = semver_parts(right)
+    if left_core != right_core:
+        return 1 if left_core > right_core else -1
+    if left_pre is None or right_pre is None:
+        if left_pre is None and right_pre is None:
+            return 0
+        return 1 if left_pre is None else -1
+    for left_id, right_id in zip(left_pre, right_pre):
+        if left_id == right_id:
+            continue
+        left_num = left_id.isdigit()
+        right_num = right_id.isdigit()
+        if left_num and right_num:
+            return 1 if int(left_id) > int(right_id) else -1
+        if left_num != right_num:
+            return -1 if left_num else 1
+        return 1 if left_id > right_id else -1
+    if len(left_pre) == len(right_pre):
+        return 0
+    return 1 if len(left_pre) > len(right_pre) else -1
 
 
 def pack_version_at(ref: str | None) -> object:
@@ -84,13 +125,15 @@ def main(argv: list[str]) -> int:
     head_v = pack_version_at(args.head)
     # First introduction: base predates pack_version → treat as the 0.0.0 baseline so
     # any valid head version counts as a bump.
-    base_core = (0, 0, 0) if base_v is None else semver_core(base_v)
-    head_core = semver_core(head_v)
+    comparison_base = "0.0.0" if base_v is None else base_v
+    # Parse both even before comparison so malformed versions never pass CI.
+    semver_parts(comparison_base)
+    semver_parts(head_v)
 
     print(f"distribution changes:\n  " + "\n  ".join(dist))
     print(f"pack_version base={base_v} head={head_v}")
 
-    if head_core <= base_core:
+    if semver_compare(head_v, comparison_base) <= 0:
         print(
             "\nERROR: distribution content changed but pack_version did not increase.\n"
             f"  bump registry/skills.json pack_version above {base_v}.",

@@ -677,8 +677,8 @@ function SkillsPanel() {
 
   useEffect(() => {
     load();
-    // 焦点重查：agent 更新完 app 不即时知，面板重新获得焦点时刷新一次。
-    const onFocus = () => load();
+    // 焦点重查：必须真正重新解析本地版本并拉远端，不能只读旧快照。
+    const onFocus = () => void recheck();
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, []);
@@ -726,9 +726,19 @@ function SkillsPanel() {
   const installed = info?.installedVersion;
   const latest = info?.latest?.packVersion;
   const changelog = info?.changelogUrl;
+  const agentsUrl = info?.agentsUrl;
+  const checking = state === "checking";
   const isUpdate = state === "update_available";
   const isUnknown = state === "unknown";
   const hasPrompt = Boolean(info?.updatePrompt);
+  const sourceLabel =
+    info?.source?.class === "git_link"
+      ? "GitLink"
+      : info?.source?.class === "unknown"
+        ? "Unknown"
+        : info?.source?.class === "absent"
+          ? "未安装"
+          : null;
 
   return (
     <div className="rounded-md border border-[var(--rule)] bg-paper-2/55 px-6 py-5">
@@ -748,12 +758,18 @@ function SkillsPanel() {
               "已装版本未知"
             )}
             {state === "up_to_date" ? " · 已是最新" : null}
+            {checking ? " · 正在检查" : null}
             {isUpdate && latest ? (
               <>
                 {" · "}发现新版本 <span className="font-mono">v{latest}</span>
               </>
             ) : null}
-            {isUnknown ? " · 拷贝/多来源安装，仅诊断不自动更新" : null}
+            {isUnknown ? " · 状态未知" : null}
+            {sourceLabel ? (
+              <span className="ml-2 inline-flex rounded-full border border-[var(--rule)] px-2 py-0.5 font-mono text-[0.68rem] uppercase tracking-wide text-ink-faint">
+                {sourceLabel}
+              </span>
+            ) : null}
           </p>
           {isUnknown && info?.source?.reason ? (
             <p className="mt-1 text-sm text-ink-faint">{info.source.reason}</p>
@@ -773,25 +789,27 @@ function SkillsPanel() {
         <div className="flex shrink-0 items-center gap-3">
           <button
             type="button"
-            disabled={busy}
+            disabled={busy || checking}
             onClick={() => void recheck()}
             className="rounded-sm border border-[var(--rule)] px-4 py-2 text-sm text-ink-soft transition hover:border-cinnabar hover:text-cinnabar disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {busy ? "检查中…" : "重新检查"}
+            {busy || checking ? "检查中…" : "重新检查"}
           </button>
         </div>
       </div>
 
-      {(isUpdate || isUnknown) && hasPrompt ? (
+      {(isUpdate && hasPrompt) || isUnknown ? (
         <div className="mt-4 flex flex-wrap items-center gap-3">
-          <button
-            type="button"
-            onClick={() => void copyPrompt()}
-            className="rounded-sm bg-cinnabar px-4 py-2 text-sm font-semibold text-paper transition hover:opacity-90"
-          >
-            {copied ? "已复制 ✓" : isUnknown ? "复制诊断提示词" : "复制更新提示词"}
-          </button>
-          {changelog ? (
+          {hasPrompt ? (
+            <button
+              type="button"
+              onClick={() => void copyPrompt()}
+              className="rounded-sm bg-cinnabar px-4 py-2 text-sm font-semibold text-paper transition hover:opacity-90"
+            >
+              {copied ? "已复制 ✓" : isUnknown ? "复制诊断提示词" : "复制更新提示词"}
+            </button>
+          ) : null}
+          {isUpdate && changelog ? (
             <a
               href={changelog}
               target="_blank"
@@ -799,6 +817,16 @@ function SkillsPanel() {
               className="text-sm text-ink-soft underline decoration-[var(--rule)] underline-offset-4 transition hover:text-cinnabar"
             >
               查看 changelog
+            </a>
+          ) : null}
+          {isUnknown && agentsUrl ? (
+            <a
+              href={agentsUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="text-sm text-ink-soft underline decoration-[var(--rule)] underline-offset-4 transition hover:text-cinnabar"
+            >
+              打开 AGENTS.md
             </a>
           ) : null}
           {isUpdate ? (

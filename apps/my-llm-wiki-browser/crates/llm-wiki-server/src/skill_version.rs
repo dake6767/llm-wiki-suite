@@ -24,6 +24,8 @@ const OFFICIAL_OWNER: &str = "dake6767";
 const OFFICIAL_REPO: &str = "llm-wiki-suite";
 /// changelog 硬编码官方 releases 页（防钓鱼，不接受远端 changelog_url）。
 pub const CHANGELOG_URL: &str = "https://github.com/dake6767/llm-wiki-suite/releases";
+/// Unknown 状态下打开可信的官方 AGENTS.md，不接受远端提供的 URL。
+pub const AGENTS_URL: &str = "https://github.com/dake6767/llm-wiki-suite/blob/main/AGENTS.md";
 /// 远端版本文件大小上限（与 Worker/app 契约一致）。
 const MAX_VERSION_BYTES: usize = 16 * 1024;
 
@@ -66,6 +68,7 @@ pub struct LatestInfo {
 #[serde(rename_all = "snake_case")]
 pub enum SkillState {
     Idle,
+    Checking,
     UpToDate,
     UpdateAvailable,
     Unknown,
@@ -82,6 +85,8 @@ pub struct SkillVersionInfo {
     pub latest: Option<LatestInfo>,
     /// changelog 硬编码官方地址。
     pub changelog_url: String,
+    /// AGENTS.md 硬编码官方地址。
+    pub agents_url: String,
     /// 远端要求的最低 app 版本未满足（先提示更 app）。
     pub min_app_unsatisfied: bool,
     /// 复制给 agent 的更新/诊断提示词（数据块 + 安全约束，已转义）。
@@ -92,13 +97,7 @@ pub struct SkillVersionInfo {
 // ————————————————————————— SemVer（最小实现，仅够比较 + 重序列化防注入）—————————————————————————
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SemVer {
-    pub major: u64,
-    pub minor: u64,
-    pub patch: u64,
-    pub pre: Option<String>,
-    pub build: Option<String>,
-}
+pub struct SemVer(semver::Version);
 
 impl SemVer {
     /// 严格解析 `MAJOR.MINOR.PATCH[-pre][+build]`；任何注入文本都过不了。
@@ -107,69 +106,16 @@ impl SemVer {
         if s.is_empty() || s.len() > 256 {
             return None;
         }
-        // 拆 build（+）与 pre（-），先取核心三段。
-        let (core_pre, build) = match s.split_once('+') {
-            Some((a, b)) => (a, Some(b)),
-            None => (s, None),
-        };
-        let (core, pre) = match core_pre.split_once('-') {
-            Some((a, b)) => (a, Some(b)),
-            None => (core_pre, None),
-        };
-        let mut parts = core.split('.');
-        let major = parts.next()?.parse::<u64>().ok()?;
-        let minor = parts.next()?.parse::<u64>().ok()?;
-        let patch = parts.next()?.parse::<u64>().ok()?;
-        if parts.next().is_some() {
-            return None;
-        }
-        // pre/build 只允许 semver 允许的字符集，杜绝注入。
-        let ident_ok =
-            |t: &str| !t.is_empty() && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
-        if let Some(p) = pre
-            && !ident_ok(p)
-        {
-            return None;
-        }
-        if let Some(b) = build
-            && !ident_ok(b)
-        {
-            return None;
-        }
-        Some(SemVer {
-            major,
-            minor,
-            patch,
-            pre: pre.map(str::to_string),
-            build: build.map(str::to_string),
-        })
+        semver::Version::parse(s).ok().map(SemVer)
     }
 
     /// 规范重序列化——只有解析成功的版本能产出这个字符串，注入内容永不出现。
     pub fn canonical(&self) -> String {
-        let mut out = format!("{}.{}.{}", self.major, self.minor, self.patch);
-        if let Some(pre) = &self.pre {
-            out.push('-');
-            out.push_str(pre);
-        }
-        if let Some(build) = &self.build {
-            out.push('+');
-            out.push_str(build);
-        }
-        out
-    }
-
-    /// 优先级排序键（build 不参与；有 pre 者小于无 pre；pre 内 ASCII 比较，够用）。
-    fn precedence(&self) -> (u64, u64, u64, u8, String) {
-        let (has_pre, pre) = match &self.pre {
-            Some(p) => (0u8, p.clone()), // 有 pre 排在前（更小）
-            None => (1u8, String::new()),
-        };
-        (self.major, self.minor, self.patch, has_pre, pre)
+        self.0.to_string()
     }
 
     pub fn gt(&self, other: &SemVer) -> bool {
-        self.precedence() > other.precedence()
+        self.0 > other.0
     }
 }
 
@@ -241,8 +187,6 @@ pub fn parse_remote(url: &str) -> Option<(String, String, String)> {
     let s = url.trim();
     let rest = if let Some(r) = s.strip_prefix("https://") {
         r.to_string()
-    } else if let Some(r) = s.strip_prefix("http://") {
-        r.to_string()
     } else if let Some(r) = s.strip_prefix("git@") {
         // git@github.com:owner/repo(.git)
         r.replacen(':', "/", 1)
@@ -277,7 +221,7 @@ pub fn is_official_remote(url: &str) -> bool {
 pub fn gitlink_toplevel(entry: &Path, slug: &str) -> Option<PathBuf> {
     // 必须是链接（真实目录 = Copy，绝不当 GitLink）。
     let meta = std::fs::symlink_metadata(entry).ok()?;
-    if !meta.file_type().is_symlink() {
+    if !is_link_or_junction(&meta) {
         return None;
     }
     let real = std::fs::canonicalize(entry).ok()?;
@@ -307,8 +251,29 @@ pub fn gitlink_toplevel(entry: &Path, slug: &str) -> Option<PathBuf> {
     Some(toplevel)
 }
 
+fn is_link_or_junction(meta: &std::fs::Metadata) -> bool {
+    if meta.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt as _;
+        // `mklink /J` 创建的是 directory junction（reparse point），不是 Rust
+        // `FileType::is_symlink()` 意义上的符号链接。install.sh 在 Windows 正是用它。
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        return meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0;
+    }
+    #[cfg(not(windows))]
+    false
+}
+
 fn git_output(dir: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git").arg("-C").arg(dir).args(args).output().ok()?;
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -459,6 +424,10 @@ pub struct SkillVersionConfig {
     pub endpoints: Vec<String>,
     /// 持久化 notified/dismissed 的文件（可选）。
     pub state_path: Option<PathBuf>,
+    /// 每次状态变化后的只读通知（桌面宿主用来持续驱动托盘；web-only 可留空）。
+    pub on_change: Option<std::sync::Arc<dyn Fn(&SkillVersionInfo) + Send + Sync>>,
+    /// 系统通知钩子；返回 true 才写入 notified_version。
+    pub notify: Option<std::sync::Arc<dyn Fn(&str) -> bool + Send + Sync>>,
 }
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
@@ -470,6 +439,7 @@ struct PersistState {
 pub struct SkillVersionManager {
     config: SkillVersionConfig,
     http: reqwest::Client,
+    check_lock: tokio::sync::Mutex<()>,
     inner: Mutex<Inner>,
 }
 
@@ -502,6 +472,7 @@ impl SkillVersionManager {
             update_available: false,
             latest: None,
             changelog_url: CHANGELOG_URL.to_string(),
+            agents_url: AGENTS_URL.to_string(),
             min_app_unsatisfied: false,
             update_prompt: String::new(),
             checked_at: None,
@@ -509,6 +480,7 @@ impl SkillVersionManager {
         Self {
             config,
             http,
+            check_lock: tokio::sync::Mutex::new(()),
             inner: Mutex::new(Inner { last, persist }),
         }
     }
@@ -520,6 +492,16 @@ impl SkillVersionManager {
 
     /// 强制刷新：解析源 + 拉取校验 latest + 判定，更新并返回快照。
     pub async fn check(&self) -> SkillVersionInfo {
+        // 焦点、按钮与 24h 定时器可能同时触发；串行化保证最终状态和通知去重一致。
+        let _check_guard = self.check_lock.lock().await;
+        let checking = {
+            let mut guard = self.inner.lock().unwrap();
+            guard.last.state = SkillState::Checking;
+            guard.last.clone()
+        };
+        if let Some(on_change) = &self.config.on_change {
+            on_change(&checking);
+        }
         // 本地解析（fs + git 子进程）放 blocking 线程。
         let host_targets = self.config.host_targets.clone();
         let builtin = self.config.builtin_slugs.clone();
@@ -540,21 +522,65 @@ impl SkillVersionManager {
         let candidate = self.fetch_latest().await;
 
         let info = self.compose(&resolved, installed, candidate);
-        let mut guard = self.inner.lock().unwrap();
-        guard.last = info.clone();
+        {
+            let mut guard = self.inner.lock().unwrap();
+            guard.last = info.clone();
+        }
+        if let Some(on_change) = &self.config.on_change {
+            on_change(&info);
+        }
+        self.emit_pending_notification();
         info
+    }
+
+    fn emit_pending_notification(&self) {
+        if let Some(version) = self.pending_notification()
+            && let Some(notify) = &self.config.notify
+            && notify(&version)
+        {
+            self.mark_notified(&version);
+        }
     }
 
     /// 按 endpoints 顺序拉取并校验，第一份合法即返回（降级链，doc 21 §2.2）。
     async fn fetch_latest(&self) -> Option<Candidate> {
         for url in &self.config.endpoints {
-            let Ok(resp) = self.http.get(url).send().await else {
+            let Ok(mut resp) = self.http.get(url).send().await else {
                 continue;
             };
             if !resp.status().is_success() {
                 continue;
             }
-            let Ok(text) = resp.text().await else { continue };
+            if resp
+                .content_length()
+                .is_some_and(|length| length > MAX_VERSION_BYTES as u64)
+            {
+                continue;
+            }
+            let mut body = Vec::with_capacity(
+                resp.content_length()
+                    .unwrap_or(1024)
+                    .min(MAX_VERSION_BYTES as u64) as usize,
+            );
+            let mut valid_size = true;
+            loop {
+                match resp.chunk().await {
+                    Ok(Some(chunk)) if body.len() + chunk.len() <= MAX_VERSION_BYTES => {
+                        body.extend_from_slice(&chunk);
+                    }
+                    Ok(Some(_)) | Err(_) => {
+                        valid_size = false;
+                        break;
+                    }
+                    Ok(None) => break,
+                }
+            }
+            if !valid_size {
+                continue;
+            }
+            let Ok(text) = String::from_utf8(body) else {
+                continue;
+            };
             if let Some(c) = validate_candidate(&text) {
                 return Some(c);
             }
@@ -571,7 +597,11 @@ impl SkillVersionManager {
         let now = now_iso();
         let app_ver = SemVer::parse(&self.config.app_version);
         let min_app_unsatisfied = match (&candidate, &app_ver) {
-            (Some(c), Some(app)) => c.min_app_version.as_ref().map(|m| m.gt(app)).unwrap_or(false),
+            (Some(c), Some(app)) => c
+                .min_app_version
+                .as_ref()
+                .map(|m| m.gt(app))
+                .unwrap_or(false),
             _ => false,
         };
 
@@ -583,25 +613,44 @@ impl SkillVersionManager {
             stale: false,
         });
 
+        let mut source = resolved.info.clone();
         // 判定 state + update_available + prompt。
         let (state, update_available, prompt) = match resolved.info.class {
             SourceClass::GitLink => {
-                let update_available = match (&installed, &candidate) {
-                    (Some(i), Some(c)) => c.pack_version.gt(i),
-                    _ => false,
-                };
-                let prompt = match (&resolved.info.path, &candidate) {
-                    (Some(path), Some(c)) if update_available => build_gitlink_prompt(path, c),
-                    _ => String::new(),
-                };
-                let state = if installed.is_none() {
-                    SkillState::Unknown
-                } else if update_available {
-                    SkillState::UpdateAvailable
+                if candidate.is_none() {
+                    source.reason = Some("无法从 Worker 或 GitHub 获取合法的技能版本信号".into());
+                    (SkillState::Unknown, false, String::new())
+                } else if min_app_unsatisfied {
+                    let required = candidate
+                        .as_ref()
+                        .and_then(|c| c.min_app_version.as_ref())
+                        .map(SemVer::canonical)
+                        .unwrap_or_else(|| "未知".into());
+                    source.reason = Some(format!(
+                        "当前 app v{} 低于技能信号要求的 v{required}，请先更新 app",
+                        self.config.app_version
+                    ));
+                    (SkillState::Unknown, false, String::new())
+                } else if installed.is_none() {
+                    source.reason =
+                        Some("无法读取检出中的 registry/skills.json pack_version".into());
+                    (SkillState::Unknown, false, String::new())
                 } else {
-                    SkillState::UpToDate
-                };
-                (state, update_available, prompt)
+                    let update_available = match (&installed, &candidate) {
+                        (Some(i), Some(c)) => c.pack_version.gt(i),
+                        _ => false,
+                    };
+                    let prompt = match (&resolved.info.path, &candidate) {
+                        (Some(path), Some(c)) if update_available => build_gitlink_prompt(path, c),
+                        _ => String::new(),
+                    };
+                    let state = if update_available {
+                        SkillState::UpdateAvailable
+                    } else {
+                        SkillState::UpToDate
+                    };
+                    (state, update_available, prompt)
+                }
             }
             SourceClass::Unknown => {
                 let reason = resolved
@@ -616,11 +665,12 @@ impl SkillVersionManager {
 
         SkillVersionInfo {
             state,
-            source: resolved.info.clone(),
+            source,
             installed_version: installed.map(|s| s.canonical()),
             update_available,
             latest,
             changelog_url: CHANGELOG_URL.to_string(),
+            agents_url: AGENTS_URL.to_string(),
             min_app_unsatisfied,
             update_prompt: prompt,
             checked_at: Some(now),

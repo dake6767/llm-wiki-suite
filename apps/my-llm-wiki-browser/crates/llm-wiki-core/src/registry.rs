@@ -126,12 +126,18 @@ mod tests {
         fs::create_dir_all(wiki.join("wiki")).unwrap();
 
         let registry = tmp.path().join("wikis.json");
+        // 用 serde_json 序列化路径，Windows 反斜杠才能被正确转义成合法 JSON。
         fs::write(
             &registry,
-            format!(
-                r#"{{"wikis":[{{"path":"{}","name":"Demo Wiki","description":"desc","default":true}}]}}"#,
-                wiki.display()
-            ),
+            serde_json::json!({
+                "wikis": [{
+                    "path": wiki,
+                    "name": "Demo Wiki",
+                    "description": "desc",
+                    "default": true,
+                }]
+            })
+            .to_string(),
         )
         .unwrap();
 

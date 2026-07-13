@@ -58,6 +58,9 @@ class GenTests(unittest.TestCase):
             reg = self._registry(Path(d), pack_version="latest")
             with self.assertRaises(SystemExit):
                 gen.build(reg, source_commit=None, released_at=None)
+            reg = self._registry(Path(d), pack_version="01.0.0")
+            with self.assertRaises(SystemExit):
+                gen.build(reg, source_commit=None, released_at=None)
 
 
 class BumpTests(unittest.TestCase):
@@ -70,6 +73,15 @@ class BumpTests(unittest.TestCase):
             bump.semver_core("1.2")
         with self.assertRaises(SystemExit):
             bump.semver_core(None)
+        with self.assertRaises(SystemExit):
+            bump.semver_core("1.2.3evil")
+        with self.assertRaises(SystemExit):
+            bump.semver_parts("1.2.3-01")
+
+    def test_semver_precedence(self) -> None:
+        self.assertGreater(bump.semver_compare("1.0.0", "1.0.0-rc.1"), 0)
+        self.assertGreater(bump.semver_compare("1.0.0-rc.10", "1.0.0-rc.2"), 0)
+        self.assertEqual(bump.semver_compare("1.0.0+build.2", "1.0.0+build.1"), 0)
 
     def test_distribution_classification(self) -> None:
         self.assertTrue(bump.is_distribution_change("skills/my-llm-wiki/SKILL.md"))
