@@ -3136,9 +3136,10 @@ mod tests {
         )
         .unwrap();
         let registry = tmp.path().join("wikis.json");
+        // 用 serde_json 序列化路径，Windows 反斜杠才能被正确转义成合法 JSON。
         fs::write(
             &registry,
-            format!(r#"{{"wikis":[{{"path":"{}"}}]}}"#, alpha.display()),
+            serde_json::json!({"wikis": [{"path": alpha}]}).to_string(),
         )
         .unwrap();
         let config = CoreConfig {
@@ -3171,7 +3172,7 @@ mod tests {
 
         fs::write(
             &registry,
-            format!(r#"{{"wikis":[{{"path":"{}"}}]}}"#, beta.display()),
+            serde_json::json!({"wikis": [{"path": beta}]}).to_string(),
         )
         .unwrap();
         reload_registry_index(&config, &manager, &searcher).unwrap();

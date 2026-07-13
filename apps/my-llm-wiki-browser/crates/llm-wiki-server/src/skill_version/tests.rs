@@ -200,15 +200,17 @@ fn link_skill_dir(source: &std::path::Path, target: &std::path::Path) {
 
 #[cfg(windows)]
 fn link_skill_dir(source: &std::path::Path, target: &std::path::Path) {
+    use std::os::windows::process::CommandExt;
     // 与 scripts/install.sh 在 Windows Git Bash 下的真实安装方式一致：junction
-    // 不需要管理员或 Developer Mode。
+    // 不需要管理员或 Developer Mode。整条命令作为一个 raw 参数交给 cmd 自己解析，
+    // 避免 Rust 逐参数加引号与 cmd 内置命令 mklink 的解析规则冲突。
+    let line = format!("mklink /J \"{}\" \"{}\"", target.display(), source.display());
     let status = std::process::Command::new("cmd")
-        .args(["/C", "mklink", "/J"])
-        .arg(target)
-        .arg(source)
+        .arg("/C")
+        .raw_arg(&line)
         .status()
         .unwrap();
-    assert!(status.success(), "mklink /J failed");
+    assert!(status.success(), "mklink /J failed: {line}");
 }
 
 #[test]
