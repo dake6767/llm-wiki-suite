@@ -1,5 +1,7 @@
 {
   "version": 3,
+  "pack_version": "1.0.0",
+  "pack_notes": "首个技能包版本基线（doc 21 轻量通知与 Agent 交接）。",
   "updated_at": "2026-07-10",
   "skills": [
     {
