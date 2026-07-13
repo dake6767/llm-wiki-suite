@@ -13,13 +13,21 @@ import {
   type UpdateConfigInfo,
   type WikiConfigInfo,
 } from "../api/client";
+import SharePanel from "../components/SharePanel";
 
-type TabKey = "wikis" | "runtime";
+type TabKey = "wikis" | "runtime" | "share";
 
 const tabs: Array<{ key: TabKey; label: string; eyebrow: string }> = [
   { key: "wikis", label: "Wiki 目录", eyebrow: "Library roots" },
   { key: "runtime", label: "运行入口", eyebrow: "Entrypoints" },
+  { key: "share", label: "分享管理", eyebrow: "Sharing" },
 ];
+
+const TAB_TITLES: Record<TabKey, string> = {
+  wikis: "Wiki 目录",
+  runtime: "运行入口",
+  share: "分享管理",
+};
 
 export default function DesktopConfig() {
   const [active, setActive] = useState<TabKey>("wikis");
@@ -100,7 +108,7 @@ export default function DesktopConfig() {
               <div>
                 <p className="eyebrow">Desktop control panel</p>
                 <h2 className="font-display mt-2 text-4xl font-semibold">
-                  {active === "wikis" ? "Wiki 目录" : "运行入口"}
+                  {TAB_TITLES[active]}
                 </h2>
               </div>
               <div className="grid grid-cols-2 gap-3 text-right">
@@ -116,13 +124,36 @@ export default function DesktopConfig() {
                 error={error}
                 onWikisChange={setWikis}
               />
-            ) : (
+            ) : active === "runtime" ? (
               <RuntimePanel />
+            ) : (
+              <SharingPanel wikis={wikis} />
             )}
           </div>
         </section>
       </div>
     </main>
+  );
+}
+
+// 设置页的「分享管理」区块：复用同一 SharePanel 组件（无双份实现）。定位偏治理与盘点，
+// 因脱离浏览上下文，创建带 wiki 选择器；高频创建路径仍在浏览界面顶栏（docs/19 §4.5）。
+function SharingPanel({ wikis }: { wikis: WikiConfigInfo[] }) {
+  return (
+    <div>
+      <p className="mb-5 max-w-2xl font-serif text-sm leading-relaxed text-ink">
+        分享 = 生成一条链接（「持续分享整个 Wiki」）。对方将持续看到该库的全部页面，
+        包括你之后新增的内容；RAW 目录与维护队列不在分享范围内，页面显式引用的来源
+        可在「源」弹窗预览。默认有效期 30 天——
+        被遗忘的分享会自己失效。关闭任一链接不影响你自己的访问，也不影响其他链接。
+      </p>
+      <SharePanel
+        open
+        wikiOptions={wikis}
+        embedded
+        initialView="manage"
+      />
+    </div>
   );
 }
 

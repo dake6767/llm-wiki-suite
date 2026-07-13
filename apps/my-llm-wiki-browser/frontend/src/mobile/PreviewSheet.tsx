@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useShareNavigate } from "../lib/shareNavigation";
 import FontSizeControl from "../components/FontSizeControl";
 import {
   PreviewBody,
@@ -8,6 +8,7 @@ import {
   usePreview,
   type SheetTarget,
 } from "../components/PreviewBodies";
+import { isGuest } from "../lib/shareSession";
 
 export type { SheetTarget };
 
@@ -19,8 +20,13 @@ export default function PreviewSheet({
   target: SheetTarget | null;
   onClose: () => void;
 }) {
-  const navigate = useNavigate();
+  const navigate = useShareNavigate();
+  const guest = isGuest();
   const { open, root, cur, setCur, drilled } = usePreview(target);
+  const canMaximize =
+    cur &&
+    cur.mode !== "list" &&
+    !(guest && cur.mode === "doc" && cur.kind === "raw");
 
   useEffect(() => {
     if (!open) return;
@@ -81,7 +87,7 @@ export default function PreviewSheet({
             {previewTitle(cur)}
           </h2>
           {cur?.mode === "doc" && <FontSizeControl />}
-          {cur && cur.mode !== "list" && (
+          {canMaximize && (
             <button
               onClick={maximize}
               title="最大化：跳转到该页"
@@ -104,7 +110,7 @@ export default function PreviewSheet({
           className="min-h-0 flex-1 overflow-y-auto px-5 py-5"
           onClickCapture={(e) => {
             const a = (e.target as HTMLElement).closest("a");
-            if (a && a.getAttribute("href")?.startsWith("/w/")) onClose();
+            if (a && new URL(a.href, location.origin).pathname.includes("/w/")) onClose();
           }}
         >
           <PreviewBody cur={cur} onDrill={setCur} />

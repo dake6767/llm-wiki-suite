@@ -1,4 +1,4 @@
-import { useLocation, useNavigate } from "react-router-dom";
+import { useLocation } from "react-router-dom";
 import {
   typeLabel,
   wikiDefaultPath,
@@ -6,6 +6,7 @@ import {
   type WikiInfo,
 } from "../api/client";
 import FontSizeControl from "../components/FontSizeControl";
+import { useShareNavigate } from "../lib/shareNavigation";
 
 // 顶栏随路由自适应：
 // - 列表/类目：☰ 菜单 + 卷名·类目 + ⌕ 搜索
@@ -18,7 +19,7 @@ export default function MobileTopBar({
   current?: WikiInfo;
   onMenu: () => void;
 }) {
-  const navigate = useNavigate();
+  const navigate = useShareNavigate();
   const { pathname } = useLocation();
   const wiki = pathname.match(/^\/w\/([^/]+)/)?.[1] || "";
   const rest = pathname.replace(/^\/w\/[^/]+\/?/, "");
@@ -33,6 +34,10 @@ export default function MobileTopBar({
       navigate(wiki ? wikiDefaultPath(wiki) : "/");
       return;
     }
+    if (rest.startsWith("raw/")) {
+      navigate(`/w/${wiki}/browse/raw`);
+      return;
+    }
     const inner = rest.replace(/^(page|raw)\//, "");
     const seg = inner.includes("/") ? inner.split("/")[0] : "";
     navigate(
@@ -43,9 +48,13 @@ export default function MobileTopBar({
   let title: string;
   if (onSearch) title = "检索 · Search";
   else if (onReader) {
-    const inner = rest.replace(/^(page|raw)\//, "");
-    const seg = inner.includes("/") ? inner.split("/")[0] : "";
-    title = seg ? typeLabel(seg) : current?.name || wiki;
+    if (rest.startsWith("raw/")) {
+      title = typeLabel("raw");
+    } else {
+      const inner = rest.replace(/^(page|raw)\//, "");
+      const seg = inner.includes("/") ? inner.split("/")[0] : "";
+      title = seg ? typeLabel(seg) : current?.name || wiki;
+    }
   } else {
     const type = rest.startsWith("browse/") ? rest.slice("browse/".length) : "";
     title = `${current?.name || wiki}${type ? ` · ${typeLabel(type)}` : " · 最近"}`;

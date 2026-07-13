@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
-import { Navigate, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import {
   byAddedDesc,
-  getTree,
+  getBrowseTree,
   type PageRef,
   type TreeNode,
 } from "../api/client";
 import Overview from "../pages/Overview";
+import { ShareNavigate } from "../lib/shareNavigation";
 
 export default function BrowseLanding() {
   const { wiki, type } = useParams();
@@ -23,7 +24,7 @@ export default function BrowseLanding() {
     let cancelled = false;
     setFirst(null);
     setSettled(false);
-    getTree(wiki)
+    getBrowseTree(wiki)
       .then((tree: TreeNode[]) => {
         if (cancelled) return;
         const pages = tree.find((node) => node.type === type)?.pages ?? [];
@@ -41,7 +42,12 @@ export default function BrowseLanding() {
   }, [wiki, type]);
 
   if (first && wiki)
-    return <Navigate to={`/w/${wiki}/page/${first.path}`} replace />;
+    return (
+      <ShareNavigate
+        to={`/w/${wiki}/${type === "raw" ? "raw" : "page"}/${first.path}`}
+        replace
+      />
+    );
   if (!settled)
     return (
       <div className="p-16 font-mono text-sm text-ink-faint">载入索引…</div>

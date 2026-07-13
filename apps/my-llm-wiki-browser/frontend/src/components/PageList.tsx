@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { useLocation } from "react-router-dom";
 import {
   addedDateLabel,
   byAddedDesc,
-  getTree,
+  getBrowseTree,
   typeLabel,
   type PageRef,
   type TreeNode,
 } from "../api/client";
+import { ShareLink } from "../lib/shareNavigation";
 
 // 从 /w/:wiki/... 解析出 wiki、活动类目、当前阅读页路径。
 function parse(pathname: string) {
@@ -23,6 +24,9 @@ function parse(pathname: string) {
     currentPath = decodeURIComponent(rest.slice("page/".length));
     // 仅当页面带类目段（含 /）时按类目过滤；根级页（overview/log 等）保持「最近」。
     type = currentPath.includes("/") ? currentPath.split("/")[0] : "";
+  } else if (rest.startsWith("raw/")) {
+    currentPath = decodeURIComponent(rest.slice("raw/".length));
+    type = "raw";
   }
   return { wiki, type, currentPath };
 }
@@ -42,7 +46,7 @@ export default function PageList() {
     }
     let cancelled = false;
     const load = () => {
-      getTree(wiki)
+      getBrowseTree(wiki)
         .then((items) => {
           if (!cancelled) setTree(items);
         })
@@ -59,7 +63,7 @@ export default function PageList() {
   // 活动类目存在则取该类目页面，否则汇总全部（最近）。
   const base: PageRef[] = useMemo(() => {
     if (type) return tree.find((n) => n.type === type)?.pages ?? [];
-    return tree.flatMap((n) => n.pages);
+    return tree.filter((n) => n.type !== "raw").flatMap((n) => n.pages);
   }, [tree, type]);
 
   const pages = useMemo(() => {
@@ -123,9 +127,9 @@ export default function PageList() {
           const date = addedDateLabel(p);
           return (
             <li key={p.path}>
-              <Link
+              <ShareLink
                 ref={active ? activeRef : undefined}
-                to={`/w/${wiki}/page/${p.path}`}
+                to={`/w/${wiki}/${type === "raw" ? "raw" : "page"}/${p.path}`}
                 aria-current={active ? "page" : undefined}
                 className={`group block border-b border-[color:var(--rule-soft)] py-2.5 transition-colors ${
                   active
@@ -160,7 +164,12 @@ export default function PageList() {
                     ))}
                   </div>
                 )}
-              </Link>
+                {type === "raw" && (
+                  <div className="mt-1 pl-2.5 font-mono text-[0.62rem] uppercase tracking-wide text-ink-faint">
+                    {typeLabel(p.type)}
+                  </div>
+                )}
+              </ShareLink>
             </li>
           );
         })}

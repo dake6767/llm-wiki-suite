@@ -1,9 +1,16 @@
 // API client：统一带令牌、处理 401。
 
 import { withBase } from "../lib/basePath";
+import {
+  credentialMode,
+  getActiveShare,
+  shareAwareHref,
+} from "../lib/shareSession";
 
 const TOKEN_KEY = "llm_wiki_token";
 
+// Owner（master token）槽——localStorage 全局唯一。仅 Owner 会话使用；访客凭证走
+// sessionStorage（shareSession.ts），二者物理隔离，Owner 自测访客链接不会互相覆盖。
 export function getToken(): string {
   return localStorage.getItem(TOKEN_KEY) || "";
 }
@@ -14,11 +21,26 @@ export function clearToken() {
   localStorage.removeItem(TOKEN_KEY);
 }
 
+// 发往 API 的实际凭证（凭证判定三段序，见 shareSession.credentialMode）：
+// - guest → share token；owner → master token；blocked → 不带凭证（应已被引导页拦下）。
+export function authToken(): string {
+  const mode = credentialMode();
+  if (mode === "guest") return getActiveShare() || "";
+  if (mode === "blocked") return "";
+  return getToken();
+}
+
+// 原生站内 href（主要是 Markdown）：Guest 使用稳定 `/share/<grant_id>` namespace，
+// 并把 secret 续在 #key 中，使右键新标签和复制链接都能直接访问。
+export function decorateInternalHref(path: string): string {
+  return shareAwareHref(path);
+}
+
 export class AuthError extends Error {}
 
 async function api<T>(path: string): Promise<T> {
   const headers: Record<string, string> = {};
-  const token = getToken();
+  const token = authToken();
   if (token) headers["Authorization"] = `Bearer ${token}`;
   const res = await fetch(withBase(path), { headers });
   if (res.status === 401) throw new AuthError("未授权");
@@ -26,14 +48,14 @@ async function api<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-// 带方法/请求体的写操作（PUT/POST 等）。错误时尽量带上后端 detail 文案。
+// 带方法/请求体的写操作（PUT/POST/PATCH/DELETE 等）。错误时尽量带上后端 detail 文案。
 async function send<T>(
   path: string,
   method: string,
   body?: unknown,
 ): Promise<T> {
   const headers: Record<string, string> = {};
-  const token = getToken();
+  const token = authToken();
   if (token) headers["Authorization"] = `Bearer ${token}`;
   if (body !== undefined) headers["Content-Type"] = "application/json";
   const res = await fetch(withBase(path), {
@@ -55,10 +77,11 @@ async function send<T>(
   return res.json() as Promise<T>;
 }
 
-// 给 <img> 用：加 BASE 前缀 + 把令牌拼到 URL（后端支持 ?token=）
+// 给 <img> 用：加 BASE 前缀 + 把凭证拼到 URL（后端支持 ?token=；访客用 share token）。
+// 遗留缺口：<img> 不能带 Authorization 头，资产子请求仍过一次链路（docs/19 §4.2）。
 export function assetUrl(rawUrl: string): string {
   const url = withBase(rawUrl);
-  const token = getToken();
+  const token = authToken();
   if (!token) return url;
   const sep = url.includes("?") ? "&" : "?";
   return `${url}${sep}token=${encodeURIComponent(token)}`;
@@ -219,6 +242,41 @@ export interface ReviewResponse {
   items: ReviewItem[];
 }
 
+// 进访客模式的依据。
+export interface SessionInfo {
+  principal: "owner" | "guest";
+  wiki?: string;
+}
+
+// grant 列表项——永不含 secret。
+export type ShareScope =
+  | { kind: "whole_wiki" }
+  | { kind: "frozen_set"; pages: string[]; assets: string[] }
+  | { kind: "index_anchor"; index_page: string; live: boolean };
+
+export interface ShareGrantView {
+  grant_id: string;
+  label: string;
+  wiki: string;
+  scope: ShareScope;
+  include_raw: boolean;
+  created_at: number;
+  expires_at: number | null;
+  last_accessed: number | null;
+  revoked: boolean;
+  active: boolean;
+}
+
+// 创建 / 取链接响应——含完整分享链接（内嵌 secret）。
+export interface ShareLinkResponse {
+  grant_id: string;
+  wiki: string;
+  label: string;
+  expires_at: number | null;
+  link: string;
+  warning?: string;
+}
+
 // ---- 调用 ----
 export const listWikis = () => api<WikiInfo[]>("/api/v1/wikis");
 export const listConfigWikis = () =>
@@ -253,10 +311,28 @@ export const installUpdate = () =>
   send<UpdateConfigInfo>("/api/v1/config/update/install", "POST");
 export const getTree = (wiki: string) =>
   api<TreeNode[]>(`/api/v1/wikis/${wiki}/tree`);
+export const getRawTree = (wiki: string) =>
+  api<TreeNode>(`/api/v1/wikis/${wiki}/raw-tree`);
+// Browser 导航同时展示编译页类目与扁平 RAW 层；两套后端索引语义保持独立。
+// RAW 层对访客不可分享（raw-tree 返回 404），此时降级为只展示编译层类目——
+// 不能让 raw-tree 的失败拖垮整棵导航树，否则访客侧目录/落地页全空（表现为“无法访问”）。
+export const getBrowseTree = async (wiki: string): Promise<TreeNode[]> => {
+  const tree = await getTree(wiki);
+  try {
+    const raw = await getRawTree(wiki);
+    return [...tree, raw];
+  } catch {
+    return tree;
+  }
+};
 export const getPage = (wiki: string, path: string) =>
   api<Page>(`/api/v1/wikis/${wiki}/pages/${path}`);
 export const getRaw = (wiki: string, path: string) =>
   api<Page>(`/api/v1/wikis/${wiki}/raw/${path}`);
+export const getSourcePreview = (wiki: string, page: string, source: string) => {
+  const query = new URLSearchParams({ page, source });
+  return api<Page>(`/api/v1/wikis/${wiki}/source-preview?${query.toString()}`);
+};
 export const getReview = (wiki: string) =>
   api<ReviewResponse>(`/api/v1/wikis/${wiki}/review`);
 export const search = (
@@ -270,6 +346,36 @@ export const search = (
   if (tag) p.set("tag", tag);
   return api<SearchResponse>(`/api/v1/wikis/${wiki}/search?${p.toString()}`);
 };
+
+export interface ShareConfigInfo {
+  relay_connected: boolean;
+  online_url?: string | null;
+}
+
+// 会话与分享管理（管理 API 均 Owner-only）。
+export const getSession = () => api<SessionInfo>("/api/v1/session");
+export const getShareConfig = () =>
+  api<ShareConfigInfo>("/api/v1/config/share");
+export const listShares = () => api<ShareGrantView[]>("/api/v1/config/shares");
+// expiresInDays: number = n 天后过期；null = 永久（高级选项）。
+export const createShare = (
+  wiki: string,
+  label: string,
+  expiresInDays: number | null,
+) =>
+  send<ShareLinkResponse>("/api/v1/config/shares", "POST", {
+    wiki,
+    label,
+    expires_in_days: expiresInDays,
+  });
+export const getShareLink = (grantId: string) =>
+  send<ShareLinkResponse>(`/api/v1/config/shares/${grantId}/link`, "POST");
+export const renewShare = (grantId: string, expiresInDays: number | null) =>
+  send<ShareGrantView>(`/api/v1/config/shares/${grantId}`, "PATCH", {
+    expires_in_days: expiresInDays,
+  });
+export const revokeShare = (grantId: string) =>
+  send<ShareGrantView>(`/api/v1/config/shares/${grantId}`, "DELETE");
 
 export const DEFAULT_BROWSE_TYPE = "sources";
 export const wikiDefaultPath = (wiki: string) =>
@@ -291,6 +397,7 @@ export const TYPE_LABELS: Record<string, string> = {
   overview: "总览",
   _root: "总览",
   page: "页面",
+  raw: "RAW · 原始层",
 };
 export const typeLabel = (t: string) => TYPE_LABELS[t] || t;
 

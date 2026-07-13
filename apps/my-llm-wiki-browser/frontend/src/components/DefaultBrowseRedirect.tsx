@@ -1,7 +1,8 @@
-import { Navigate, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import { wikiDefaultPath } from "../api/client";
+import { ShareNavigate } from "../lib/shareNavigation";
 
 export default function DefaultBrowseRedirect() {
   const { wiki } = useParams();
-  return <Navigate to={wiki ? wikiDefaultPath(wiki) : "/"} replace />;
+  return <ShareNavigate to={wiki ? wikiDefaultPath(wiki) : "/"} replace />;
 }

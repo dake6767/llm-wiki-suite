@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import {
   getPage,
   getRaw,
+  getSourcePreview,
   groupSearchHits,
   search,
   stripTitleH1,
@@ -14,7 +15,14 @@ import Markdown from "../lib/Markdown";
 // 预览目标：doc=预览某页/raw；search=展示某词的搜索结果。
 // 桌面右侧抽屉（ReferenceDrawer）与移动端底部 sheet（PreviewSheet）共用。
 export type DrawerTarget =
-  | { mode: "doc"; wiki: string; kind: "page" | "raw"; path: string; title?: string }
+  | {
+      mode: "doc";
+      wiki: string;
+      kind: "page" | "raw";
+      path: string;
+      title?: string;
+      sourcePage?: string;
+    }
   | { mode: "search"; wiki: string; term: string };
 
 // 列表层：FAB 打开后先列某类目（来源/相关/引用）的条目，点条目下钻到 doc/search 预览。
@@ -95,10 +103,11 @@ export function PreviewBody({
   if (cur)
     return (
       <DocBody
-        key={`d:${cur.wiki}:${cur.kind}:${cur.path}`}
+        key={`d:${cur.wiki}:${cur.kind}:${cur.path}:${cur.sourcePage || ""}`}
         wiki={cur.wiki}
         kind={cur.kind}
         path={cur.path}
+        sourcePage={cur.sourcePage}
       />
     );
   return null;
@@ -108,10 +117,12 @@ export function DocBody({
   wiki,
   kind,
   path,
+  sourcePage,
 }: {
   wiki: string;
   kind: "page" | "raw";
   path: string;
+  sourcePage?: string;
 }) {
   const [page, setPage] = useState<Page | null>(null);
   const [err, setErr] = useState("");
@@ -119,11 +130,16 @@ export function DocBody({
   useEffect(() => {
     setPage(null);
     setErr("");
-    const fn = kind === "raw" ? getRaw : getPage;
-    fn(wiki, path)
+    const request =
+      kind === "raw"
+        ? sourcePage
+          ? getSourcePreview(wiki, sourcePage, path)
+          : getRaw(wiki, path)
+        : getPage(wiki, path);
+    request
       .then(setPage)
       .catch(() => setErr("无法载入该页"));
-  }, [wiki, kind, path]);
+  }, [wiki, kind, path, sourcePage]);
 
   if (err) return <p className="font-serif text-sm text-ink-faint">{err}</p>;
   if (!page)

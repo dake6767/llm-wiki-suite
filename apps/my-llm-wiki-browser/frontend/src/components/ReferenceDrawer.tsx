@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useShareNavigate } from "../lib/shareNavigation";
 import FontSizeControl from "./FontSizeControl";
 import {
   PreviewBody,
@@ -9,6 +9,7 @@ import {
   type DrawerTarget,
   type SheetTarget,
 } from "./PreviewBodies";
+import { isGuest } from "../lib/shareSession";
 
 export type { DrawerTarget, SheetTarget };
 
@@ -19,8 +20,13 @@ export default function ReferenceDrawer({
   target: SheetTarget | null;
   onClose: () => void;
 }) {
-  const navigate = useNavigate();
+  const navigate = useShareNavigate();
+  const guest = isGuest();
   const { open, root, cur, setCur, drilled } = usePreview(target);
+  const canMaximize =
+    cur &&
+    cur.mode !== "list" &&
+    !(guest && cur.mode === "doc" && cur.kind === "raw");
 
   // 可拖拽宽度（记忆上次设置）。
   const [width, setWidth] = useState<number>(() => {
@@ -121,7 +127,7 @@ export default function ReferenceDrawer({
             {previewTitle(cur)}
           </h2>
           {cur?.mode === "doc" && <FontSizeControl />}
-          {cur && cur.mode !== "list" && (
+          {canMaximize && (
             <button
               onClick={maximize}
               title="最大化：跳转到该页"
@@ -145,7 +151,7 @@ export default function ReferenceDrawer({
           onClickCapture={(e) => {
             // 抽屉正文里的内部链接：放行导航，同时关闭抽屉。
             const a = (e.target as HTMLElement).closest("a");
-            if (a && a.getAttribute("href")?.startsWith("/w/")) onClose();
+            if (a && new URL(a.href, location.origin).pathname.includes("/w/")) onClose();
           }}
         >
           <PreviewBody cur={cur} onDrill={setCur} />

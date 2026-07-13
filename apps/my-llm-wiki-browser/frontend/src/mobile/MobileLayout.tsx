@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Outlet, useLocation, useNavigate } from "react-router-dom";
+import { Outlet, useLocation } from "react-router-dom";
 import {
   AuthError,
   listWikis,
@@ -8,13 +8,18 @@ import {
 } from "../api/client";
 import MobileNavSheet from "./MobileNavSheet";
 import MobileTopBar from "./MobileTopBar";
+import { useShareNavigate } from "../lib/shareNavigation";
+import { isGuest } from "../lib/shareSession";
+import { GuestBanner, ShareExpired } from "../components/ShareStates";
 
 // 移动端外壳：顶栏 + 单列内容 + 左侧抽屉。数据加载/重定向与桌面 Layout 对齐，URL 保持一致。
 export default function MobileLayout() {
   const [wikis, setWikis] = useState<WikiInfo[]>([]);
   const [err, setErr] = useState("");
+  const [expired, setExpired] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
-  const navigate = useNavigate();
+  const guest = isGuest();
+  const navigate = useShareNavigate();
   const { pathname } = useLocation();
   const wiki = pathname.match(/^\/w\/([^/]+)/)?.[1];
 
@@ -29,7 +34,10 @@ export default function MobileLayout() {
         })
         .catch((e) => {
           if (cancelled) return;
-          if (e instanceof AuthError) navigate("/login");
+          if (e instanceof AuthError) {
+            if (guest) setExpired(true);
+            else navigate("/login");
+          }
           else setErr(String(e));
         });
     };
@@ -37,7 +45,7 @@ export default function MobileLayout() {
     return () => {
       cancelled = true;
     };
-  }, [navigate]);
+  }, [navigate, guest]);
 
   useEffect(() => {
     if (!wiki && wikis.length && pathname === "/") {
@@ -54,9 +62,12 @@ export default function MobileLayout() {
 
   const current = wikis.find((w) => w.key === wiki);
 
+  if (expired) return <ShareExpired />;
+
   return (
     <div className="flex h-full flex-col bg-paper text-ink">
       <MobileTopBar current={current} onMenu={() => setNavOpen(true)} />
+      {guest && <GuestBanner />}
       {err && (
         <div className="mx-4 mt-4 rounded border border-cinnabar/30 bg-cinnabar/5 px-4 py-3 font-mono text-sm text-cinnabar-deep">
           {err}
