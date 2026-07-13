@@ -37,6 +37,11 @@ fn semver_ordering() {
     let pre = SemVer::parse("1.3.0-rc.1").unwrap();
     let rel = SemVer::parse("1.3.0").unwrap();
     assert!(rel.gt(&pre));
+    // SemVer 标准按点分标识符比较，而非整串 ASCII 比较。
+    let rc10 = SemVer::parse("1.3.0-rc.10").unwrap();
+    let rc2 = SemVer::parse("1.3.0-rc.2").unwrap();
+    assert!(rc10.gt(&rc2));
+    assert!(SemVer::parse("01.3.0").is_none());
 }
 
 #[test]
@@ -99,6 +104,7 @@ fn official_remote_normalization() {
         assert!(is_official_remote(url), "should be official: {url}");
     }
     for url in [
+        "http://github.com/dake6767/llm-wiki-suite",
         "https://github.com/evil/llm-wiki-suite",
         "https://gitlab.com/dake6767/llm-wiki-suite",
         "https://github.com/dake6767/other-repo",
@@ -159,24 +165,52 @@ fn unknown_prompt_is_diagnose_only() {
 
 // ——— 源解析：临时目录 + 真实 symlink + 真实 git 检出（GitLink / Copy / Mixed / Absent）———
 
-#[cfg(unix)]
 fn init_official_checkout(dir: &std::path::Path, slug: &str, pack_version: &str) {
     use std::process::Command;
     std::fs::create_dir_all(dir.join("skills").join(slug)).unwrap();
     std::fs::create_dir_all(dir.join("registry")).unwrap();
     std::fs::write(
         dir.join("registry/skills.json"),
-        format!(r#"{{"version":3,"pack_version":"{pack_version}","skills":[{{"slug":"{slug}"}}]}}"#),
+        format!(
+            r#"{{"version":3,"pack_version":"{pack_version}","skills":[{{"slug":"{slug}"}}]}}"#
+        ),
     )
     .unwrap();
     let git = |args: &[&str]| {
-        Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap();
     };
     git(&["init", "-q"]);
-    git(&["remote", "add", "origin", "https://github.com/dake6767/llm-wiki-suite.git"]);
+    git(&[
+        "remote",
+        "add",
+        "origin",
+        "https://github.com/dake6767/llm-wiki-suite.git",
+    ]);
 }
 
 #[cfg(unix)]
+fn link_skill_dir(source: &std::path::Path, target: &std::path::Path) {
+    std::os::unix::fs::symlink(source, target).unwrap();
+}
+
+#[cfg(windows)]
+fn link_skill_dir(source: &std::path::Path, target: &std::path::Path) {
+    // 与 scripts/install.sh 在 Windows Git Bash 下的真实安装方式一致：junction
+    // 不需要管理员或 Developer Mode。
+    let status = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(target)
+        .arg(source)
+        .status()
+        .unwrap();
+    assert!(status.success(), "mklink /J failed");
+}
+
 #[test]
 fn resolve_gitlink_reads_installed() {
     let tmp = tempfile::tempdir().unwrap();
@@ -184,7 +218,7 @@ fn resolve_gitlink_reads_installed() {
     init_official_checkout(&repo, "my-llm-wiki", "1.2.0");
     let host = tmp.path().join(".claude/skills");
     std::fs::create_dir_all(&host).unwrap();
-    std::os::unix::fs::symlink(repo.join("skills/my-llm-wiki"), host.join("my-llm-wiki")).unwrap();
+    link_skill_dir(&repo.join("skills/my-llm-wiki"), &host.join("my-llm-wiki"));
 
     let resolved = resolve_source(&[host], &["my-llm-wiki".to_string()]);
     assert_eq!(resolved.info.class, SourceClass::GitLink);
@@ -194,7 +228,6 @@ fn resolve_gitlink_reads_installed() {
     assert_eq!(read_installed_version(&top).unwrap().canonical(), "1.2.0");
 }
 
-#[cfg(unix)]
 #[test]
 fn resolve_real_dir_is_copy_unknown() {
     let tmp = tempfile::tempdir().unwrap();
@@ -205,7 +238,6 @@ fn resolve_real_dir_is_copy_unknown() {
     assert_eq!(resolved.info.class, SourceClass::Unknown);
 }
 
-#[cfg(unix)]
 #[test]
 fn resolve_symlink_to_nonofficial_is_unknown() {
     let tmp = tempfile::tempdir().unwrap();
@@ -218,22 +250,31 @@ fn resolve_symlink_to_nonofficial_is_unknown() {
         r#"{"version":3,"pack_version":"1.0.0","skills":[{"slug":"my-llm-wiki"}]}"#,
     )
     .unwrap();
-    Command::new("git").arg("-C").arg(&repo).args(["init", "-q"]).output().unwrap();
     Command::new("git")
         .arg("-C")
         .arg(&repo)
-        .args(["remote", "add", "origin", "https://github.com/evil/llm-wiki-suite.git"])
+        .args(["init", "-q"])
+        .output()
+        .unwrap();
+    Command::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .args([
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/evil/llm-wiki-suite.git",
+        ])
         .output()
         .unwrap();
     let host = tmp.path().join(".claude/skills");
     std::fs::create_dir_all(&host).unwrap();
-    std::os::unix::fs::symlink(repo.join("skills/my-llm-wiki"), host.join("my-llm-wiki")).unwrap();
+    link_skill_dir(&repo.join("skills/my-llm-wiki"), &host.join("my-llm-wiki"));
 
     let resolved = resolve_source(&[host], &["my-llm-wiki".to_string()]);
     assert_eq!(resolved.info.class, SourceClass::Unknown);
 }
 
-#[cfg(unix)]
 #[test]
 fn resolve_absent_when_nothing_installed() {
     let tmp = tempfile::tempdir().unwrap();
@@ -243,7 +284,6 @@ fn resolve_absent_when_nothing_installed() {
     assert_eq!(resolved.info.class, SourceClass::Absent);
 }
 
-#[cfg(unix)]
 #[test]
 fn resolve_mixed_checkouts_is_unknown() {
     let tmp = tempfile::tempdir().unwrap();
@@ -255,9 +295,165 @@ fn resolve_mixed_checkouts_is_unknown() {
     let host2 = tmp.path().join(".codex/skills");
     std::fs::create_dir_all(&host1).unwrap();
     std::fs::create_dir_all(&host2).unwrap();
-    std::os::unix::fs::symlink(repo_a.join("skills/my-llm-wiki"), host1.join("my-llm-wiki")).unwrap();
-    std::os::unix::fs::symlink(repo_b.join("skills/my-llm-wiki"), host2.join("my-llm-wiki")).unwrap();
+    link_skill_dir(
+        &repo_a.join("skills/my-llm-wiki"),
+        &host1.join("my-llm-wiki"),
+    );
+    link_skill_dir(
+        &repo_b.join("skills/my-llm-wiki"),
+        &host2.join("my-llm-wiki"),
+    );
 
     let resolved = resolve_source(&[host1, host2], &["my-llm-wiki".to_string()]);
     assert_eq!(resolved.info.class, SourceClass::Unknown);
+}
+
+fn test_manager(app_version: &str) -> SkillVersionManager {
+    SkillVersionManager::new(SkillVersionConfig {
+        app_version: app_version.into(),
+        builtin_slugs: vec![],
+        host_targets: vec![],
+        endpoints: vec![],
+        state_path: None,
+        on_change: None,
+        notify: None,
+    })
+}
+
+fn gitlink_source() -> ResolvedSource {
+    ResolvedSource {
+        info: SourceInfo {
+            class: SourceClass::GitLink,
+            path: Some("/tmp/suite".into()),
+            reason: None,
+        },
+        toplevel: Some(PathBuf::from("/tmp/suite")),
+    }
+}
+
+#[test]
+fn missing_candidate_is_unknown_not_up_to_date() {
+    let info = test_manager("1.0.9").compose(
+        &gitlink_source(),
+        Some(SemVer::parse("1.0.0").unwrap()),
+        None,
+    );
+    assert_eq!(info.state, SkillState::Unknown);
+    assert!(!info.update_available);
+    assert!(info.source.reason.unwrap().contains("无法"));
+}
+
+#[test]
+fn unmet_min_app_is_unknown_without_update_prompt() {
+    let candidate = Candidate {
+        pack_version: SemVer::parse("1.1.0").unwrap(),
+        source_commit: None,
+        released_at: None,
+        notes: None,
+        min_app_version: Some(SemVer::parse("2.0.0").unwrap()),
+    };
+    let info = test_manager("1.0.9").compose(
+        &gitlink_source(),
+        Some(SemVer::parse("1.0.0").unwrap()),
+        Some(candidate),
+    );
+    assert_eq!(info.state, SkillState::Unknown);
+    assert!(info.min_app_unsatisfied);
+    assert!(!info.update_available);
+    assert!(info.update_prompt.is_empty());
+}
+
+#[tokio::test]
+async fn check_emits_checking_then_final_state() {
+    let states = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let observed = states.clone();
+    let manager = SkillVersionManager::new(SkillVersionConfig {
+        app_version: "1.0.9".into(),
+        builtin_slugs: vec![],
+        host_targets: vec![],
+        endpoints: vec![],
+        state_path: None,
+        on_change: Some(std::sync::Arc::new(move |info| {
+            observed.lock().unwrap().push(info.state.clone());
+        })),
+        notify: None,
+    });
+
+    let final_info = manager.check().await;
+    assert_eq!(final_info.state, SkillState::Idle);
+    assert_eq!(
+        *states.lock().unwrap(),
+        vec![SkillState::Checking, SkillState::Idle]
+    );
+}
+
+async fn version_endpoint(body: String) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let app = axum::Router::new().route(
+        "/",
+        axum::routing::get(move || {
+            let body = body.clone();
+            async move { body }
+        }),
+    );
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{address}/")
+}
+
+#[tokio::test]
+async fn fetch_latest_rejects_invalid_and_oversize_then_falls_back() {
+    let invalid =
+        version_endpoint(r#"{"schema":1,"pack_version":"1.0.0; touch /tmp/pwned"}"#.into()).await;
+    let oversized = version_endpoint("x".repeat(MAX_VERSION_BYTES + 1)).await;
+    let valid = version_endpoint(r#"{"schema":1,"pack_version":"1.2.3"}"#.into()).await;
+    let manager = SkillVersionManager::new(SkillVersionConfig {
+        app_version: "1.0.9".into(),
+        builtin_slugs: vec![],
+        host_targets: vec![],
+        endpoints: vec![invalid, oversized, valid],
+        state_path: None,
+        on_change: None,
+        notify: None,
+    });
+
+    let candidate = manager.fetch_latest().await.unwrap();
+    assert_eq!(candidate.pack_version.canonical(), "1.2.3");
+}
+
+fn update_candidate() -> Candidate {
+    Candidate {
+        pack_version: SemVer::parse("1.1.0").unwrap(),
+        source_commit: None,
+        released_at: None,
+        notes: None,
+        min_app_version: None,
+    }
+}
+
+#[test]
+fn notification_is_marked_only_after_success() {
+    for (notification_result, remains_pending) in [(false, true), (true, false)] {
+        let manager = SkillVersionManager::new(SkillVersionConfig {
+            app_version: "1.0.9".into(),
+            builtin_slugs: vec![],
+            host_targets: vec![],
+            endpoints: vec![],
+            state_path: None,
+            on_change: None,
+            notify: Some(std::sync::Arc::new(move |_| notification_result)),
+        });
+        let info = manager.compose(
+            &gitlink_source(),
+            Some(SemVer::parse("1.0.0").unwrap()),
+            Some(update_candidate()),
+        );
+        manager.inner.lock().unwrap().last = info;
+
+        manager.emit_pending_notification();
+
+        assert_eq!(manager.pending_notification().is_some(), remains_pending);
+    }
 }

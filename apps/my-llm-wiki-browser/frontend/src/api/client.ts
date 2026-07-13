@@ -218,7 +218,7 @@ export interface UpdateConfigInfo {
   error?: string;
 }
 
-// 技能版本探测（doc 21）。state：idle | up_to_date | update_available | unknown。
+// 技能版本探测（doc 21）。state：idle | checking | up_to_date | update_available | unknown。
 // class：git_link | unknown | absent。supported=false → 前端隐藏面板。
 export interface SkillSourceInfo {
   class: "git_link" | "unknown" | "absent";
@@ -234,12 +234,13 @@ export interface SkillLatestInfo {
 }
 export interface SkillsConfigInfo {
   supported: boolean;
-  state?: "idle" | "up_to_date" | "update_available" | "unknown";
+  state?: "idle" | "checking" | "up_to_date" | "update_available" | "unknown";
   source?: SkillSourceInfo;
   installedVersion?: string | null;
   updateAvailable?: boolean;
   latest?: SkillLatestInfo | null;
   changelogUrl?: string;
+  agentsUrl?: string;
   minAppUnsatisfied?: boolean;
   updatePrompt?: string;
   checkedAt?: string | null;

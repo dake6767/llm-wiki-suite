@@ -1,0 +1,73 @@
+name: browser-ci
+
+on:
+  pull_request:
+    paths:
+      - 'apps/my-llm-wiki-browser/**'
+      - '.github/workflows/browser-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'apps/my-llm-wiki-browser/**'
+      - '.github/workflows/browser-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  server-tests:
+    name: server tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: apps/my-llm-wiki-browser
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: apps/my-llm-wiki-browser -> target
+      - name: Run server tests
+        run: cargo test -p llm-wiki-server
+
+  frontend-build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/my-llm-wiki-browser/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/my-llm-wiki-browser/frontend/package-lock.json
+      - run: npm ci
+      - run: npm run build
+
+  desktop-check:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: apps/my-llm-wiki-browser
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/my-llm-wiki-browser/frontend/package-lock.json
+      - name: Build bundled frontend
+        working-directory: apps/my-llm-wiki-browser/frontend
+        run: |
+          npm ci
+          npm run build
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: apps/my-llm-wiki-browser -> target
+      - run: cargo check -p llm-wiki-desktop

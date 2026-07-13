@@ -33,7 +33,7 @@ mod mcp;
 pub mod share;
 pub mod skill_version;
 
-pub use skill_version::{SkillVersionConfig, SkillVersionInfo, SkillVersionManager};
+pub use skill_version::{SkillState, SkillVersionConfig, SkillVersionInfo, SkillVersionManager};
 
 use share::{GrantAuth, GrantStore, Scope, ShareGrant};
 
@@ -3590,6 +3590,8 @@ mod tests {
             host_targets: vec![],
             endpoints: vec![],
             state_path: None,
+            on_change: None,
+            notify: None,
         }));
         let control = ServerControl {
             persist_port: Arc::new(|_| Ok(())),

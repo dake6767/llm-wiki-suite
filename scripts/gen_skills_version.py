@@ -27,10 +27,11 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from check_pack_version_bump import semver_parts
+
 ROOT = Path(__file__).resolve().parent.parent
 REGISTRY = ROOT / "registry" / "skills.json"
 
-SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -38,10 +39,7 @@ def build(registry_path: Path, source_commit: str | None, released_at: str | Non
     data = json.loads(registry_path.read_text(encoding="utf-8"))
 
     pack_version = data.get("pack_version")
-    if not isinstance(pack_version, str) or not SEMVER_RE.match(pack_version):
-        raise SystemExit(
-            f"registry pack_version must be semver X.Y.Z, got: {pack_version!r}"
-        )
+    semver_parts(pack_version)
 
     out: dict = {
         "schema": 1,

@@ -20,6 +20,7 @@ on:
     branches: [main]
     paths:
       - 'registry/skills.json'
+      - 'registry/bootstrap.json'
       - 'skills/**'
 
 permissions:
@@ -46,6 +47,10 @@ jobs:
       TAG: skills-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Enforce pack_version bump on main push
+        run: python3 scripts/check_pack_version_bump.py --base "${GITHUB_SHA}^" --head "${GITHUB_SHA}"
       - name: Generate skills-version.json
         run: |
           python3 scripts/gen_skills_version.py \
