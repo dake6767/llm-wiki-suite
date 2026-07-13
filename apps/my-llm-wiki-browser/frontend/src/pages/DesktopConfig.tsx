@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  checkSkills,
   checkUpdate,
+  dismissSkillVersion,
   getAutostartConfig,
   getServerConfig,
+  getSkillsConfig,
   getUpdateConfig,
   installUpdate,
   listConfigWikis,
@@ -10,6 +13,7 @@ import {
   setAutostart,
   setDefaultWiki,
   updateServerPort,
+  type SkillsConfigInfo,
   type UpdateConfigInfo,
   type WikiConfigInfo,
 } from "../api/client";
@@ -274,6 +278,7 @@ function RuntimePanel() {
       <ServerPortPanel />
       <AutostartPanel />
       <UpdatePanel />
+      <SkillsPanel />
       <PanelMessage
         title="入口在托盘菜单"
         body="本地 WIKI 和线上 WIKI 已移动到系统托盘。这里后续会承载中继、索引、embedding 等配置。"
@@ -650,6 +655,165 @@ function UpdatePanel() {
           ) : null}
         </div>
       </div>
+      {error ? <p className="mt-2 text-sm text-cinnabar">{error}</p> : null}
+    </div>
+  );
+}
+
+// 技能版本面板（doc 21）：只提醒 + 复制提示词，**无「安装」按钮**（更新交回 agent）。
+function SkillsPanel() {
+  const [info, setInfo] = useState<SkillsConfigInfo | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const load = () => {
+    getSkillsConfig()
+      .then(setInfo)
+      .catch((err: unknown) =>
+        setError(err instanceof Error ? err.message : "技能版本读取失败"),
+      );
+  };
+
+  useEffect(() => {
+    load();
+    // 焦点重查：agent 更新完 app 不即时知，面板重新获得焦点时刷新一次。
+    const onFocus = () => load();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, []);
+
+  async function recheck() {
+    setError(null);
+    setBusy(true);
+    try {
+      setInfo(await checkSkills());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "检查失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copyPrompt() {
+    if (!info?.updatePrompt) return;
+    try {
+      await navigator.clipboard.writeText(info.updatePrompt);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setError("复制失败，请手动选择文本");
+    }
+  }
+
+  async function dismiss() {
+    const version = info?.latest?.packVersion;
+    if (!version) return;
+    setBusy(true);
+    try {
+      setInfo(await dismissSkillVersion(version));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "操作失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // 纯浏览器访问（非桌面外壳）拿不到探测钩子，整块隐藏。
+  if (info !== null && !info.supported) return null;
+
+  const state = info?.state ?? "idle";
+  const installed = info?.installedVersion;
+  const latest = info?.latest?.packVersion;
+  const changelog = info?.changelogUrl;
+  const isUpdate = state === "update_available";
+  const isUnknown = state === "unknown";
+  const hasPrompt = Boolean(info?.updatePrompt);
+
+  return (
+    <div className="rounded-md border border-[var(--rule)] bg-paper-2/55 px-6 py-5">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0">
+          <h3 className="font-display text-xl font-semibold">技能更新</h3>
+          <p className="mt-2 text-sm leading-6 text-ink-soft">
+            探测 llm-wiki 技能包版本。更新由 agent 完成——复制下方提示词，交给任一 host 的
+            agent 走 <span className="font-mono">bootstrap.sh --update</span>。App 只提醒、不改技能文件。
+          </p>
+          <p className="mt-2 text-sm leading-6 text-ink-faint">
+            {installed ? (
+              <>
+                已装 <span className="font-mono">v{installed}</span>
+              </>
+            ) : (
+              "已装版本未知"
+            )}
+            {state === "up_to_date" ? " · 已是最新" : null}
+            {isUpdate && latest ? (
+              <>
+                {" · "}发现新版本 <span className="font-mono">v{latest}</span>
+              </>
+            ) : null}
+            {isUnknown ? " · 拷贝/多来源安装，仅诊断不自动更新" : null}
+          </p>
+          {isUnknown && info?.source?.reason ? (
+            <p className="mt-1 text-sm text-ink-faint">{info.source.reason}</p>
+          ) : null}
+          {isUpdate && info?.latest?.notes ? (
+            <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-ink-faint">
+              {info.latest.notes}
+            </p>
+          ) : null}
+          {info?.minAppUnsatisfied ? (
+            <p className="mt-2 text-sm text-cinnabar">
+              该技能版本要求更新的 app，请先在上方「应用更新」升级。
+            </p>
+          ) : null}
+        </div>
+
+        <div className="flex shrink-0 items-center gap-3">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void recheck()}
+            className="rounded-sm border border-[var(--rule)] px-4 py-2 text-sm text-ink-soft transition hover:border-cinnabar hover:text-cinnabar disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {busy ? "检查中…" : "重新检查"}
+          </button>
+        </div>
+      </div>
+
+      {(isUpdate || isUnknown) && hasPrompt ? (
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={() => void copyPrompt()}
+            className="rounded-sm bg-cinnabar px-4 py-2 text-sm font-semibold text-paper transition hover:opacity-90"
+          >
+            {copied ? "已复制 ✓" : isUnknown ? "复制诊断提示词" : "复制更新提示词"}
+          </button>
+          {changelog ? (
+            <a
+              href={changelog}
+              target="_blank"
+              rel="noreferrer"
+              className="text-sm text-ink-soft underline decoration-[var(--rule)] underline-offset-4 transition hover:text-cinnabar"
+            >
+              查看 changelog
+            </a>
+          ) : null}
+          {isUpdate ? (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void dismiss()}
+              className="text-sm text-ink-faint transition hover:text-ink-soft disabled:opacity-50"
+            >
+              本版本不再提醒
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+
       {error ? <p className="mt-2 text-sm text-cinnabar">{error}</p> : null}
     </div>
   );

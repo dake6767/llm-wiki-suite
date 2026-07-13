@@ -14,7 +14,10 @@ use llm_wiki_connector::{ConnectorConfig, ConnectorEvent, run_connector_with_eve
 use llm_wiki_core::config::CoreConfig;
 use llm_wiki_core::registry::load_registry;
 use llm_wiki_core::{FullTextSearcher, IndexManager};
-use llm_wiki_server::{AutostartControl, ServerConfig, ServerControl, UpdateControl, serve};
+use llm_wiki_server::{
+    AutostartControl, ServerConfig, ServerControl, SkillVersionConfig, SkillVersionManager,
+    UpdateControl, serve,
+};
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -95,12 +98,14 @@ fn main() {
             let local_url = local_base_url();
             let app_handle = app.handle().clone();
             let update_manager = UpdateManager::new(app.handle().clone());
+            let skill_manager = build_skill_version_manager(app.handle());
             let online_urls = Arc::new(Mutex::new(OnlineUrls::default()));
             match prepare_local_server(app.handle(), online_urls.clone()) {
                 Ok(Some((std_listener, mut server_config))) => {
                     server_config.control = Some(server_control(
                         app.handle().clone(),
                         update_manager.clone(),
+                        skill_manager.clone(),
                     ));
                     tauri::async_runtime::spawn(async move {
                         let listener = match tokio::net::TcpListener::from_std(std_listener) {
@@ -140,11 +145,13 @@ fn main() {
 
             tracing::info!("started {}", app.package_info().name);
             update_manager.spawn_periodic_check();
+            spawn_skill_version_check(app.handle().clone(), skill_manager.clone());
             app_handle.manage(DesktopState {
                 local_url: local_url.clone(),
             });
             app_handle.manage(relay_runtime);
             app_handle.manage(update_manager);
+            app_handle.manage(skill_manager);
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -454,8 +461,93 @@ fn prepare_local_server(
     )))
 }
 
-/// 注入给 HTTP 层的运行期控制：持久化端口、延迟重启进程、开机自启、应用更新。
-fn server_control(app: tauri::AppHandle, update_manager: UpdateManager) -> ServerControl {
+/// app 内置的 suite skill slug 快照（构建时固化；槽位判定以此为准，doc 21 §5）。
+const SUITE_SLUGS: &[&str] = &[
+    "cn-mirrors",
+    "my-llm-wiki",
+    "my-llm-wiki-video",
+    "my-llm-wiki-x",
+    "my-llm-wiki-maintainer",
+    "my-llm-wiki-search",
+];
+/// default_skill_targets 的 5 个 host 技能目录（相对 home）。
+const SKILL_HOST_DIRS: &[&str] = &[
+    ".codex/skills",
+    ".claude/skills",
+    ".hermes/skills",
+    ".agents/skills",
+    ".workbuddy/skills",
+];
+/// 技能版本信号 endpoints：Worker 优先、GitHub 直连兜底（doc 21 §2.2/§3）。
+const SKILL_VERSION_WORKER_URL: &str = "https://wiki.htmlgo.to/_skills/version.json";
+const SKILL_VERSION_GITHUB_URL: &str =
+    "https://github.com/dake6767/llm-wiki-suite/releases/download/skills-latest/skills-version.json";
+
+/// 构造技能版本探测器（只读）。host 目录/endpoint/slug 快照为发布态事实。
+fn build_skill_version_manager(app: &tauri::AppHandle) -> Arc<SkillVersionManager> {
+    let home = dirs::home_dir();
+    let host_targets = home
+        .as_ref()
+        .map(|h| SKILL_HOST_DIRS.iter().map(|rel| h.join(rel)).collect())
+        .unwrap_or_default();
+    let mut endpoints = Vec::new();
+    // 测试/开发可用 SKILL_VERSION_URL 覆盖优先 endpoint（指向自建版本文件）。
+    if let Ok(custom) = std::env::var("SKILL_VERSION_URL") {
+        let custom = custom.trim();
+        if !custom.is_empty() {
+            endpoints.push(custom.to_string());
+        }
+    }
+    endpoints.push(SKILL_VERSION_WORKER_URL.to_string());
+    endpoints.push(SKILL_VERSION_GITHUB_URL.to_string());
+    let state_path =
+        llm_wiki_core::paths::connector_dir().map(|d| d.join("skill-version-state.json"));
+    Arc::new(SkillVersionManager::new(SkillVersionConfig {
+        app_version: app.package_info().version.to_string(),
+        builtin_slugs: SUITE_SLUGS.iter().map(|s| s.to_string()).collect(),
+        host_targets,
+        endpoints,
+        state_path,
+    }))
+}
+
+/// 周期性技能版本检查（首次延迟 10s、之后每 24h）。有 delta 且未通知过该版本时弹一次
+/// 系统通知（等值去重锚仅在弹成功后写入，doc 21 §2.3）。设置页焦点重查另由前端触发。
+fn spawn_skill_version_check(app: tauri::AppHandle, manager: Arc<SkillVersionManager>) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        loop {
+            manager.check().await;
+            if let Some(version) = manager.pending_notification() {
+                notify_skill_update(&app, &version);
+                manager.mark_notified(&version);
+            }
+            tokio::time::sleep(Duration::from_secs(24 * 60 * 60)).await;
+        }
+    });
+}
+
+fn notify_skill_update(app: &tauri::AppHandle, version: &str) {
+    use tauri_plugin_notification::NotificationExt;
+    if let Err(err) = app
+        .notification()
+        .builder()
+        .title("llm-wiki 技能有更新")
+        .body(format!(
+            "技能包 v{version} 可用 — 打开设置页复制更新提示词，交给 agent 完成更新。"
+        ))
+        .show()
+    {
+        tracing::warn!(error = ?err, "failed to show skill update notification");
+    }
+}
+
+/// 注入给 HTTP 层的运行期控制：持久化端口、延迟重启进程、开机自启、应用更新、技能版本探测。
+fn server_control(
+    app: tauri::AppHandle,
+    update_manager: UpdateManager,
+    skill_manager: Arc<SkillVersionManager>,
+) -> ServerControl {
     let restart_app = app.clone();
     let query_app = app.clone();
     let status_manager = update_manager.clone();
@@ -499,6 +591,7 @@ fn server_control(app: tauri::AppHandle, update_manager: UpdateManager) -> Serve
             check: Arc::new(move || check_manager.check()),
             install: Arc::new(move || install_manager.install()),
         }),
+        skill_version: Some(skill_manager),
     }
 }
 
