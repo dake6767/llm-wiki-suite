@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
-import { Link, useParams, useSearchParams } from "react-router-dom";
+import { useParams, useSearchParams } from "react-router-dom";
 import {
   groupSearchHits,
   search,
   type SearchHit,
   type SearchResponse,
 } from "../api/client";
+import { ShareLink } from "../lib/shareNavigation";
 
 export default function SearchResults() {
   const { wiki } = useParams();
@@ -107,7 +108,7 @@ function SearchResultItem({
 }) {
   return (
     <li>
-      <Link
+      <ShareLink
         to={`/w/${wiki}/page/${hit.path}`}
         className="group block border-b border-[color:var(--rule-soft)] py-5 transition-colors"
       >
@@ -123,7 +124,7 @@ function SearchResultItem({
           className="pl-8 font-serif text-sm leading-relaxed text-ink-soft"
           dangerouslySetInnerHTML={{ __html: hit.snippet }}
         />
-      </Link>
+      </ShareLink>
     </li>
   );
 }

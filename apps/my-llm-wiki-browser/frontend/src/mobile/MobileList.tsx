@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { useLocation } from "react-router-dom";
 import {
   addedDateLabel,
   byAddedDesc,
-  getTree,
+  getBrowseTree,
   typeLabel,
   type PageRef,
   type TreeNode,
 } from "../api/client";
+import { ShareLink } from "../lib/shareNavigation";
 
 function parse(pathname: string) {
   const m = pathname.match(/^\/w\/([^/]+)(?:\/(.*))?$/);
@@ -33,7 +34,7 @@ export default function MobileList() {
     }
     let cancelled = false;
     const load = () => {
-      getTree(wiki)
+      getBrowseTree(wiki)
         .then((items) => {
           if (!cancelled) setTree(items);
         })
@@ -49,7 +50,7 @@ export default function MobileList() {
 
   const base: PageRef[] = useMemo(() => {
     if (type) return tree.find((n) => n.type === type)?.pages ?? [];
-    return tree.flatMap((n) => n.pages);
+    return tree.filter((n) => n.type !== "raw").flatMap((n) => n.pages);
   }, [tree, type]);
 
   const pages = useMemo(() => {
@@ -93,8 +94,8 @@ export default function MobileList() {
           const date = addedDateLabel(p);
           return (
             <li key={p.path}>
-              <Link
-                to={`/w/${wiki}/page/${p.path}`}
+              <ShareLink
+                to={`/w/${wiki}/${type === "raw" ? "raw" : "page"}/${p.path}`}
                 className="block border-b border-[color:var(--rule-soft)] py-3.5 text-ink transition-colors active:text-cinnabar"
               >
                 <div className="flex items-baseline gap-2">
@@ -119,7 +120,12 @@ export default function MobileList() {
                     ))}
                   </div>
                 )}
-              </Link>
+                {type === "raw" && (
+                  <div className="mt-1.5 font-mono text-[0.62rem] uppercase tracking-wide text-ink-faint">
+                    {typeLabel(p.type)}
+                  </div>
+                )}
+              </ShareLink>
             </li>
           );
         })}

@@ -1,11 +1,11 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useShareNavigate } from "../lib/shareNavigation";
 import { listWikis, setToken } from "../api/client";
 
 export default function Login() {
   const [token, setTok] = useState("");
   const [err, setErr] = useState("");
-  const navigate = useNavigate();
+  const navigate = useShareNavigate();
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();

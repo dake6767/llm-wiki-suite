@@ -1,15 +1,18 @@
 import { useEffect, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useLocation } from "react-router-dom";
 import {
   clearToken,
   getReview,
-  getTree,
+  getBrowseTree,
   typeLabel,
   wikiDefaultPath,
   wikiRecentPath,
   type TreeNode,
   type WikiInfo,
 } from "../api/client";
+import { useShareNavigate } from "../lib/shareNavigation";
+import { BASE } from "../lib/basePath";
+import { clearActiveShare, isGuest } from "../lib/shareSession";
 
 // 移动端左侧抽屉：知识库切换 + 类目索引 + 退出。沿用书脊（spine）配色。
 export default function MobileNavSheet({
@@ -23,10 +26,12 @@ export default function MobileNavSheet({
   open: boolean;
   onClose: () => void;
 }) {
-  const navigate = useNavigate();
+  const navigate = useShareNavigate();
+  const guest = isGuest();
   const { pathname } = useLocation();
   const wiki = pathname.match(/^\/w\/([^/]+)/)?.[1];
   const type =
+    (/^\/w\/[^/]+\/raw\//.test(pathname) ? "raw" : "") ||
     pathname.match(/^\/w\/[^/]+\/browse\/([^/]+)/)?.[1] ||
     pathname.match(/^\/w\/[^/]+\/page\/([^/]+)\/.+/)?.[1];
   const onReview = /^\/w\/[^/]+\/review(\/|$)/.test(pathname);
@@ -41,26 +46,30 @@ export default function MobileNavSheet({
     }
     let cancelled = false;
     const load = () => {
-      getTree(wiki)
+      getBrowseTree(wiki)
         .then((items) => {
           if (!cancelled) setTree(items);
         })
         .catch(() => {
           if (!cancelled) setTree([]);
         });
-      getReview(wiki)
-        .then((res) => {
-          if (!cancelled) setReviewOpen(res.open_count);
-        })
-        .catch(() => {
-          if (!cancelled) setReviewOpen(0);
-        });
+      if (!guest) {
+        getReview(wiki)
+          .then((res) => {
+            if (!cancelled) setReviewOpen(res.open_count);
+          })
+          .catch(() => {
+            if (!cancelled) setReviewOpen(0);
+          });
+      } else {
+        setReviewOpen(0);
+      }
     };
     load();
     return () => {
       cancelled = true;
     };
-  }, [wiki, pathname]);
+  }, [wiki, pathname, guest]);
 
   // 关闭时锁定背景滚动
   useEffect(() => {
@@ -146,7 +155,7 @@ export default function MobileNavSheet({
               全部 · 最近
             </span>
           </button>
-          {wiki && (
+          {wiki && !guest && (
             <button
               onClick={() => go(`/w/${wiki}/review`)}
               className="group flex w-full items-baseline py-2.5 text-left"
@@ -216,15 +225,22 @@ export default function MobileNavSheet({
           className="flex items-center justify-between px-5 py-4"
           style={{ borderTop: "1px solid var(--rule-cream)" }}
         >
-          <span className="eyebrow text-cream-soft/70">文件即真相</span>
+          <span className="eyebrow text-cream-soft/70">
+            {guest ? "分享浏览" : "文件即真相"}
+          </span>
           <button
             onClick={() => {
-              clearToken();
-              navigate("/login");
+              if (guest) {
+                clearActiveShare();
+                window.location.href = `${BASE}/`;
+              } else {
+                clearToken();
+                navigate("/login");
+              }
             }}
             className="font-mono text-xs text-cream-soft transition-colors active:text-cinnabar"
           >
-            退出 →
+            {guest ? "退出访客预览 →" : "退出 →"}
           </button>
         </div>
       </aside>

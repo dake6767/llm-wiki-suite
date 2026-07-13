@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Route, Routes } from "react-router-dom";
 import Layout from "./components/Layout";
 import Workspace from "./components/Workspace";
 import BrowseLanding from "./components/BrowseLanding";
@@ -11,11 +11,19 @@ import ReviewQueue from "./pages/ReviewQueue";
 import SearchResults from "./pages/SearchResults";
 import { useIsMobile } from "./lib/device";
 import MobileApp from "./mobile/MobileApp";
+import { credentialMode } from "./lib/shareSession";
+import { ShareBlockedGuide } from "./components/ShareStates";
+import { ShareNavigate } from "./lib/shareNavigation";
 
 export default function App() {
   // 窄屏触屏设备走单列阅读器；平板/横屏等宽视口走桌面三栏（随方向变化实时切换）。
-  // ?ui=mobile|desktop 可强制覆盖。
+  // ?ui=mobile|desktop 可强制覆盖。（hook 必须在任何条件返回之前调用。）
   const mobile = useIsMobile();
+
+  // `/share/<grant_id>/` 缺少或不匹配 #key 时绝不静默回退 Owner。优先于一切渲染，
+  // 避免任何以 Owner 凭证发起的 API 调用。
+  if (credentialMode() === "blocked") return <ShareBlockedGuide />;
+
   if (mobile) return <MobileApp />;
 
   return (
@@ -36,7 +44,7 @@ export default function App() {
           <Route path="search" element={<SearchResults />} />
         </Route>
       </Route>
-      <Route path="*" element={<Navigate to="/" replace />} />
+      <Route path="*" element={<ShareNavigate to="/" replace />} />
     </Routes>
   );
 }

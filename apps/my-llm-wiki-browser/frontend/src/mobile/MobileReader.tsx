@@ -1,18 +1,23 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useOutletContext, useParams } from "react-router-dom";
 import {
   AuthError,
   getPage,
   getRaw,
   stripTitleH1,
   typeLabel,
+  type LayoutContext,
   type Page,
 } from "../api/client";
 import Markdown from "../lib/Markdown";
 import PreviewSheet, { type SheetTarget } from "./PreviewSheet";
-import MarginaliaFab from "../components/MarginaliaFab";
+import MarginaliaFab, { ShareWikiIcon } from "../components/MarginaliaFab";
 import DeepDiveSheet from "../components/DeepDiveSheet";
 import { useDeepDive } from "../lib/useDeepDive";
+import { ShareLink } from "../lib/shareNavigation";
+import SharePanel from "../components/SharePanel";
+import { copyToClipboard } from "../lib/reviewPrompt";
+import { isGuest, shareEntryLink } from "../lib/shareSession";
 
 function rawPathFromSource(src: string): string {
   let s = src.trim();
@@ -26,10 +31,14 @@ export default function MobileReader({ kind }: { kind: "page" | "raw" }) {
   const params = useParams();
   const wiki = params.wiki!;
   const path = params["*"] || "";
+  const { wikis } = useOutletContext<LayoutContext>();
+  const guest = isGuest();
   const [page, setPage] = useState<Page | null>(null);
   const [err, setErr] = useState("");
   const [sheet, setSheet] = useState<SheetTarget | null>(null);
   const [deepDive, setDeepDive] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
+  const [shareFeedback, setShareFeedback] = useState<"copied" | "failed" | null>(null);
   const dive = useDeepDive(wiki, page);
 
   // 深挖面板与预览浮层互斥：开一个即关另一个。
@@ -37,6 +46,20 @@ export default function MobileReader({ kind }: { kind: "page" | "raw" }) {
     setDeepDive(false);
     setSheet(t);
   };
+
+  async function onShare() {
+    if (!guest) {
+      setShareOpen(true);
+      return;
+    }
+    const link = shareEntryLink();
+    const feedback = link && (await copyToClipboard(link)) ? "copied" : "failed";
+    setShareFeedback(feedback);
+    window.setTimeout(
+      () => setShareFeedback((current) => (current === feedback ? null : current)),
+      1600,
+    );
+  }
 
   useEffect(() => {
     setPage(null);
@@ -80,13 +103,13 @@ export default function MobileReader({ kind }: { kind: "page" | "raw" }) {
           {page.tags.length > 0 && (
             <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1">
               {page.tags.map((t) => (
-                <Link
+                <ShareLink
                   key={t}
                   to={`/w/${wiki}/search?tag=${encodeURIComponent(t)}`}
                   className="font-mono text-xs uppercase tracking-wide text-brass transition-colors active:text-cinnabar"
                 >
                   #{t}
-                </Link>
+                </ShareLink>
               ))}
             </div>
           )}
@@ -133,6 +156,7 @@ export default function MobileReader({ kind }: { kind: "page" | "raw" }) {
                     wiki,
                     kind: "raw",
                     path: rawPathFromSource(s),
+                    sourcePage: path,
                   },
                 })),
               }),
@@ -185,6 +209,21 @@ export default function MobileReader({ kind }: { kind: "page" | "raw" }) {
               setDeepDive(true);
             },
           },
+          {
+            key: "share",
+            icon: <ShareWikiIcon />,
+            label: guest ? "复制当前分享链接" : "分享整个 Wiki",
+            count: 0,
+            always: kind === "page",
+            hint: guest
+              ? shareFeedback === "copied"
+                ? "分享链接已复制"
+                : shareFeedback === "failed"
+                  ? "复制失败，请重试"
+                  : undefined
+              : undefined,
+            onClick: onShare,
+          },
         ]}
       />
 
@@ -195,6 +234,15 @@ export default function MobileReader({ kind }: { kind: "page" | "raw" }) {
         root={dive.root}
         onClose={() => setDeepDive(false)}
       />
+      {!guest && (
+        <SharePanel
+          open={shareOpen}
+          onClose={() => setShareOpen(false)}
+          wikiOptions={wikis}
+          lockedWiki={wiki}
+          deepLinkPath={`/w/${wiki}/page/${path}`}
+        />
+      )}
     </div>
   );
 }

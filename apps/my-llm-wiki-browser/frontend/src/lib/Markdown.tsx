@@ -1,13 +1,14 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { useNavigate } from "react-router-dom";
-import { assetUrl } from "../api/client";
+import { assetUrl, decorateInternalHref } from "../api/client";
+import { useShareNavigate } from "./shareNavigation";
 
 // 渲染后端已重写过的 markdown：
-// - 内部链接形如 /w/{wiki}/page/... 或 /w/{wiki}/search?... -> 走前端路由
+// - 内部链接形如 /w/{wiki}/page/... 或 /w/{wiki}/search?... -> 走前端路由；
+//   href 经 decorateInternalHref 附带动态 Guest basename 与 #key，复制/新标签可访问。
 // - 图片 URL 形如 /api/v1/wikis/{wiki}/assets/... -> 拼上令牌
 export default function Markdown({ content }: { content: string }) {
-  const navigate = useNavigate();
+  const navigate = useShareNavigate();
   return (
     <div className="prose-wiki">
       <ReactMarkdown
@@ -18,8 +19,16 @@ export default function Markdown({ content }: { content: string }) {
             if (url.startsWith("/w/")) {
               return (
                 <a
-                  href={url}
+                  href={decorateInternalHref(url)}
                   onClick={(e) => {
+                    // 保留浏览器原生的新标签/新窗口手势；href 已含 Guest basename + #key。
+                    if (
+                      e.button !== 0 ||
+                      e.metaKey ||
+                      e.ctrlKey ||
+                      e.shiftKey ||
+                      e.altKey
+                    ) return;
                     e.preventDefault();
                     navigate(url);
                   }}

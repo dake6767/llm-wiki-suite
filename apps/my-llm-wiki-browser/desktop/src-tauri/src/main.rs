@@ -95,8 +95,8 @@ fn main() {
             let local_url = local_base_url();
             let app_handle = app.handle().clone();
             let update_manager = UpdateManager::new(app.handle().clone());
-            let online_wiki_url = Arc::new(Mutex::new(None));
-            match prepare_local_server(app.handle(), online_wiki_url.clone()) {
+            let online_urls = Arc::new(Mutex::new(OnlineUrls::default()));
+            match prepare_local_server(app.handle(), online_urls.clone()) {
                 Ok(Some((std_listener, mut server_config))) => {
                     server_config.control = Some(server_control(
                         app.handle().clone(),
@@ -121,12 +121,12 @@ fn main() {
                 }
             }
             let connector_config = connector_config();
-            let tray = build_tray(app.handle(), local_url.clone(), online_wiki_url.clone())?;
+            let tray = build_tray(app.handle(), local_url.clone(), online_urls.clone())?;
             // 托盘建好后再提示，确保用户按提示去点时图标已经在了。
             maybe_notify_first_launch(app.handle());
             #[cfg(target_os = "macos")]
             let _ = app.set_activation_policy(ActivationPolicy::Accessory);
-            let relay_runtime = RelayRuntime::new(connector_config, tray, online_wiki_url);
+            let relay_runtime = RelayRuntime::new(connector_config, tray, online_urls);
             // 中继默认关闭，仅当用户上次手动开启过才自动连接。
             if load_relay_enabled() {
                 relay_runtime.start();
@@ -227,11 +227,21 @@ struct DesktopState {
     local_url: String,
 }
 
+/// 中继连接后的两个线上入口，严格分离（docs/19 §4.3）：
+/// - `owner_url`：含 master token 的本人入口，只用于「打开线上 WIKI（本人）」与
+///   `/api/v1/config/share`（agent 配置）。**绝不**用于构造分享链接。
+/// - `public_base`：无凭证的 `https://<relay>/<uid>/`，是服务端拼分享链接的合法基座。
+///   两者各自独立构造，`public_base` 不从 `owner_url` 做字符串删除得来。
+#[derive(Default)]
+struct OnlineUrls {
+    owner_url: Option<String>,
+    public_base: Option<String>,
+}
+
 #[derive(Clone)]
 struct TrayState {
     relay_status: MenuItem<tauri::Wry>,
     open_online_wiki: MenuItem<tauri::Wry>,
-    copy_share_link: MenuItem<tauri::Wry>,
     relay_toggle: MenuItem<tauri::Wry>,
 }
 
@@ -240,7 +250,7 @@ struct RelayRuntime {
     config: ConnectorConfig,
     worker_ws: String,
     tray: TrayState,
-    online_wiki_url: Arc<Mutex<Option<String>>>,
+    online_urls: Arc<Mutex<OnlineUrls>>,
     handle: Arc<Mutex<Option<tauri::async_runtime::JoinHandle<()>>>>,
 }
 
@@ -248,13 +258,13 @@ impl RelayRuntime {
     fn new(
         config: ConnectorConfig,
         tray: TrayState,
-        online_wiki_url: Arc<Mutex<Option<String>>>,
+        online_urls: Arc<Mutex<OnlineUrls>>,
     ) -> Self {
         Self {
             worker_ws: config.worker_ws.clone(),
             config,
             tray,
-            online_wiki_url,
+            online_urls,
             handle: Arc::new(Mutex::new(None)),
         }
     }
@@ -270,15 +280,14 @@ impl RelayRuntime {
         let config = self.config.clone();
         let worker_ws = self.worker_ws.clone();
         let tray = self.tray.clone();
-        let online_wiki_url = self.online_wiki_url.clone();
+        let online_urls = self.online_urls.clone();
         let _ = self.tray.relay_toggle.set_text("断开中继服务");
         let _ = self.tray.relay_status.set_text("🔴 中继：重连中");
         let _ = self.tray.open_online_wiki.set_enabled(false);
-        let _ = self.tray.copy_share_link.set_enabled(false);
 
         *handle = Some(tauri::async_runtime::spawn(async move {
             if let Err(err) = run_connector_with_events(config, move |event| {
-                update_tray_relay(&tray, online_wiki_url.clone(), &worker_ws, event);
+                update_tray_relay(&tray, online_urls.clone(), &worker_ws, event);
             })
             .await
             {
@@ -293,12 +302,11 @@ impl RelayRuntime {
         {
             handle.abort();
         }
-        if let Ok(mut guard) = self.online_wiki_url.lock() {
-            *guard = None;
+        if let Ok(mut guard) = self.online_urls.lock() {
+            *guard = OnlineUrls::default();
         }
         let _ = self.tray.relay_status.set_text("⚪ 中继：已关闭");
         let _ = self.tray.open_online_wiki.set_enabled(false);
-        let _ = self.tray.copy_share_link.set_enabled(false);
         let _ = self.tray.relay_toggle.set_text("连接中继服务");
     }
 
@@ -385,7 +393,7 @@ fn save_relay_enabled(enabled: bool) {
 
 fn prepare_local_server(
     app: &tauri::AppHandle,
-    online_wiki_url: Arc<Mutex<Option<String>>>,
+    online_urls: Arc<Mutex<OnlineUrls>>,
 ) -> Result<Option<(std::net::TcpListener, ServerConfig)>> {
     let config = CoreConfig::from_env();
     let registry = load_registry(&config).context("load wiki registry")?;
@@ -433,9 +441,15 @@ fn prepare_local_server(
             registry_config: Some(config),
             port,
             control: None,
-            share_url: Some(Arc::new(move || {
-                online_wiki_url.lock().ok().and_then(|guard| guard.clone())
+            owner_online_url: Some(Arc::new({
+                let urls = online_urls.clone();
+                move || urls.lock().ok().and_then(|guard| guard.owner_url.clone())
             })),
+            public_base_url: Some(Arc::new({
+                let urls = online_urls.clone();
+                move || urls.lock().ok().and_then(|guard| guard.public_base.clone())
+            })),
+            grants_path: llm_wiki_core::paths::connector_dir().map(|dir| dir.join("grants.json")),
         },
     )))
 }
@@ -593,7 +607,7 @@ fn write_token_file(path: &std::path::Path, token: &str) -> std::io::Result<()> 
 fn build_tray(
     app: &tauri::AppHandle,
     local_url: String,
-    online_wiki_url: Arc<Mutex<Option<String>>>,
+    online_urls: Arc<Mutex<OnlineUrls>>,
 ) -> Result<TrayState> {
     let relay_status =
         MenuItem::with_id(app, "relay_status", "⚪ 中继：已关闭", false, None::<&str>)?;
@@ -607,15 +621,17 @@ fn build_tray(
     let show_window = MenuItem::with_id(app, "show_window", "设置", true, None::<&str>)?;
     let open_local_wiki =
         MenuItem::with_id(app, "open_local_wiki", "打开本地 WIKI", true, None::<&str>)?;
+    // 本人线上入口（含 master token），只用于打开浏览器，不再提供「复制」入口——
+    // 复制过的东西就会被转发（docs/19 §4.5）。分享改走 web UI 确认面板。
     let open_online_wiki = MenuItem::with_id(
         app,
         "open_online_wiki",
-        "打开线上 WIKI",
+        "打开线上 WIKI（本人）",
         false,
         None::<&str>,
     )?;
-    let copy_share_link =
-        MenuItem::with_id(app, "copy_share_link", "复制分享链接", false, None::<&str>)?;
+    // 分享入口：打开本地 web UI 并深链到分享面板（单一实现，不在原生层重复分享 UI）。
+    let share_wiki = MenuItem::with_id(app, "share_wiki", "分享 Wiki…", true, None::<&str>)?;
     let relay_toggle = MenuItem::with_id(app, "relay_toggle", "连接中继服务", true, None::<&str>)?;
     let check_update = MenuItem::with_id(app, "check_update", "检查更新…", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
@@ -627,7 +643,7 @@ fn build_tray(
             &status,
             &open_local_wiki,
             &open_online_wiki,
-            &copy_share_link,
+            &share_wiki,
             &relay_toggle,
             &show_window,
             &check_update,
@@ -663,18 +679,21 @@ fn build_tray(
                 }
             }
             "open_online_wiki" => {
-                if let Ok(guard) = online_wiki_url.lock()
-                    && let Some(url) = guard.as_ref()
+                if let Ok(guard) = online_urls.lock()
+                    && let Some(url) = guard.owner_url.as_ref()
                 {
                     let _ = open::that(url);
                 }
             }
-            "copy_share_link" => {
-                let url = online_wiki_url.lock().ok().and_then(|guard| guard.clone());
-                if let Some(url) = url {
-                    if let Err(err) = copy_to_clipboard(&url) {
-                        tracing::error!(error = ?err, "failed to copy share link to clipboard");
-                    }
+            // 打开本地 web UI 并深链到分享面板（?share=open）。分享面板自身显示中继状态，
+            // 故此项始终可点，不依赖中继是否已连接。
+            "share_wiki" => {
+                if let Some(state) = app.try_state::<DesktopState>() {
+                    let base = format!("{}?share=open", state.local_url);
+                    let url = local_url_with_token(&base, &auth_token());
+                    #[cfg(target_os = "macos")]
+                    let _ = app.set_activation_policy(ActivationPolicy::Regular);
+                    let _ = open::that(&url);
                 }
             }
             "relay_toggle" => {
@@ -705,17 +724,8 @@ fn build_tray(
     Ok(TrayState {
         relay_status,
         open_online_wiki,
-        copy_share_link,
         relay_toggle,
     })
-}
-
-fn copy_to_clipboard(text: &str) -> Result<()> {
-    let mut clipboard = arboard::Clipboard::new().context("open system clipboard")?;
-    clipboard
-        .set_text(text.to_string())
-        .context("write share link to clipboard")?;
-    Ok(())
 }
 
 fn config_url() -> String {
@@ -724,35 +734,35 @@ fn config_url() -> String {
 
 fn update_tray_relay(
     tray: &TrayState,
-    online_wiki_url: Arc<Mutex<Option<String>>>,
+    online_urls: Arc<Mutex<OnlineUrls>>,
     worker_ws: &str,
     event: ConnectorEvent,
 ) {
     match event {
         ConnectorEvent::Connected { uid } => {
-            let url = online_url(worker_ws, &uid, &auth_token());
-            let enabled = url.is_some();
-            if let Ok(mut guard) = online_wiki_url.lock() {
-                *guard = url;
+            // 两个入口各自独立构造：owner 带 master token，public 无凭证。
+            let owner_url = online_url(worker_ws, &uid, &auth_token());
+            let public_base = online_base(worker_ws, &uid);
+            let enabled = owner_url.is_some();
+            if let Ok(mut guard) = online_urls.lock() {
+                guard.owner_url = owner_url;
+                guard.public_base = public_base;
             }
             let _ = tray
                 .relay_status
                 .set_text(format!("🟢 中继：已连接 ({uid})"));
             let _ = tray.open_online_wiki.set_enabled(enabled);
-            let _ = tray.copy_share_link.set_enabled(enabled);
         }
         ConnectorEvent::Disconnected => {
-            if let Ok(mut guard) = online_wiki_url.lock() {
-                *guard = None;
+            if let Ok(mut guard) = online_urls.lock() {
+                *guard = OnlineUrls::default();
             }
             let _ = tray.relay_status.set_text("🔴 中继：未连接");
             let _ = tray.open_online_wiki.set_enabled(false);
-            let _ = tray.copy_share_link.set_enabled(false);
         }
         ConnectorEvent::Retrying { .. } => {
             let _ = tray.relay_status.set_text("🔴 中继：重连中");
             let _ = tray.open_online_wiki.set_enabled(false);
-            let _ = tray.copy_share_link.set_enabled(false);
         }
         ConnectorEvent::IdentityLoaded { .. } | ConnectorEvent::RequestFinished { .. } => {}
     }
@@ -771,7 +781,9 @@ fn local_url_with_token(local_url: &str, auth_token: &str) -> String {
     }
 }
 
-fn online_url(worker_ws: &str, uid: &str, auth_token: &str) -> Option<String> {
+/// 无凭证的线上基座 `https://<relay>/<uid>/`（ws→http / wss→https，去 query）。
+/// 分享链接的合法基座即由它构造，绝不含 token。
+fn online_base(worker_ws: &str, uid: &str) -> Option<String> {
     let mut url = url::Url::parse(worker_ws).ok()?;
     match url.scheme() {
         "wss" => url.set_scheme("https").ok()?,
@@ -780,9 +792,17 @@ fn online_url(worker_ws: &str, uid: &str, auth_token: &str) -> Option<String> {
     }
     url.set_path(&format!("/{uid}/"));
     url.set_query(None);
-    if !auth_token.is_empty() {
-        url.query_pairs_mut().append_pair("token", auth_token);
+    Some(url.to_string())
+}
+
+/// 本人线上入口 = 无凭证基座 + master token。用 url 解析后 append，不做字符串拼接。
+fn online_url(worker_ws: &str, uid: &str, auth_token: &str) -> Option<String> {
+    let base = online_base(worker_ws, uid)?;
+    if auth_token.is_empty() {
+        return Some(base);
     }
+    let mut url = url::Url::parse(&base).ok()?;
+    url.query_pairs_mut().append_pair("token", auth_token);
     Some(url.to_string())
 }
 

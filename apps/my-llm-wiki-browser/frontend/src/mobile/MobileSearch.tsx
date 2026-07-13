@@ -1,16 +1,17 @@
 import { useEffect, useState } from "react";
-import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useParams, useSearchParams } from "react-router-dom";
 import {
   groupSearchHits,
   search,
   type SearchHit,
   type SearchResponse,
 } from "../api/client";
+import { ShareLink, useShareNavigate } from "../lib/shareNavigation";
 
 // 移动端检索：顶部输入框 + 命中列表；支持 ?q= 全文与 ?tag= 标签浏览。
 export default function MobileSearch() {
   const { wiki } = useParams();
-  const navigate = useNavigate();
+  const navigate = useShareNavigate();
   const [sp] = useSearchParams();
   const q = sp.get("q") || "";
   const tag = sp.get("tag") || undefined;
@@ -111,7 +112,7 @@ function MobileSearchResultItem({
 }) {
   return (
     <li>
-      <Link
+      <ShareLink
         to={`/w/${wiki}/page/${hit.path}`}
         className="block border-b border-[color:var(--rule-soft)] py-4 text-ink transition-colors active:text-cinnabar"
       >
@@ -125,7 +126,7 @@ function MobileSearchResultItem({
           className="font-serif text-sm leading-relaxed text-ink-soft"
           dangerouslySetInnerHTML={{ __html: hit.snippet }}
         />
-      </Link>
+      </ShareLink>
     </li>
   );
 }

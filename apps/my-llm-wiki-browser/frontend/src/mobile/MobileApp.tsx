@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Route, Routes } from "react-router-dom";
 import Login from "../pages/Login";
 import MobileLayout from "./MobileLayout";
 import MobileList from "./MobileList";
@@ -6,6 +6,7 @@ import MobileReader from "./MobileReader";
 import MobileSearch from "./MobileSearch";
 import DefaultBrowseRedirect from "../components/DefaultBrowseRedirect";
 import ReviewQueue from "../pages/ReviewQueue";
+import { ShareNavigate } from "../lib/shareNavigation";
 
 // 移动端路由树：URL 与桌面端保持一致（链接可跨设备共享），仅呈现结构不同。
 export default function MobileApp() {
@@ -22,7 +23,7 @@ export default function MobileApp() {
         <Route path="/w/:wiki/review" element={<ReviewQueue dense />} />
         <Route path="/w/:wiki/search" element={<MobileSearch />} />
       </Route>
-      <Route path="*" element={<Navigate to="/" replace />} />
+      <Route path="*" element={<ShareNavigate to="/" replace />} />
     </Routes>
   );
 }

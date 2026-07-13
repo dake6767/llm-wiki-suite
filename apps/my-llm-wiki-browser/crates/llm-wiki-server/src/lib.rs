@@ -9,8 +9,8 @@ use std::time::Duration;
 use axum::{
     Json, Router,
     body::Body,
-    extract::{Path as AxumPath, Query, State},
-    http::{HeaderValue, Request, StatusCode, header},
+    extract::{FromRequestParts, Path as AxumPath, Query, State},
+    http::{HeaderValue, Request, StatusCode, header, request::Parts},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post, put},
@@ -30,6 +30,9 @@ use tower_http::{
 };
 
 mod mcp;
+pub mod share;
+
+use share::{GrantAuth, GrantStore, Scope, ShareGrant};
 
 pub struct ServerConfig {
     pub frontend_dist: Option<PathBuf>,
@@ -44,8 +47,18 @@ pub struct ServerConfig {
     pub port: u16,
     /// 由宿主（桌面外壳）注入：持久化端口、重启进程。`None` 时这些操作不可用（如纯浏览器/测试场景）。
     pub control: Option<ServerControl>,
-    /// 由宿主注入的当前公网分享入口。`None` 表示宿主不支持，返回空状态。
-    pub share_url: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
+    /// 由宿主注入的**本人线上入口**（含 master token 的 Owner URL）。仅供
+    /// `/api/v1/config/share`（本人 agent 配置场景）使用，**绝不**用于构造分享链接。
+    /// `None` 表示宿主不支持，返回空状态。
+    pub owner_online_url: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
+    /// 由宿主注入的**无凭证公网基座** `https://<relay>/<uid>/`，是构造 Share 链接
+    /// （`share/<grant_id>/#key=<secret>`）的唯一合法基座。禁止从含 master token 的
+    /// URL 做字符串删除。
+    /// `None`（中继未连接/宿主不支持）时分享链接回退本地 URL 并带 warning。
+    pub public_base_url: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
+    /// grants.json 落盘位置（`~/.my-llm-wiki/connector/grants.json`）。`None`（测试/
+    /// 纯浏览器无家目录）时 grant 存储纯内存、不落盘。
+    pub grants_path: Option<PathBuf>,
 }
 
 /// 宿主提供的运行期控制钩子，让 HTTP 层无需依赖 Tauri 即可触发持久化与重启。
@@ -103,7 +116,9 @@ struct AppState {
     auth_token: Arc<String>,
     port: u16,
     control: Option<ServerControl>,
-    share_url: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
+    owner_online_url: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
+    public_base_url: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
+    grants: Arc<GrantStore>,
     /// 设置默认 wiki 需要改写注册表文件；`None`（如测试/无注册表场景）时该操作不可用。
     registry_config: Option<Arc<CoreConfig>>,
     _wiki_watcher: Option<Arc<Mutex<RecommendedWatcher>>>,
@@ -124,13 +139,37 @@ pub fn build_router(config: ServerConfig) -> Router {
         auth_token: Arc::new(config.auth_token),
         port: config.port,
         control: config.control,
-        share_url: config.share_url,
+        owner_online_url: config.owner_online_url,
+        public_base_url: config.public_base_url,
+        grants: Arc::new(GrantStore::load(config.grants_path)),
         registry_config: registry_config.map(Arc::new),
         _wiki_watcher: wiki_watcher,
     };
-    let api = Router::new()
+    // 默认拒绝的路由结构（docs/19 §4.3）。分两个鉴权组：
+    // - `shared`：Share 可达的读白名单。挂 `require_authenticated`（Owner 或有效 Share），
+    //   逐路由由 `ReadableWiki` / `OwnerWiki` extractor 做 principal + 范围判定。
+    // - `owner_only`：其余全部（config、share 管理、mcp、未来新增）。挂 `require_owner`，
+    //   Share 一律 403。新增 API 默认落这里即对 Share 不可达——权限靠结构，不靠自觉。
+    let shared = Router::new()
         .route("/healthz", get(healthz))
+        .route("/session", get(get_session))
         .route("/wikis", get(list_wikis))
+        // 读类内容（Owner 或范围匹配的 Share；越界 404）
+        .route("/wikis/{wiki}/tree", get(wiki_tree))
+        .route("/wikis/{wiki}/pages/{*path}", get(get_page))
+        .route("/wikis/{wiki}/source-preview", get(get_source_preview))
+        .route("/wikis/{wiki}/assets/{*name}", get(get_asset))
+        .route("/wikis/{wiki}/graph", get(get_graph))
+        .route("/wikis/{wiki}/search", get(search))
+        // Owner-only 内容（Share → 404，不暴露存在性）
+        .route("/wikis/{wiki}/raw-tree", get(raw_tree))
+        .route("/wikis/{wiki}/raw/{*path}", get(get_raw))
+        .route("/wikis/{wiki}/review", get(get_review))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_authenticated,
+        ));
+    let owner_only = Router::new()
         .route("/config/wikis", get(list_config_wikis))
         .route("/config/wikis/default", put(put_default_wiki))
         .route(
@@ -139,6 +178,15 @@ pub fn build_router(config: ServerConfig) -> Router {
         )
         .route("/config/share", get(get_share_config))
         .route(
+            "/config/shares",
+            get(list_shares).post(create_share),
+        )
+        .route("/config/shares/{grant_id}/link", post(share_link))
+        .route(
+            "/config/shares/{grant_id}",
+            axum::routing::patch(patch_share).delete(delete_share),
+        )
+        .route(
             "/config/autostart",
             get(get_autostart_config).put(put_autostart_config),
         )
@@ -146,16 +194,10 @@ pub fn build_router(config: ServerConfig) -> Router {
         .route("/config/update/check", post(post_update_check))
         .route("/config/update/install", post(post_update_install))
         .route("/config/restart", post(restart_server))
-        .route("/wikis/{wiki}/tree", get(wiki_tree))
-        .route("/wikis/{wiki}/pages/{*path}", get(get_page))
-        .route("/wikis/{wiki}/raw/{*path}", get(get_raw))
-        .route("/wikis/{wiki}/assets/{*name}", get(get_asset))
-        .route("/wikis/{wiki}/graph", get(get_graph))
-        .route("/wikis/{wiki}/review", get(get_review))
-        .route("/wikis/{wiki}/search", get(search))
-        .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
-    // MCP 端点与 /api/v1 同一套 Bearer 鉴权。注册 /mcp 与 /mcp/ 两个字面路径：
-    // axum 0.8 不做尾斜杠重定向，而接入文档/复制提示词里写的是带斜杠形式。
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_owner));
+    let api = shared.merge(owner_only);
+    // MCP 端点：Owner-only（Share → 403）。grant 双入口（§7.4）后置。注册 /mcp 与
+    // /mcp/ 两个字面路径：axum 0.8 不做尾斜杠重定向，接入文档里写的是带斜杠形式。
     let mcp_routes = Router::new()
         .route(
             "/mcp",
@@ -169,7 +211,7 @@ pub fn build_router(config: ServerConfig) -> Router {
                 .get(mcp::mcp_method_not_allowed)
                 .delete(mcp::mcp_method_not_allowed),
         )
-        .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_owner));
     let mut app = Router::new()
         .nest("/api/v1", api)
         .merge(mcp_routes)
@@ -710,25 +752,176 @@ fn read_manager(state: &AppState) -> Result<RwLockReadGuard<'_, IndexManager>, A
         .map_err(|_| ApiError::internal("索引不可用"))
 }
 
-async fn require_auth(
+/// 两类 principal（docs/19 §0）。经中间件放入请求扩展，供 extractor / handler 取用。
+#[derive(Clone)]
+enum Principal {
+    Owner,
+    Share(ShareGrant),
+}
+
+/// 凭证解析结果。`Unauthorized` 涵盖无凭证、master 不符、share 无效/过期/撤销——
+/// HTTP 层一律 401。
+enum PrincipalOutcome {
+    Owner,
+    Share(ShareGrant),
+    Unauthorized,
+}
+
+/// 凭证解析：**先**与 master token 常数时间比对（`LLM_WIKI_WEB_TOKEN` 可自定义，
+/// 不能假设不以 `s_` 开头、不含 `.`，所以必须整串先比），未命中再按 share_token
+/// 语法 `<grant_id>.<secret>` 拆分、按 grant_id 索引 + secret 常数时间比对。
+fn resolve_principal(state: &AppState, request: &Request<Body>) -> PrincipalOutcome {
+    let expected = state.auth_token.trim();
+    let presented = presented_token(request);
+
+    if !expected.is_empty() {
+        if let Some(p) = presented.as_deref()
+            && share::ct_eq(p.as_bytes(), expected.as_bytes())
+        {
+            return PrincipalOutcome::Owner;
+        }
+    } else if !is_relay_request(request) {
+        // master token 为空：本机直连视为 Owner（保留既有开发/本地行为）。中继请求
+        // 则不给 Owner，落到 share 解析。
+        return PrincipalOutcome::Owner;
+    }
+
+    if let Some(p) = presented.as_deref()
+        && let Some((grant_id, secret)) = share::split_share_token(p)
+    {
+        return match state.grants.resolve(grant_id, secret, share::now_ts()) {
+            GrantAuth::Valid(grant) => PrincipalOutcome::Share(grant),
+            GrantAuth::Expired | GrantAuth::Invalid | GrantAuth::NotFound => {
+                PrincipalOutcome::Unauthorized
+            }
+        };
+    }
+
+    PrincipalOutcome::Unauthorized
+}
+
+/// 鉴权中间件（Share 可达组）：Owner 或有效 Share 放行，principal 入请求扩展；
+/// 其余 401。范围判定推迟到各 handler 的 extractor。
+async fn require_authenticated(
     State(state): State<AppState>,
-    request: Request<Body>,
+    mut request: Request<Body>,
     next: Next,
 ) -> Result<Response, ApiError> {
-    if authorized(&state, &request) {
-        Ok(next.run(request).await)
-    } else {
-        Err(ApiError::unauthorized())
+    match resolve_principal(&state, &request) {
+        PrincipalOutcome::Owner => {
+            request.extensions_mut().insert(Principal::Owner);
+            Ok(next.run(request).await)
+        }
+        PrincipalOutcome::Share(grant) => {
+            request.extensions_mut().insert(Principal::Share(grant));
+            Ok(next.run(request).await)
+        }
+        PrincipalOutcome::Unauthorized => Err(ApiError::unauthorized()),
     }
 }
 
-fn authorized(state: &AppState, request: &Request<Body>) -> bool {
-    let expected = state.auth_token.trim();
-    if expected.is_empty() {
-        return !is_relay_request(request);
+/// 鉴权中间件（Owner-only 组）：仅 Owner 放行；已认证的 Share → 403（认证成功但
+/// 无权）；无凭证 → 401。
+async fn require_owner(
+    State(state): State<AppState>,
+    mut request: Request<Body>,
+    next: Next,
+) -> Result<Response, ApiError> {
+    match resolve_principal(&state, &request) {
+        PrincipalOutcome::Owner => {
+            request.extensions_mut().insert(Principal::Owner);
+            Ok(next.run(request).await)
+        }
+        PrincipalOutcome::Share(_) => Err(ApiError::forbidden()),
+        PrincipalOutcome::Unauthorized => Err(ApiError::unauthorized()),
     }
+}
 
-    presented_token(request).is_some_and(|presented| presented == expected)
+/// 从请求扩展取 principal（中间件已放入；缺失说明路由未挂鉴权层，属编码错误→401）。
+fn principal_from_parts(parts: &Parts) -> Result<Principal, ApiError> {
+    parts
+        .extensions
+        .get::<Principal>()
+        .cloned()
+        .ok_or_else(ApiError::unauthorized)
+}
+
+/// 从路径参数取 `{wiki}`。用 map 反序列化以兼容 `{wiki}` 与 `{wiki}/{*path}` 两种路由。
+async fn wiki_path_param<S: Send + Sync>(
+    parts: &mut Parts,
+    state: &S,
+) -> Result<String, ApiError> {
+    let params =
+        AxumPath::<std::collections::HashMap<String, String>>::from_request_parts(parts, state)
+            .await
+            .map_err(|_| ApiError::not_found("wiki 不存在"))?;
+    params
+        .0
+        .get("wiki")
+        .cloned()
+        .ok_or_else(|| ApiError::not_found("wiki 不存在"))
+}
+
+/// 读类内容的授权守卫：Owner 通过；Share 仅当 `grant.wiki == 路径 wiki` 通过，
+/// 否则 404（不确认存在性）。
+struct ReadableWiki {
+    #[allow(dead_code)]
+    wiki: String,
+}
+
+impl<S> FromRequestParts<S> for ReadableWiki
+where
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let principal = principal_from_parts(parts)?;
+        let wiki = wiki_path_param(parts, state).await?;
+        match principal {
+            Principal::Owner => Ok(ReadableWiki { wiki }),
+            Principal::Share(grant) if grant.wiki == wiki => Ok(ReadableWiki { wiki }),
+            Principal::Share(_) => Err(ApiError::not_found("wiki 不存在")),
+        }
+    }
+}
+
+/// Owner-only 内容的授权守卫（raw / raw-tree / review）：Owner 通过；Share 无条件
+/// 404——RAW/review 结构性不在分享范围内，且不向访客确认其存在。
+struct OwnerWiki {
+    wiki: String,
+}
+
+impl<S> FromRequestParts<S> for OwnerWiki
+where
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let principal = principal_from_parts(parts)?;
+        match principal {
+            Principal::Owner => {
+                let wiki = wiki_path_param(parts, state).await?;
+                Ok(OwnerWiki { wiki })
+            }
+            Principal::Share(_) => Err(ApiError::not_found("wiki 不存在")),
+        }
+    }
+}
+
+/// 直接取当前 principal（用于 `/wikis` 过滤、`/session`）。
+struct CurrentPrincipal(Principal);
+
+impl<S> FromRequestParts<S> for CurrentPrincipal
+where
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        principal_from_parts(parts).map(CurrentPrincipal)
+    }
 }
 
 fn is_relay_request(request: &Request<Body>) -> bool {
@@ -765,11 +958,20 @@ fn query_token(query: Option<&str>) -> Option<String> {
     })
 }
 
-async fn list_wikis(State(state): State<AppState>) -> Result<Json<Vec<WikiInfo>>, ApiError> {
+async fn list_wikis(
+    State(state): State<AppState>,
+    CurrentPrincipal(principal): CurrentPrincipal,
+) -> Result<Json<Vec<WikiInfo>>, ApiError> {
     let manager = read_manager(&state)?;
+    // Share principal 只见到自己被授权的那个库。
+    let allowed: Option<String> = match &principal {
+        Principal::Owner => None,
+        Principal::Share(grant) => Some(grant.wiki.clone()),
+    };
     let mut out = manager
         .wikis
         .values()
+        .filter(|idx| allowed.as_deref().is_none_or(|w| idx.entry.key == w))
         .map(|idx| WikiInfo {
             key: idx.entry.key.clone(),
             name: idx.entry.name.clone(),
@@ -897,11 +1099,200 @@ async fn get_server_config(State(state): State<AppState>) -> Json<ServerConfigIn
 }
 
 async fn get_share_config(State(state): State<AppState>) -> Json<ShareConfigInfo> {
-    let online_url = state.share_url.as_ref().and_then(|provider| provider());
+    // 本人线上入口（含 master token）。仅本端点使用，绝不进入分享链接构造。
+    let online_url = state.owner_online_url.as_ref().and_then(|provider| provider());
     Json(ShareConfigInfo {
         relay_connected: online_url.is_some(),
         online_url,
     })
+}
+
+/// 前端进访客模式的依据：owner 或 guest（附授权的 wiki）。
+async fn get_session(
+    CurrentPrincipal(principal): CurrentPrincipal,
+) -> Json<SessionInfo> {
+    match principal {
+        Principal::Owner => Json(SessionInfo {
+            principal: "owner",
+            wiki: None,
+        }),
+        Principal::Share(grant) => Json(SessionInfo {
+            principal: "guest",
+            wiki: Some(grant.wiki),
+        }),
+    }
+}
+
+// ---- grant 管理 API（Owner-only；路径/列表/日志永不含 secret，secret 只出现在
+// create 与 link 两个 ★ 响应里，且这两个响应带 no-store）----
+
+fn grant_view(grant: &ShareGrant, now: i64) -> ShareGrantView {
+    ShareGrantView {
+        grant_id: grant.grant_id.clone(),
+        label: grant.label.clone(),
+        wiki: grant.wiki.clone(),
+        scope: grant.scope.clone(),
+        include_raw: grant.include_raw,
+        created_at: grant.created_at,
+        expires_at: grant.expires_at,
+        last_accessed: grant.last_accessed,
+        revoked: grant.revoked,
+        active: grant.is_active(now),
+    }
+}
+
+/// 从**无凭证**的 `public_base_url` 拼稳定 Guest namespace：
+/// `share/<grant_id>/#key=<secret>`。grant_id 可安全进入请求路径；secret 只进 fragment，
+/// 页面导航不会把它发给 relay / Cloudflare。中继未连接时回退本地 URL并带 warning。
+fn build_share_link(
+    state: &AppState,
+    grant_id: &str,
+    secret: &str,
+) -> (String, Option<String>) {
+    if let Some(provider) = &state.public_base_url
+        && let Some(base) = provider()
+    {
+        let base = if base.ends_with('/') {
+            base
+        } else {
+            format!("{base}/")
+        };
+        return (format!("{base}share/{grant_id}/#key={secret}"), None);
+    }
+    (
+        format!(
+            "http://127.0.0.1:{}/share/{grant_id}/#key={secret}",
+            state.port
+        ),
+        Some("线上访问未开启，此链接暂时仅本机可用；开启中继后请在管理面板重新复制链接。".to_string()),
+    )
+}
+
+/// 给含 secret 的响应加 no-store（POST 本身不保证不被缓存，真正约束来自 no-store）。
+fn no_store_json<T: Serialize>(value: T) -> Response {
+    let mut response = Json(value).into_response();
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store, private"),
+    );
+    headers.insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
+    response
+}
+
+async fn list_shares(State(state): State<AppState>) -> Json<Vec<ShareGrantView>> {
+    let now = share::now_ts();
+    let mut out = state
+        .grants
+        .list()
+        .iter()
+        .map(|grant| grant_view(grant, now))
+        .collect::<Vec<_>>();
+    out.sort_by_key(|g| std::cmp::Reverse(g.created_at));
+    Json(out)
+}
+
+/// ★ 创建 grant → 返回完整分享链接（含 secret）。响应带 no-store。
+async fn create_share(
+    State(state): State<AppState>,
+    Json(req): Json<CreateShareRequest>,
+) -> Result<Response, ApiError> {
+    let wiki = req.wiki.trim().to_string();
+    if wiki.is_empty() {
+        return Err(ApiError::bad_request("缺少 wiki"));
+    }
+    {
+        let manager = read_manager(&state)?;
+        if manager.get(&wiki).is_none() {
+            return Err(ApiError::not_found("wiki 不存在"));
+        }
+    }
+    let label = {
+        let trimmed = req.label.trim();
+        if trimmed.is_empty() {
+            format!("分享 {wiki}")
+        } else {
+            trimmed.to_string()
+        }
+    };
+    let expires_at = req
+        .expires_in_days
+        .map(|days| share::now_ts() + i64::from(days) * 86_400);
+    let grant = state
+        .grants
+        .create(wiki, label, expires_at)
+        .map_err(|_| ApiError::internal("写入 grants 失败"))?;
+    // 日志只记 grant_id，绝不记 secret / 链接。
+    tracing::info!(grant_id = %grant.grant_id, wiki = %grant.wiki, "created share grant");
+    let (link, warning) = build_share_link(&state, &grant.grant_id, &grant.secret);
+    Ok(no_store_json(ShareLinkResponse {
+        grant_id: grant.grant_id,
+        wiki: grant.wiki,
+        label: grant.label,
+        expires_at: grant.expires_at,
+        link,
+        warning,
+    }))
+}
+
+/// ★ 再次取完整链接（管理界面「复制链接」的后端）。已撤销 → 410。响应带 no-store。
+async fn share_link(
+    State(state): State<AppState>,
+    AxumPath(grant_id): AxumPath<String>,
+) -> Result<Response, ApiError> {
+    let grant = state
+        .grants
+        .get(&grant_id)
+        .ok_or_else(|| ApiError::not_found("分享不存在"))?;
+    if grant.revoked || grant.secret.is_empty() {
+        return Err(ApiError::gone());
+    }
+    let (link, warning) = build_share_link(&state, &grant.grant_id, &grant.secret);
+    Ok(no_store_json(ShareLinkResponse {
+        grant_id: grant.grant_id,
+        wiki: grant.wiki,
+        label: grant.label,
+        expires_at: grant.expires_at,
+        link,
+        warning,
+    }))
+}
+
+/// 续期/改期。`expires_in_days = null` 表示改为永久。
+async fn patch_share(
+    State(state): State<AppState>,
+    AxumPath(grant_id): AxumPath<String>,
+    Json(req): Json<PatchShareRequest>,
+) -> Result<Json<ShareGrantView>, ApiError> {
+    let expires_at = req
+        .expires_in_days
+        .map(|days| share::now_ts() + i64::from(days) * 86_400);
+    let updated = state
+        .grants
+        .renew(&grant_id, expires_at)
+        .map_err(|_| ApiError::internal("写入 grants 失败"))?;
+    match updated {
+        Some(grant) => Ok(Json(grant_view(&grant, share::now_ts()))),
+        None => Err(ApiError::not_found("分享不存在")),
+    }
+}
+
+/// 撤销：置 revoked + 清空 secret。返回更新后的元数据（不含 secret）。
+async fn delete_share(
+    State(state): State<AppState>,
+    AxumPath(grant_id): AxumPath<String>,
+) -> Result<Json<ShareGrantView>, ApiError> {
+    let revoked = state
+        .grants
+        .revoke(&grant_id)
+        .map_err(|_| ApiError::internal("写入 grants 失败"))?;
+    match revoked {
+        Some(grant) => {
+            tracing::info!(grant_id = %grant.grant_id, "revoked share grant");
+            Ok(Json(grant_view(&grant, share::now_ts())))
+        }
+        None => Err(ApiError::not_found("分享不存在")),
+    }
 }
 
 /// 持久化新的本地服务端口。仅写入配置，不影响当前进程——需重启生效。
@@ -1019,7 +1410,7 @@ async fn restart_server(State(state): State<AppState>) -> Result<Json<RestartRes
 
 async fn wiki_tree(
     State(state): State<AppState>,
-    AxumPath(wiki): AxumPath<String>,
+    ReadableWiki { wiki }: ReadableWiki,
 ) -> Result<Json<Vec<TreeNode>>, ApiError> {
     let manager = read_manager(&state)?;
     let idx = manager
@@ -1050,8 +1441,36 @@ async fn wiki_tree(
     Ok(Json(nodes))
 }
 
+/// RAW 是一层内容集合，而不是把 `sources/x/`、`sources/wechat/` 等磁盘目录
+/// 原样暴露为导航层级。这里递归收集所有 Markdown，返回一个扁平的 RAW 节点。
+async fn raw_tree(
+    State(state): State<AppState>,
+    OwnerWiki { wiki }: OwnerWiki,
+) -> Result<Json<TreeNode>, ApiError> {
+    let manager = read_manager(&state)?;
+    let idx = manager
+        .get(&wiki)
+        .ok_or(ApiError::not_found("wiki 不存在"))?;
+    let raw_root = &idx.entry.raw_dir;
+    let mut files = Vec::new();
+    collect_raw_markdown(raw_root, &mut files)
+        .map_err(|_| ApiError::internal("读取 RAW 索引失败"))?;
+
+    let mut pages = files
+        .into_iter()
+        .filter_map(|path| raw_page_ref(raw_root, &path))
+        .collect::<Vec<_>>();
+    pages.sort_by(|a, b| a.title.cmp(&b.title));
+    Ok(Json(TreeNode {
+        page_type: "raw".to_string(),
+        count: pages.len(),
+        pages,
+    }))
+}
+
 async fn get_page(
     State(state): State<AppState>,
+    _authz: ReadableWiki,
     AxumPath((wiki, path)): AxumPath<(String, String)>,
 ) -> Result<Json<Page>, ApiError> {
     let manager = read_manager(&state)?;
@@ -1091,17 +1510,71 @@ async fn get_page(
     }))
 }
 
-/// 读取 `raw/` 下的原始源（含图片重写），用于「溯源」查看。
+/// Share 可达的受限来源预览：只有 `source` 确实出现在可读编译页 `page` 的
+/// frontmatter.sources 中才返回。它不提供 RAW 目录，也不能替代 Owner-only `/raw/*`。
+async fn get_source_preview(
+    State(state): State<AppState>,
+    _authz: ReadableWiki,
+    AxumPath(wiki): AxumPath<String>,
+    Query(query): Query<SourcePreviewQuery>,
+) -> Result<Json<Page>, ApiError> {
+    let manager = read_manager(&state)?;
+    let idx = manager
+        .get(&wiki)
+        .ok_or(ApiError::not_found("wiki 不存在"))?;
+    let page_path = parser::normalize_page_path(&query.page);
+    let page = idx
+        .pages
+        .get(&page_path)
+        .ok_or(ApiError::not_found("页面不存在"))?;
+    let requested = canonical_raw_source(&query.source)
+        .ok_or(ApiError::not_found("来源不存在"))?;
+    let referenced = page
+        .sources
+        .iter()
+        .filter_map(|source| canonical_raw_source(source))
+        .any(|source| source == requested);
+    if !referenced {
+        return Err(ApiError::not_found("来源不存在"));
+    }
+    Ok(Json(load_raw_page(idx, &wiki, &requested)?))
+}
+
+/// 与前端来源入口一致地规范化 RAW 引用，用于做授权比较。返回值不等于放行：最终磁盘
+/// 读取仍必须经过 `safe_join`，所以 `..` / 绝对路径无法越界。
+fn canonical_raw_source(source: &str) -> Option<String> {
+    let source = source.trim().trim_matches('/');
+    let source = source.strip_prefix("raw/").unwrap_or(source);
+    let source = source
+        .strip_suffix(".md")
+        .or_else(|| source.strip_suffix(".MD"))
+        .unwrap_or(source);
+    if source.is_empty() {
+        return None;
+    }
+    Some(if source.starts_with("sources/") || source.starts_with("assets/") {
+        source.to_string()
+    } else {
+        format!("sources/{source}")
+    })
+}
+
+/// 读取 `raw/` 下的原始源（含图片重写），用于 Owner 的完整「溯源」查看。
 async fn get_raw(
     State(state): State<AppState>,
+    _authz: OwnerWiki,
     AxumPath((wiki, path)): AxumPath<(String, String)>,
 ) -> Result<Json<Page>, ApiError> {
     let manager = read_manager(&state)?;
     let idx = manager
         .get(&wiki)
         .ok_or(ApiError::not_found("wiki 不存在"))?;
+    Ok(Json(load_raw_page(idx, &wiki, &path)?))
+}
+
+fn load_raw_page(idx: &WikiIndex, wiki: &str, path: &str) -> Result<Page, ApiError> {
     let raw_root = &idx.entry.raw_dir;
-    let rel = path.strip_prefix("raw/").unwrap_or(&path);
+    let rel = path.strip_prefix("raw/").unwrap_or(path);
 
     let mut target = safe_join(raw_root, rel).ok_or(ApiError::bad_request("非法路径"))?;
     if !target.is_file() && !rel.ends_with(".md") {
@@ -1114,7 +1587,7 @@ async fn get_raw(
     }
 
     let parsed = parser::parse_file(&target).map_err(|_| ApiError::internal("读取原始源失败"))?;
-    let body = parser::rewrite_body(&parsed.body, &wiki, |target| {
+    let body = parser::rewrite_body(&parsed.body, wiki, |target| {
         idx.resolve(target).map(ToString::to_string)
     });
     let rel_posix = target
@@ -1156,8 +1629,8 @@ async fn get_raw(
         })
         .unwrap_or_default();
 
-    Ok(Json(Page {
-        wiki,
+    Ok(Page {
+        wiki: wiki.to_string(),
         path: format!("raw/{rel_posix}"),
         slug: stem,
         title,
@@ -1168,11 +1641,12 @@ async fn get_raw(
         backlinks: Vec::new(),
         sources: Vec::new(),
         tags,
-    }))
+    })
 }
 
 async fn get_asset(
     State(state): State<AppState>,
+    _authz: ReadableWiki,
     AxumPath((wiki, name)): AxumPath<(String, String)>,
 ) -> Result<Response, ApiError> {
     let assets_dir = {
@@ -1204,7 +1678,7 @@ async fn get_asset(
 
 async fn get_graph(
     State(state): State<AppState>,
-    AxumPath(wiki): AxumPath<String>,
+    ReadableWiki { wiki }: ReadableWiki,
     Query(query): Query<GraphQuery>,
 ) -> Result<Json<GraphResponse>, ApiError> {
     let manager = read_manager(&state)?;
@@ -1260,7 +1734,7 @@ async fn get_graph(
 /// 可复制给 agent 的提示词。文件缺失时返回空队列。
 async fn get_review(
     State(state): State<AppState>,
-    AxumPath(wiki): AxumPath<String>,
+    OwnerWiki { wiki }: OwnerWiki,
 ) -> Result<Json<ReviewResponse>, ApiError> {
     let root_dir = {
         let manager = read_manager(&state)?;
@@ -1344,7 +1818,7 @@ fn image_content_type(ext: &str) -> &'static str {
 
 async fn search(
     State(state): State<AppState>,
-    AxumPath(wiki): AxumPath<String>,
+    ReadableWiki { wiki }: ReadableWiki,
     Query(query): Query<SearchQuery>,
 ) -> Result<Json<SearchResponse>, ApiError> {
     let q = query.q.trim();
@@ -1465,6 +1939,88 @@ fn page_ref(rec: &PageRecord) -> PageRef {
     }
 }
 
+fn collect_raw_markdown(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let path = entry.path();
+        if file_type.is_dir() {
+            collect_raw_markdown(&path, out)?;
+        } else if file_type.is_file()
+            && path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+        {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn raw_page_ref(raw_root: &Path, path: &Path) -> Option<PageRef> {
+    let rel = path.strip_prefix(raw_root).ok()?;
+    let rel_posix = rel
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/");
+    let path_without_ext = rel_posix
+        .strip_suffix(".md")
+        .unwrap_or(&rel_posix)
+        .to_string();
+    let slug = path.file_stem()?.to_string_lossy().into_owned();
+    let parsed = parser::parse_file(path).ok();
+    let frontmatter = parsed.as_ref().map(|parsed| &parsed.frontmatter);
+    let string_value = |key: &str| {
+        frontmatter
+            .and_then(|fm| fm.get(key))
+            .and_then(|value| value.as_str())
+            .map(ToString::to_string)
+    };
+    let title = string_value("title").unwrap_or_else(|| slug.clone());
+    let page_type = string_value("source_type").unwrap_or_else(|| {
+        rel.parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .unwrap_or("source")
+            .to_string()
+    });
+    let tags = frontmatter
+        .and_then(|fm| fm.get("tags"))
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(ToString::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mtime = path
+        .metadata()
+        .ok()
+        .and_then(|meta| meta.modified().ok())
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs_f64());
+
+    Some(PageRef {
+        path: path_without_ext,
+        slug,
+        title,
+        page_type,
+        tags,
+        updated: string_value("updated"),
+        created: string_value("created").or_else(|| string_value("captured_at")),
+        mtime,
+    })
+}
+
 fn type_order(page_type: &str) -> (usize, &str) {
     const ORDER: &[&str] = &[
         "entities",
@@ -1577,6 +2133,58 @@ struct ShareConfigInfo {
     online_url: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+struct SessionInfo {
+    principal: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wiki: Option<String>,
+}
+
+/// grant 列表/管理响应项——**永不含 secret**。
+#[derive(Debug, Serialize)]
+struct ShareGrantView {
+    grant_id: String,
+    label: String,
+    wiki: String,
+    scope: Scope,
+    include_raw: bool,
+    created_at: i64,
+    expires_at: Option<i64>,
+    last_accessed: Option<i64>,
+    revoked: bool,
+    active: bool,
+}
+
+/// 创建 / 取链接响应——含完整分享链接（内嵌 secret）。仅这两处 + grants.json 落盘
+/// 允许出现 secret，且响应带 no-store。
+#[derive(Debug, Serialize)]
+struct ShareLinkResponse {
+    grant_id: String,
+    wiki: String,
+    label: String,
+    expires_at: Option<i64>,
+    link: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    warning: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateShareRequest {
+    wiki: String,
+    #[serde(default)]
+    label: String,
+    /// `Some(n)` = n 天后过期；`None`/缺省 = 永久（高级选项）。默认 30 天由前端下发。
+    #[serde(default)]
+    expires_in_days: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PatchShareRequest {
+    /// `Some(n)` = 自现在起 n 天；`None` = 改为永久。
+    #[serde(default)]
+    expires_in_days: Option<u32>,
+}
+
 #[derive(Debug, Deserialize)]
 struct ServerConfigUpdate {
     port: u16,
@@ -1652,6 +2260,12 @@ struct SearchQuery {
     limit: Option<usize>,
 }
 
+#[derive(Debug, Deserialize)]
+struct SourcePreviewQuery {
+    page: String,
+    source: String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct SearchHit {
     path: String,
@@ -1720,6 +2334,20 @@ impl ApiError {
         Self {
             status: StatusCode::UNAUTHORIZED,
             message: "令牌无效或缺失。",
+        }
+    }
+
+    fn forbidden() -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            message: "无权访问该资源。",
+        }
+    }
+
+    fn gone() -> Self {
+        Self {
+            status: StatusCode::GONE,
+            message: "该分享已撤销。",
         }
     }
 }
@@ -1793,7 +2421,9 @@ mod tests {
             registry_config: None,
             port: 8800,
             control: None,
-            share_url: None,
+            owner_online_url: None,
+            public_base_url: None,
+            grants_path: None,
         });
 
         let wikis: Vec<WikiInfo> = get_json(&app, "/api/v1/wikis").await;
@@ -1841,10 +2471,19 @@ mod tests {
         let assets_dir = raw_dir.join("assets");
         fs::create_dir_all(&wiki_dir).unwrap();
         fs::create_dir_all(raw_dir.join("sources").join("video")).unwrap();
+        fs::create_dir_all(raw_dir.join("sources").join("wechat")).unwrap();
         fs::create_dir_all(&assets_dir).unwrap();
         fs::write(
             raw_dir.join("sources").join("video").join("launch.md"),
             "---\ntitle: 衛星上網簡史\nsource_type: video\nsource_url: https://example.com/v\ntags: [space, video]\n---\n正文 ![cover](../../assets/pic.png)",
+        )
+        .unwrap();
+        fs::write(
+            raw_dir
+                .join("sources")
+                .join("wechat")
+                .join("agent-memory.md"),
+            "---\ntitle: Agent Memory\nsource_type: wechat\ncaptured_at: 2026-07-12\n---\n正文",
         )
         .unwrap();
         fs::write(assets_dir.join("pic.png"), b"\x89PNG\r\n\x1a\n").unwrap();
@@ -1869,8 +2508,28 @@ mod tests {
             registry_config: None,
             port: 8800,
             control: None,
-            share_url: None,
+            owner_online_url: None,
+            public_base_url: None,
+            grants_path: None,
         });
+
+        let raw_tree: TreeNode = get_json(&app, "/api/v1/wikis/demo/raw-tree").await;
+        assert_eq!(raw_tree.page_type, "raw");
+        assert_eq!(raw_tree.count, 2);
+        let video = raw_tree
+            .pages
+            .iter()
+            .find(|page| page.path == "sources/video/launch")
+            .unwrap();
+        assert_eq!(video.title, "衛星上網簡史");
+        assert_eq!(video.page_type, "video");
+        let wechat = raw_tree
+            .pages
+            .iter()
+            .find(|page| page.path == "sources/wechat/agent-memory")
+            .unwrap();
+        assert_eq!(wechat.page_type, "wechat");
+        assert_eq!(wechat.created.as_deref(), Some("2026-07-12"));
 
         // 无扩展名（wikilink 风格）也能解析到 .md
         let raw: Page = get_json(&app, "/api/v1/wikis/demo/raw/sources/video/launch").await;
@@ -1956,7 +2615,9 @@ mod tests {
             registry_config: None,
             port: 8800,
             control: None,
-            share_url: None,
+            owner_online_url: None,
+            public_base_url: None,
+            grants_path: None,
         });
         (tmp, app)
     }
@@ -2238,7 +2899,9 @@ mod tests {
             registry_config: None,
             port: 8800,
             control: None,
-            share_url: None,
+            owner_online_url: None,
+            public_base_url: None,
+            grants_path: None,
         });
 
         let review: ReviewResponse = get_json(&app, "/api/v1/wikis/demo/review").await;
@@ -2284,7 +2947,9 @@ mod tests {
             registry_config: None,
             port: 8800,
             control: None,
-            share_url: None,
+            owner_online_url: None,
+            public_base_url: None,
+            grants_path: None,
         });
         let review: ReviewResponse = get_json(&app, "/api/v1/wikis/demo/review").await;
         assert_eq!(review.count, 2);
@@ -2317,7 +2982,9 @@ mod tests {
             registry_config: None,
             port: 8800,
             control: None,
-            share_url: None,
+            owner_online_url: None,
+            public_base_url: None,
+            grants_path: None,
         });
         let review: ReviewResponse = get_json(&app, "/api/v1/wikis/demo/review").await;
         assert_eq!(review.count, 0);
@@ -2493,22 +3160,29 @@ mod tests {
             registry_config: None,
             port: 8800,
             control: None,
-            share_url: None,
+            owner_online_url: None,
+            public_base_url: None,
+            grants_path: None,
         });
 
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/w/llm-wiki/browse/queries")
-                    .body(Body::empty())
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        assert!(std::str::from_utf8(&body).unwrap().contains("shell"));
+        for uri in [
+            "/w/llm-wiki/browse/queries",
+            "/share/s_public/w/llm-wiki/page/entities/codex",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(uri)
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+            assert_eq!(response.status(), StatusCode::OK, "{uri}");
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            assert!(std::str::from_utf8(&body).unwrap().contains("shell"));
+        }
     }
 
     #[tokio::test]
@@ -2547,7 +3221,9 @@ mod tests {
             registry_config: Some(config),
             port: 8800,
             control: None,
-            share_url: None,
+            owner_online_url: None,
+            public_base_url: None,
+            grants_path: None,
         });
 
         let response = app
@@ -2626,7 +3302,9 @@ mod tests {
             registry_config: None,
             port: 8800,
             control: Some(control),
-            share_url: None,
+            owner_online_url: None,
+            public_base_url: None,
+            grants_path: None,
         });
 
         let info: ServerConfigInfo = get_json(&app, "/api/v1/config/server").await;
@@ -2691,7 +3369,9 @@ mod tests {
             registry_config: None,
             port: 8800,
             control: Some(control),
-            share_url: None,
+            owner_online_url: None,
+            public_base_url: None,
+            grants_path: None,
         });
 
         let info: AutostartConfigInfo = get_json(&app, "/api/v1/config/autostart").await;
@@ -2762,7 +3442,9 @@ mod tests {
             registry_config: None,
             port: 8800,
             control: Some(control),
-            share_url: None,
+            owner_online_url: None,
+            public_base_url: None,
+            grants_path: None,
         });
 
         let info: serde_json::Value = get_json(&app, "/api/v1/config/update").await;
@@ -2803,7 +3485,9 @@ mod tests {
             registry_config: None,
             port: 8800,
             control: None,
-            share_url: None,
+            owner_online_url: None,
+            public_base_url: None,
+            grants_path: None,
         });
 
         let info: serde_json::Value = get_json(&app, "/api/v1/config/update").await;
@@ -2835,7 +3519,9 @@ mod tests {
             registry_config: None,
             port: 8800,
             control: None,
-            share_url: None,
+            owner_online_url: None,
+            public_base_url: None,
+            grants_path: None,
         });
 
         let info: AutostartConfigInfo = get_json(&app, "/api/v1/config/autostart").await;
@@ -2871,9 +3557,11 @@ mod tests {
             registry_config: None,
             port: 8800,
             control: None,
-            share_url: Some(Arc::new(move || {
+            owner_online_url: Some(Arc::new(move || {
                 provider_url.lock().ok().and_then(|guard| guard.clone())
             })),
+            public_base_url: None,
+            grants_path: None,
         });
 
         let share: ShareConfigInfo = get_json(&app, "/api/v1/config/share").await;
@@ -2938,8 +3626,279 @@ mod tests {
             registry_config: None,
             port: 8800,
             control: None,
-            share_url: None,
+            owner_online_url: None,
+            public_base_url: None,
+            grants_path: None,
         })
+    }
+
+    /// 两个 wiki + 落盘的 grants + master token=secret，用于走查分享鉴权矩阵。
+    fn two_wiki_app(grants_path: PathBuf) -> (tempfile::TempDir, Router) {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut entries = Vec::new();
+        for key in ["demo", "other"] {
+            let root = tmp.path().join(key);
+            let wiki_dir = root.join("wiki");
+            let raw_dir = root.join("raw");
+            fs::create_dir_all(&wiki_dir).unwrap();
+            fs::create_dir_all(raw_dir.join("sources")).unwrap();
+            let frontmatter = if key == "demo" {
+                format!(
+                    "---\ntitle: {key}\nsources: [sources/referenced.md]\n---\nhello {key}"
+                )
+            } else {
+                format!("---\ntitle: {key}\n---\nhello {key}")
+            };
+            fs::write(
+                wiki_dir.join("index.md"),
+                frontmatter,
+            )
+            .unwrap();
+            if key == "demo" {
+                fs::write(
+                    raw_dir.join("sources/referenced.md"),
+                    "---\ntitle: Referenced Source\n---\nallowed preview",
+                )
+                .unwrap();
+                fs::write(
+                    raw_dir.join("sources/hidden.md"),
+                    "---\ntitle: Hidden Source\n---\nnot referenced",
+                )
+                .unwrap();
+            }
+            entries.push(WikiEntry {
+                key: key.to_string(),
+                name: key.to_string(),
+                description: None,
+                root_dir: root.clone(),
+                wiki_dir,
+                raw_dir: raw_dir.clone(),
+                assets_dir: raw_dir.join("assets"),
+                default: key == "demo",
+            });
+        }
+        let manager = IndexManager::build(entries).unwrap();
+        let searcher = FullTextSearcher::in_memory().unwrap();
+        for idx in manager.wikis.values() {
+            searcher
+                .reindex_wiki(&idx.entry.key, &idx.search_docs())
+                .unwrap();
+        }
+        let app = build_router(ServerConfig {
+            frontend_dist: None,
+            index_manager: manager,
+            searcher,
+            auth_token: "secret".to_string(),
+            watch_wikis: false,
+            registry_config: None,
+            port: 8800,
+            control: None,
+            owner_online_url: None,
+            public_base_url: None,
+            grants_path: Some(grants_path),
+        });
+        (tmp, app)
+    }
+
+    async fn send_json(
+        app: &Router,
+        method: &str,
+        uri: &str,
+        token: Option<&str>,
+        body: Option<serde_json::Value>,
+    ) -> Response {
+        let mut builder = Request::builder().method(method).uri(uri);
+        if let Some(token) = token {
+            builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        let body = match body {
+            Some(value) => {
+                builder = builder.header(header::CONTENT_TYPE, "application/json");
+                Body::from(value.to_string())
+            }
+            None => Body::empty(),
+        };
+        app.clone()
+            .oneshot(builder.body(body).expect("request"))
+            .await
+            .expect("response")
+    }
+
+    async fn body_json(response: Response) -> serde_json::Value {
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn share_grant_enforces_scope_and_revocation() {
+        let dir = tempfile::tempdir().unwrap();
+        let grants_path = dir.path().join("connector").join("grants.json");
+        let (_tmp, app) = two_wiki_app(grants_path.clone());
+
+        // Owner 创建 demo 的分享，响应带 no-store，路径只含公开 grant_id，secret 只在 fragment。
+        let create = send_json(
+            &app,
+            "POST",
+            "/api/v1/config/shares",
+            Some("secret"),
+            Some(serde_json::json!({"wiki": "demo", "label": "给小王", "expires_in_days": 30})),
+        )
+        .await;
+        assert_eq!(create.status(), StatusCode::OK);
+        assert_eq!(
+            create
+                .headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok()),
+            Some("no-store, private")
+        );
+        let payload = body_json(create).await;
+        let link = payload["link"].as_str().unwrap().to_string();
+        let grant_id = payload["grant_id"].as_str().unwrap().to_string();
+        let (share_path, secret) = link.split_once("#key=").unwrap();
+        assert!(share_path.ends_with(&format!("/share/{grant_id}/")));
+        assert!(!share_path.contains(secret));
+        let token = format!("{grant_id}.{secret}");
+        // grants.json 落盘且含明文 secret
+        assert!(grants_path.is_file());
+
+        // Share：/wikis 只见 demo
+        let wikis: Vec<WikiInfo> = {
+            let resp = send_json(&app, "GET", "/api/v1/wikis", Some(&token), None).await;
+            assert_eq!(resp.status(), StatusCode::OK);
+            serde_json::from_value(body_json(resp).await).unwrap()
+        };
+        assert_eq!(wikis.len(), 1);
+        assert_eq!(wikis[0].key, "demo");
+
+        // Share：授权库可读；越库 / raw / review → 404；config / mcp → 403
+        let ok = |uri: &'static str| {
+            let app = app.clone();
+            let token = token.clone();
+            async move { send_json(&app, "GET", uri, Some(&token), None).await.status() }
+        };
+        assert_eq!(ok("/api/v1/wikis/demo/tree").await, StatusCode::OK);
+        assert_eq!(ok("/api/v1/wikis/demo/pages/index").await, StatusCode::OK);
+        assert_eq!(
+            ok("/api/v1/wikis/demo/source-preview?page=index&source=sources%2Freferenced").await,
+            StatusCode::OK
+        );
+        // 只放行该页声明的来源；其他 RAW、RAW 直链与 RAW 目录仍不可见。
+        assert_eq!(
+            ok("/api/v1/wikis/demo/source-preview?page=index&source=sources%2Fhidden").await,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            ok("/api/v1/wikis/demo/raw/sources/referenced").await,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(ok("/api/v1/wikis/other/tree").await, StatusCode::NOT_FOUND);
+        assert_eq!(ok("/api/v1/wikis/other/pages/index").await, StatusCode::NOT_FOUND);
+        assert_eq!(ok("/api/v1/wikis/demo/raw-tree").await, StatusCode::NOT_FOUND);
+        assert_eq!(ok("/api/v1/wikis/demo/review").await, StatusCode::NOT_FOUND);
+        assert_eq!(ok("/api/v1/config/shares").await, StatusCode::FORBIDDEN);
+        assert_eq!(ok("/api/v1/config/share").await, StatusCode::FORBIDDEN);
+        let mcp = send_json(
+            &app,
+            "POST",
+            "/mcp",
+            Some(&token),
+            Some(serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/list"})),
+        )
+        .await;
+        assert_eq!(mcp.status(), StatusCode::FORBIDDEN);
+
+        // session 端点区分 principal
+        let guest = body_json(send_json(&app, "GET", "/api/v1/session", Some(&token), None).await).await;
+        assert_eq!(guest["principal"], "guest");
+        assert_eq!(guest["wiki"], "demo");
+        let owner = body_json(send_json(&app, "GET", "/api/v1/session", Some("secret"), None).await).await;
+        assert_eq!(owner["principal"], "owner");
+
+        // Owner 管理列表公开权限范围但不公开 secret，供设置页直接展示与治理。
+        let listed =
+            body_json(send_json(&app, "GET", "/api/v1/config/shares", Some("secret"), None).await)
+                .await;
+        assert_eq!(listed[0]["scope"]["kind"], "whole_wiki");
+        assert_eq!(listed[0]["include_raw"], false);
+        assert!(listed[0].get("secret").is_none());
+
+        // 撤销后 share 全部 401；link 端点 410；master token 不受影响
+        let del = send_json(
+            &app,
+            "DELETE",
+            &format!("/api/v1/config/shares/{grant_id}"),
+            Some("secret"),
+            None,
+        )
+        .await;
+        assert_eq!(del.status(), StatusCode::OK);
+        assert_eq!(ok("/api/v1/wikis/demo/tree").await, StatusCode::UNAUTHORIZED);
+        let link_after = send_json(
+            &app,
+            "POST",
+            &format!("/api/v1/config/shares/{grant_id}/link"),
+            Some("secret"),
+            None,
+        )
+        .await;
+        assert_eq!(link_after.status(), StatusCode::GONE);
+        assert_eq!(
+            send_json(&app, "GET", "/api/v1/wikis/demo/tree", Some("secret"), None)
+                .await
+                .status(),
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn master_token_with_share_like_shape_still_owner() {
+        // master token 自定义为 s_ 开头且含 `.`：解析必须 master 优先，仍判 Owner。
+        let dir = tempfile::tempdir().unwrap();
+        let (_tmp, app) = {
+            let grants_path = dir.path().join("grants.json");
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path().join("demo");
+            let wiki_dir = root.join("wiki");
+            fs::create_dir_all(&wiki_dir).unwrap();
+            fs::write(wiki_dir.join("index.md"), "---\ntitle: demo\n---\nhi").unwrap();
+            let manager = IndexManager::build([WikiEntry {
+                key: "demo".to_string(),
+                name: "demo".to_string(),
+                description: None,
+                root_dir: root.clone(),
+                wiki_dir,
+                raw_dir: root.join("raw"),
+                assets_dir: root.join("raw").join("assets"),
+                default: true,
+            }])
+            .unwrap();
+            let app = build_router(ServerConfig {
+                frontend_dist: None,
+                index_manager: manager,
+                searcher: FullTextSearcher::in_memory().unwrap(),
+                auth_token: "s_custom.master".to_string(),
+                watch_wikis: false,
+                registry_config: None,
+                port: 8800,
+                control: None,
+                owner_online_url: None,
+                public_base_url: None,
+                grants_path: Some(grants_path),
+            });
+            (tmp, app)
+        };
+        // 用作 Owner：能读 raw-tree（Owner-only 内容）
+        assert_eq!(
+            status_with_auth(&app, "/api/v1/wikis/demo/raw-tree", "Bearer s_custom.master").await,
+            StatusCode::OK
+        );
+        // 会话判定为 owner
+        let session = body_json(
+            send_json(&app, "GET", "/api/v1/session", Some("s_custom.master"), None).await,
+        )
+        .await;
+        assert_eq!(session["principal"], "owner");
     }
 
     async fn status(app: &Router, uri: &str) -> StatusCode {
