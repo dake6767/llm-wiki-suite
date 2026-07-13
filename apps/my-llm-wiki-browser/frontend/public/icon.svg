@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2048 2048">
-  <!-- 藏 · LLM-Wiki 图标（单色自适应版）。
+  <!-- My LLM Wiki 图标（单色自适应版）。
        整个图形只有 currentColor 一种颜色，白色部分是真镂空（透明）：
        - 作为 favicon/独立文件时，下方 <style> 按系统深浅色自动取墨色/纸色；
        - 内联进页面或经 CSS 设置 color 时，跟随任意主题色。 -->

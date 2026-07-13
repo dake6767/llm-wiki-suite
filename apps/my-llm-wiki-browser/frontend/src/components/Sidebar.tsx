@@ -21,6 +21,7 @@ import McpConnectModal from "./McpConnectModal";
 import SharePanel from "./SharePanel";
 import ResizeHandle from "./ResizeHandle";
 import { ShareLink, useShareNavigate } from "../lib/shareNavigation";
+import { BrandLogo } from "./BrandLogo";
 
 export default function Sidebar({
   wikis,
@@ -114,10 +115,10 @@ export default function Sidebar({
         className="flex items-center gap-3 px-5 pb-5 pt-6"
         style={{ borderBottom: "1px solid var(--rule-cream)" }}
       >
-        <span className="seal h-10 w-10 text-2xl leading-none">藏</span>
+        <BrandLogo className="h-10 w-10" />
         <span className="leading-tight">
           <span className="block font-display text-lg font-semibold tracking-wide text-paper">
-            LLM&nbsp;Wiki
+            MY&nbsp;LLM&nbsp;Wiki
           </span>
           <span className="eyebrow block text-cream-soft">The&nbsp;Collection</span>
         </span>

@@ -630,8 +630,6 @@ fn build_tray(
         false,
         None::<&str>,
     )?;
-    // 分享入口：打开本地 web UI 并深链到分享面板（单一实现，不在原生层重复分享 UI）。
-    let share_wiki = MenuItem::with_id(app, "share_wiki", "分享 Wiki…", true, None::<&str>)?;
     let relay_toggle = MenuItem::with_id(app, "relay_toggle", "连接中继服务", true, None::<&str>)?;
     let check_update = MenuItem::with_id(app, "check_update", "检查更新…", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
@@ -643,7 +641,6 @@ fn build_tray(
             &status,
             &open_local_wiki,
             &open_online_wiki,
-            &share_wiki,
             &relay_toggle,
             &show_window,
             &check_update,
@@ -683,17 +680,6 @@ fn build_tray(
                     && let Some(url) = guard.owner_url.as_ref()
                 {
                     let _ = open::that(url);
-                }
-            }
-            // 打开本地 web UI 并深链到分享面板（?share=open）。分享面板自身显示中继状态，
-            // 故此项始终可点，不依赖中继是否已连接。
-            "share_wiki" => {
-                if let Some(state) = app.try_state::<DesktopState>() {
-                    let base = format!("{}?share=open", state.local_url);
-                    let url = local_url_with_token(&base, &auth_token());
-                    #[cfg(target_os = "macos")]
-                    let _ = app.set_activation_policy(ActivationPolicy::Regular);
-                    let _ = open::that(&url);
                 }
             }
             "relay_toggle" => {
