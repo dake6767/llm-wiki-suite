@@ -31,6 +31,9 @@ use tower_http::{
 
 mod mcp;
 pub mod share;
+pub mod skill_version;
+
+pub use skill_version::{SkillVersionConfig, SkillVersionInfo, SkillVersionManager};
 
 use share::{GrantAuth, GrantStore, Scope, ShareGrant};
 
@@ -70,6 +73,8 @@ pub struct ServerControl {
     pub autostart: Option<AutostartControl>,
     /// 应用更新控制；宿主不支持（如纯浏览器场景）时为 `None`。
     pub update: Option<UpdateControl>,
+    /// 技能版本探测器（doc 21）；只读、无 mutating 端点。宿主不支持时为 `None`（前端隐藏面板）。
+    pub skill_version: Option<Arc<SkillVersionManager>>,
 }
 
 /// 开机自启的读写钩子，由桌面外壳注入（错误以文案形式透传给设置页）。
@@ -193,6 +198,9 @@ pub fn build_router(config: ServerConfig) -> Router {
         .route("/config/update", get(get_update_config))
         .route("/config/update/check", post(post_update_check))
         .route("/config/update/install", post(post_update_install))
+        .route("/config/skills", get(get_skills_config))
+        .route("/config/skills/check", post(post_skills_check))
+        .route("/config/skills/dismiss", post(post_skills_dismiss))
         .route("/config/restart", post(restart_server))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_owner));
     let api = shared.merge(owner_only);
@@ -1398,6 +1406,56 @@ async fn post_update_install(
     }))
 }
 
+// ——— 技能版本探测（doc 21）：owner-only、只读、无 mutating 端点 ———
+
+/// 读取当前技能版本快照。宿主未注入 manager 时 `supported:false`，前端隐藏面板。
+async fn get_skills_config(State(state): State<AppState>) -> Json<SkillsConfigInfo> {
+    let Some(manager) = state.control.as_ref().and_then(|c| c.skill_version.as_ref()) else {
+        return Json(SkillsConfigInfo {
+            supported: false,
+            info: None,
+        });
+    };
+    Json(SkillsConfigInfo {
+        supported: true,
+        info: Some(manager.status()),
+    })
+}
+
+/// 强制刷新一次（解析源 + 拉取校验 latest），返回新快照。
+async fn post_skills_check(
+    State(state): State<AppState>,
+) -> Result<Json<SkillsConfigInfo>, ApiError> {
+    let manager = state
+        .control
+        .as_ref()
+        .and_then(|c| c.skill_version.as_ref())
+        .ok_or(ApiError::not_supported("当前环境不支持技能版本检查"))?
+        .clone();
+    let info = manager.check().await;
+    Ok(Json(SkillsConfigInfo {
+        supported: true,
+        info: Some(info),
+    }))
+}
+
+/// 「本版本不再提醒」。仅写等值去重锚，不触发任何文件系统写入（技能侧）。
+async fn post_skills_dismiss(
+    State(state): State<AppState>,
+    Json(body): Json<SkillsDismiss>,
+) -> Result<Json<SkillsConfigInfo>, ApiError> {
+    let manager = state
+        .control
+        .as_ref()
+        .and_then(|c| c.skill_version.as_ref())
+        .ok_or(ApiError::not_supported("当前环境不支持技能版本检查"))?;
+    manager.dismiss(&body.version);
+    Ok(Json(SkillsConfigInfo {
+        supported: true,
+        info: Some(manager.status()),
+    }))
+}
+
 /// 重启宿主进程，使新端口生效。
 async fn restart_server(State(state): State<AppState>) -> Result<Json<RestartResult>, ApiError> {
     let control = state
@@ -2222,6 +2280,19 @@ struct UpdateConfigInfo {
     supported: bool,
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
     status: Option<UpdateStatus>,
+}
+
+/// 技能版本探测响应（doc 21 §4）：`supported` + flatten 的 `SkillVersionInfo`。
+#[derive(Debug, Serialize)]
+struct SkillsConfigInfo {
+    supported: bool,
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    info: Option<SkillVersionInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SkillsDismiss {
+    version: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3292,6 +3363,7 @@ mod tests {
             restart: Arc::new(move || restart_target.store(true, Ordering::SeqCst)),
             autostart: None,
             update: None,
+            skill_version: None,
         };
         let app = build_router(ServerConfig {
             frontend_dist: None,
@@ -3359,6 +3431,7 @@ mod tests {
                 }),
             }),
             update: None,
+            skill_version: None,
         };
         let app = build_router(ServerConfig {
             frontend_dist: None,
@@ -3432,6 +3505,7 @@ mod tests {
                     Ok(())
                 }),
             }),
+            skill_version: None,
         };
         let app = build_router(ServerConfig {
             frontend_dist: None,
@@ -3506,6 +3580,87 @@ mod tests {
             .await
             .expect("response");
         assert_eq!(check.status(), StatusCode::NOT_IMPLEMENTED);
+    }
+
+    #[tokio::test]
+    async fn skills_config_supported_and_owner_only() {
+        let manager = Arc::new(SkillVersionManager::new(SkillVersionConfig {
+            app_version: "1.0.0".into(),
+            builtin_slugs: vec![], // 无 slug → resolve 为 Absent（不发网络也稳定）
+            host_targets: vec![],
+            endpoints: vec![],
+            state_path: None,
+        }));
+        let control = ServerControl {
+            persist_port: Arc::new(|_| Ok(())),
+            restart: Arc::new(|| {}),
+            autostart: None,
+            update: None,
+            skill_version: Some(manager),
+        };
+        let app = build_router(ServerConfig {
+            frontend_dist: None,
+            index_manager: IndexManager::build(std::iter::empty::<WikiEntry>()).unwrap(),
+            searcher: FullTextSearcher::in_memory().unwrap(),
+            auth_token: "secret".into(),
+            watch_wikis: false,
+            registry_config: None,
+            port: 8800,
+            control: Some(control),
+            owner_online_url: None,
+            public_base_url: None,
+            grants_path: None,
+        });
+
+        // Owner（master token）可读，supported:true。
+        let owner = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/config/skills")
+                    .header(header::AUTHORIZATION, "Bearer secret")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(owner.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(owner.into_body(), usize::MAX).await.unwrap();
+        let info: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(info["supported"], true);
+        assert_eq!(info["changelogUrl"], skill_version::CHANGELOG_URL);
+
+        // 无令牌 → 401（owner-only）。
+        let anon = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/config/skills")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(anon.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn skills_config_reports_unsupported_without_hooks() {
+        let app = build_router(ServerConfig {
+            frontend_dist: None,
+            index_manager: IndexManager::build(std::iter::empty::<WikiEntry>()).unwrap(),
+            searcher: FullTextSearcher::in_memory().unwrap(),
+            auth_token: String::new(),
+            watch_wikis: false,
+            registry_config: None,
+            port: 8800,
+            control: None,
+            owner_online_url: None,
+            public_base_url: None,
+            grants_path: None,
+        });
+        let info: serde_json::Value = get_json(&app, "/api/v1/config/skills").await;
+        assert_eq!(info["supported"], false);
     }
 
     #[tokio::test]

@@ -218,6 +218,33 @@ export interface UpdateConfigInfo {
   error?: string;
 }
 
+// 技能版本探测（doc 21）。state：idle | up_to_date | update_available | unknown。
+// class：git_link | unknown | absent。supported=false → 前端隐藏面板。
+export interface SkillSourceInfo {
+  class: "git_link" | "unknown" | "absent";
+  path?: string | null;
+  reason?: string | null;
+}
+export interface SkillLatestInfo {
+  packVersion: string;
+  notes?: string | null;
+  sourceCommit?: string | null;
+  releasedAt?: string | null;
+  stale: boolean;
+}
+export interface SkillsConfigInfo {
+  supported: boolean;
+  state?: "idle" | "up_to_date" | "update_available" | "unknown";
+  source?: SkillSourceInfo;
+  installedVersion?: string | null;
+  updateAvailable?: boolean;
+  latest?: SkillLatestInfo | null;
+  changelogUrl?: string;
+  minAppUnsatisfied?: boolean;
+  updatePrompt?: string;
+  checkedAt?: string | null;
+}
+
 // review 项在 App 与 maintainer skill 之间字段略有出入，这里做并集容错。
 export interface ReviewItem {
   id?: string;
@@ -309,6 +336,14 @@ export const checkUpdate = () =>
 // 下载并安装（仅 available 态）；完成后 state 变为 ready-to-restart。
 export const installUpdate = () =>
   send<UpdateConfigInfo>("/api/v1/config/update/install", "POST");
+
+// 技能版本（doc 21）：只读探测 + 强制重查 + 「本版本不再提醒」。无 install/adopt 端点。
+export const getSkillsConfig = () =>
+  api<SkillsConfigInfo>("/api/v1/config/skills");
+export const checkSkills = () =>
+  send<SkillsConfigInfo>("/api/v1/config/skills/check", "POST");
+export const dismissSkillVersion = (version: string) =>
+  send<SkillsConfigInfo>("/api/v1/config/skills/dismiss", "POST", { version });
 export const getTree = (wiki: string) =>
   api<TreeNode[]>(`/api/v1/wikis/${wiki}/tree`);
 export const getRawTree = (wiki: string) =>
