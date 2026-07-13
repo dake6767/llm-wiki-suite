@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useShareNavigate } from "../lib/shareNavigation";
 import { listWikis, setToken } from "../api/client";
+import { BrandLogo, BrandMark } from "../components/BrandLogo";
 
 export default function Login() {
   const [token, setTok] = useState("");
@@ -21,18 +22,14 @@ export default function Login() {
 
   return (
     <div className="relative flex h-full items-center justify-center overflow-hidden bg-spine text-cream">
-      {/* 背景巨字水印 */}
-      <span
-        className="pointer-events-none absolute select-none font-display font-semibold leading-none text-cream/[0.04]"
-        style={{ fontSize: "44rem", top: "-6rem", right: "-6rem" }}
-        aria-hidden
-      >
-        藏
-      </span>
+      {/* 品牌开卷水印 */}
+      <BrandMark
+        className="pointer-events-none absolute -right-20 -top-16 h-[42rem] w-[42rem] select-none text-cream opacity-[0.035]"
+      />
 
       <form onSubmit={submit} className="rise relative z-10 w-[22rem]">
         <div className="mb-7 flex items-center gap-3">
-          <span className="seal h-12 w-12 text-3xl leading-none">藏</span>
+          <BrandLogo className="h-12 w-12" />
           <span className="leading-tight">
             <span className="block font-display text-xl font-semibold text-paper">
               LLM&nbsp;Wiki

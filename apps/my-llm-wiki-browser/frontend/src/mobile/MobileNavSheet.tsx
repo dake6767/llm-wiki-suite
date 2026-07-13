@@ -13,6 +13,7 @@ import {
 import { useShareNavigate } from "../lib/shareNavigation";
 import { BASE } from "../lib/basePath";
 import { clearActiveShare, isGuest } from "../lib/shareSession";
+import { BrandLogo } from "../components/BrandLogo";
 
 // 移动端左侧抽屉：知识库切换 + 类目索引 + 退出。沿用书脊（spine）配色。
 export default function MobileNavSheet({
@@ -102,7 +103,7 @@ export default function MobileNavSheet({
           className="flex items-center gap-3 px-5 pb-5 pt-6"
           style={{ borderBottom: "1px solid var(--rule-cream)" }}
         >
-          <span className="seal h-10 w-10 text-2xl leading-none">藏</span>
+          <BrandLogo className="h-10 w-10" />
           <span className="leading-tight">
             <span className="block font-display text-lg font-semibold tracking-wide text-paper">
               LLM&nbsp;Wiki

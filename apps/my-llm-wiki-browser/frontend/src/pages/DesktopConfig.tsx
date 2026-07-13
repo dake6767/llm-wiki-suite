@@ -14,6 +14,7 @@ import {
   type WikiConfigInfo,
 } from "../api/client";
 import SharePanel from "../components/SharePanel";
+import { BrandLogo } from "../components/BrandLogo";
 
 type TabKey = "wikis" | "runtime" | "share";
 
@@ -68,7 +69,7 @@ export default function DesktopConfig() {
       <div className="grid min-h-screen grid-cols-[230px_minmax(0,1fr)]">
         <aside className="spine flex flex-col border-r border-[rgba(221,211,192,0.14)] bg-spine text-cream">
           <div className="border-b border-[rgba(221,211,192,0.14)] px-6 py-6">
-            <div className="seal mb-4 h-11 w-11 text-lg">藏</div>
+            <BrandLogo className="mb-4 h-11 w-11" />
             <p className="eyebrow text-cream-soft">LLM-Wiki Desktop</p>
             <h1 className="font-display mt-2 text-2xl font-semibold">
               配置
