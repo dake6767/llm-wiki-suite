@@ -1,0 +1,66 @@
+name: skills-release
+
+# doc 21 §9 — lightweight version-signal CI for the desktop app's skill-update check.
+#
+# Two responsibilities, no overlap with the app `release` workflow:
+#   check-bump (PR): if the PR touches skills/** or the skills registry, require that
+#                    registry/skills.json pack_version strictly increased vs the base.
+#   publish   (main push touching those paths): generate skills-version.json from the
+#                    registry (single source of truth for the version number) and upload
+#                    it to the rolling `skills-latest` PRE-release. Prerelease so it never
+#                    becomes GitHub's "latest" and hijacks the app updater's latest.json.
+#
+# The Worker proxies releases/download/skills-latest/skills-version.json; the app
+# validates + displays it. The tag ref is not moved on republish — only the asset is
+# clobbered; source_commit inside the JSON carries the provenance the agent checks.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    paths:
+      - 'registry/skills.json'
+      - 'skills/**'
+
+permissions:
+  contents: write
+
+jobs:
+  check-bump:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Enforce pack_version bump on distribution changes
+        run: |
+          git fetch origin "${{ github.base_ref }}"
+          python3 scripts/check_pack_version_bump.py --base "origin/${{ github.base_ref }}"
+
+  publish:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: skills-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate skills-version.json
+        run: |
+          python3 scripts/gen_skills_version.py \
+            --source-commit "${GITHUB_SHA}" \
+            -o skills-version.json
+          echo "--- skills-version.json ---"
+          cat skills-version.json
+      - name: Ensure rolling prerelease exists
+        run: |
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --title "Skills version signal (rolling)" \
+              --notes "Rolling single-file release carrying skills-version.json for the desktop app's skill-update check (doc 21). Not an app release; kept as a prerelease so it never becomes GitHub's latest." \
+              --prerelease \
+              --target main
+          fi
+      - name: Upload version file
+        run: gh release upload "$TAG" skills-version.json --clobber
