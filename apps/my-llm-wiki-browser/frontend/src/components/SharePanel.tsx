@@ -6,14 +6,16 @@ import {
   listShares,
   renewShare,
   revokeShare,
+  setDefaultShare,
   type ShareGrantView,
 } from "../api/client";
 import { copyToClipboard } from "../lib/reviewPrompt";
+import { linkForContext } from "../lib/shareLinks";
 
 // 「分享管理」面板（docs/19 §4.5）。同一组件复用于两处入口：
 // - 浏览界面顶栏（lockedWiki=当前库，创建为主）；
 // - 设置页（带 wiki 选择器，偏治理/盘点）。
-// 能力固定只读、整库、「持续分享整个 Wiki」；每次创建都是一次知情的发布动作。
+// 能力固定只读、整库：「通用分享」供页面深链复用，「独立分享」供按对象撤销。
 
 type WikiOption = { key: string; name: string; page_count: number };
 
@@ -25,6 +27,7 @@ type SharePanelProps = {
   deepLinkPath?: string;
   embedded?: boolean;
   initialView?: "create" | "manage";
+  initialCreateKind?: "default" | "independent";
 };
 
 const EXPIRY_OPTIONS: Array<{ label: string; days: number | null }> = [
@@ -46,18 +49,6 @@ function fmtLastAccessed(secs: number | null): string {
   return `最近访问 ${fmtDate(secs)}`;
 }
 
-function linkForContext(link: string, deepLinkPath?: string): string {
-  if (!deepLinkPath) return link;
-  try {
-    const url = new URL(link);
-    const shareRoot = url.pathname.replace(/\/$/, "");
-    url.pathname = `${shareRoot}/${deepLinkPath.replace(/^\//, "")}`;
-    return url.href;
-  } catch {
-    return link;
-  }
-}
-
 function scopeLabel(scope: ShareGrantView["scope"]): string {
   switch (scope.kind) {
     case "frozen_set":
@@ -77,8 +68,12 @@ export default function SharePanel({
   deepLinkPath,
   embedded = false,
   initialView = "create",
+  initialCreateKind = "independent",
 }: SharePanelProps) {
   const [view, setView] = useState<"create" | "manage">(initialView);
+  const [createKind, setCreateKind] = useState<"default" | "independent">(
+    initialCreateKind,
+  );
   const [wiki, setWiki] = useState(lockedWiki || wikiOptions[0]?.key || "");
   const [label, setLabel] = useState("");
   const [expiryIdx, setExpiryIdx] = useState(1); // 默认 30 天
@@ -103,6 +98,7 @@ export default function SharePanel({
     setCopied(false);
     setConfirmingRevoke(null);
     setView(initialView);
+    setCreateKind(initialCreateKind);
     setWiki(lockedWiki || wikiOptions[0]?.key || "");
     getShareConfig()
       .then((c) => setRelayConnected(c.relay_connected))
@@ -111,7 +107,15 @@ export default function SharePanel({
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose?.();
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, lockedWiki, wikiOptions, onClose, embedded, initialView]);
+  }, [
+    open,
+    lockedWiki,
+    wikiOptions,
+    onClose,
+    embedded,
+    initialView,
+    initialCreateKind,
+  ]);
 
   async function refreshList() {
     setLoadingList(true);
@@ -158,7 +162,12 @@ export default function SharePanel({
     setCreatedLink(null);
     try {
       const days = EXPIRY_OPTIONS[expiryIdx].days;
-      const res = await createShare(wiki, label.trim(), days);
+      const res = await createShare(
+        wiki,
+        createKind === "default" ? "通用分享" : label.trim(),
+        days,
+        createKind === "default",
+      );
       const link = linkForContext(res.link, deepLinkPath);
       setCreatedLink(link);
       setCreateWarning(res.warning);
@@ -214,6 +223,15 @@ export default function SharePanel({
     }
   }
 
+  async function onSetDefault(grantId: string) {
+    try {
+      await setDefaultShare(grantId);
+      await refreshList();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "设为通用分享失败");
+    }
+  }
+
   async function onCopyCreated() {
     if (!createdLink) return;
     const ok = await copyToClipboard(createdLink);
@@ -247,7 +265,11 @@ export default function SharePanel({
           <div className="eyebrow text-cinnabar">分享 · Share</div>
           <nav className="flex gap-3">
             <button
-              onClick={() => setView("create")}
+              onClick={() => {
+                setCreateKind("independent");
+                setCreatedLink(null);
+                setView("create");
+              }}
               className={`font-mono text-xs ${
                 view === "create" ? "text-cinnabar" : "text-ink-faint hover:text-ink"
               }`}
@@ -290,7 +312,9 @@ export default function SharePanel({
           {view === "create" ? (
             <div>
               <p className="mb-4 font-serif text-sm leading-relaxed text-ink">
-                创建一条链接，把整个 Wiki 分享给对方——
+                {createKind === "default"
+                  ? "首次启用此 Wiki 的通用分享。以后分享页面时会复用这条链接，不再重复创建授权——"
+                  : "创建一条可独立管理的链接，把整个 Wiki 分享给特定对象——"}
                 <span className="text-cinnabar-deep">
                   对方将持续看到此 Wiki 的全部页面，包括你之后新增的内容
                 </span>
@@ -322,15 +346,19 @@ export default function SharePanel({
                 </select>
               )}
 
-              <label className="eyebrow mb-1 block text-ink-faint">
-                备注（可选，便于日后辨认）
-              </label>
-              <input
-                value={label}
-                onChange={(e) => setLabel(e.target.value)}
-                placeholder="给小王的分享"
-                className="mb-4 w-full border-b border-[color:var(--rule)] bg-transparent pb-1.5 font-serif text-sm text-ink focus:border-cinnabar focus:outline-none"
-              />
+              {createKind === "independent" && (
+                <>
+                  <label className="eyebrow mb-1 block text-ink-faint">
+                    备注（可选，便于日后辨认）
+                  </label>
+                  <input
+                    value={label}
+                    onChange={(e) => setLabel(e.target.value)}
+                    placeholder="给小王的分享"
+                    className="mb-4 w-full border-b border-[color:var(--rule)] bg-transparent pb-1.5 font-serif text-sm text-ink focus:border-cinnabar focus:outline-none"
+                  />
+                </>
+              )}
 
               <label className="eyebrow mb-1 block text-ink-faint">有效期</label>
               <select
@@ -371,7 +399,11 @@ export default function SharePanel({
                   disabled={creating || !wiki}
                   className="w-full bg-cinnabar py-2.5 font-mono text-sm font-medium text-paper transition-colors hover:bg-cinnabar-deep disabled:opacity-50"
                 >
-                  {creating ? "创建中…" : "创建并复制链接 →"}
+                  {creating
+                    ? "创建中…"
+                    : createKind === "default"
+                      ? "启用并复制当前页链接 →"
+                      : "创建独立分享并复制 →"}
                 </button>
               )}
             </div>
@@ -394,6 +426,11 @@ export default function SharePanel({
                         <span className="font-mono text-xs text-ink-faint">
                           · {s.wiki}
                         </span>
+                        {s.is_default && (
+                          <span className="rounded-sm border border-brass/40 bg-brass/5 px-1.5 py-0.5 font-mono text-[0.65rem] text-brass">
+                            通用
+                          </span>
+                        )}
                         <span className="flex-1" />
                         {s.revoked ? (
                           <span className="font-mono text-xs text-ink-faint">
@@ -436,6 +473,14 @@ export default function SharePanel({
                               className="font-mono text-xs text-cinnabar hover:text-ink"
                             >
                               {copiedRow === s.grant_id ? "已复制 ✓" : "复制链接"}
+                            </button>
+                          )}
+                          {s.active && !s.is_default && (
+                            <button
+                              onClick={() => onSetDefault(s.grant_id)}
+                              className="font-mono text-xs text-brass hover:text-ink"
+                            >
+                              设为通用
                             </button>
                           )}
                           <button

@@ -18,6 +18,10 @@ import { ShareLink } from "../lib/shareNavigation";
 import SharePanel from "../components/SharePanel";
 import { copyToClipboard } from "../lib/reviewPrompt";
 import { isGuest, shareEntryLink } from "../lib/shareSession";
+import {
+  copyDefaultShareLink,
+  type DefaultShareCopyResult,
+} from "../lib/shareLinks";
 
 function rawPathFromSource(src: string): string {
   let s = src.trim();
@@ -38,7 +42,12 @@ export default function MobileReader({ kind }: { kind: "page" | "raw" }) {
   const [sheet, setSheet] = useState<SheetTarget | null>(null);
   const [deepDive, setDeepDive] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
-  const [shareFeedback, setShareFeedback] = useState<"copied" | "failed" | null>(null);
+  const [shareCreateKind, setShareCreateKind] = useState<
+    "default" | "independent"
+  >("independent");
+  const [shareFeedback, setShareFeedback] = useState<
+    DefaultShareCopyResult | null
+  >(null);
   const dive = useDeepDive(wiki, page);
 
   // 深挖面板与预览浮层互斥：开一个即关另一个。
@@ -49,11 +58,35 @@ export default function MobileReader({ kind }: { kind: "page" | "raw" }) {
 
   async function onShare() {
     if (!guest) {
-      setShareOpen(true);
+      const result = await copyDefaultShareLink(
+        wiki,
+        `/w/${wiki}/page/${path}`,
+      );
+      if (result === "missing") {
+        setShareCreateKind("default");
+        setShareOpen(true);
+        return;
+      }
+      flashShareFeedback(result);
       return;
     }
     const link = shareEntryLink();
-    const feedback = link && (await copyToClipboard(link)) ? "copied" : "failed";
+    flashShareFeedback(
+      link && (await copyToClipboard(link)) ? "copied" : "failed",
+    );
+  }
+
+  function onNewIndependentShare() {
+    setShareCreateKind("independent");
+    setShareOpen(true);
+  }
+
+  function flashShareFeedback(feedback: DefaultShareCopyResult) {
+    if (feedback === "missing") {
+      setShareCreateKind("default");
+      setShareOpen(true);
+      return;
+    }
     setShareFeedback(feedback);
     window.setTimeout(
       () => setShareFeedback((current) => (current === feedback ? null : current)),
@@ -140,6 +173,28 @@ export default function MobileReader({ kind }: { kind: "page" | "raw" }) {
       <MarginaliaFab
         items={[
           {
+            key: "source-pages",
+            glyph: "概",
+            label: "来源概览",
+            count: kind === "raw" ? page.source_pages.length : 0,
+            onClick: () =>
+              openSheet({
+                mode: "list",
+                title: `概览 · Wiki Sources (${page.source_pages.length})`,
+                items: page.source_pages.map((sourcePage) => ({
+                  key: sourcePage.path,
+                  label: sourcePage.title,
+                  target: {
+                    mode: "doc",
+                    wiki,
+                    kind: "page",
+                    path: sourcePage.path,
+                    title: sourcePage.title,
+                  },
+                })),
+              }),
+          },
+          {
             key: "sources",
             glyph: "源",
             label: "来源",
@@ -212,17 +267,24 @@ export default function MobileReader({ kind }: { kind: "page" | "raw" }) {
           {
             key: "share",
             icon: <ShareWikiIcon />,
-            label: guest ? "复制当前分享链接" : "分享整个 Wiki",
+            label: "复制当前页分享链接",
             count: 0,
             always: kind === "page",
-            hint: guest
-              ? shareFeedback === "copied"
-                ? "分享链接已复制"
-                : shareFeedback === "failed"
-                  ? "复制失败，请重试"
-                  : undefined
-              : undefined,
+            hint:
+              shareFeedback === "copied"
+                ? "当前页链接已复制；对方可浏览整个 Wiki"
+                : shareFeedback === "unavailable"
+                  ? "线上访问未开启，请先开启中继"
+                  : shareFeedback === "failed"
+                    ? "复制失败，请重试"
+                    : undefined,
             onClick: onShare,
+            secondaryAction: guest
+              ? undefined
+              : {
+                  label: "新建独立分享",
+                  onClick: onNewIndependentShare,
+                },
           },
         ]}
       />
@@ -241,6 +303,7 @@ export default function MobileReader({ kind }: { kind: "page" | "raw" }) {
           wikiOptions={wikis}
           lockedWiki={wiki}
           deepLinkPath={`/w/${wiki}/page/${path}`}
+          initialCreateKind={shareCreateKind}
         />
       )}
     </div>

@@ -12,9 +12,7 @@ use axum::{
     http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
-use llm_wiki_mcp::{
-    PagePathArgs, ReadPagesArgs, SearchWikiArgs, ToolName, WikiArgs, tool_list,
-};
+use llm_wiki_mcp::{PagePathArgs, ReadPagesArgs, SearchWikiArgs, ToolName, WikiArgs, tool_list};
 use serde_json::{Value, json};
 
 use super::{AppState, read_manager, safe_join};
@@ -29,8 +27,12 @@ pub(crate) async fn mcp_post(
 ) -> Response {
     let Some(obj) = message.as_object() else {
         // 批量请求（JSON 数组）已在 2025-06-18 版移除，这里直接拒绝。
-        return rpc_error(Value::Null, -32600, "expected a single JSON-RPC object".into())
-            .into_response();
+        return rpc_error(
+            Value::Null,
+            -32600,
+            "expected a single JSON-RPC object".into(),
+        )
+        .into_response();
     };
     let method = obj
         .get("method")
@@ -98,8 +100,7 @@ fn tools_call(state: &AppState, params: &Value) -> Result<Value, (i64, String)> 
         .get("name")
         .and_then(|value| value.as_str())
         .ok_or((-32602, "missing tool name".to_string()))?;
-    let tool =
-        ToolName::from_str(name).ok_or((-32602, format!("unknown tool: {name}")))?;
+    let tool = ToolName::from_str(name).ok_or((-32602, format!("unknown tool: {name}")))?;
     let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
     let outcome = match tool {
@@ -333,8 +334,8 @@ fn run_read_raw(state: &AppState, args: PagePathArgs) -> Result<Value, String> {
     let rel = args.path.strip_prefix("raw/").unwrap_or(&args.path);
     let mut target = safe_join(raw_root, rel).ok_or_else(|| "invalid path".to_string())?;
     if !target.is_file() && !rel.ends_with(".md") {
-        target = safe_join(raw_root, &format!("{rel}.md"))
-            .ok_or_else(|| "invalid path".to_string())?;
+        target =
+            safe_join(raw_root, &format!("{rel}.md")).ok_or_else(|| "invalid path".to_string())?;
     }
     if !target.is_file() {
         return Err(format!("raw source not found: {rel}"));

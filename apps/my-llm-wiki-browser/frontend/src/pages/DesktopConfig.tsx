@@ -147,10 +147,9 @@ function SharingPanel({ wikis }: { wikis: WikiConfigInfo[] }) {
   return (
     <div>
       <p className="mb-5 max-w-2xl font-serif text-sm leading-relaxed text-ink">
-        分享 = 生成一条链接（「持续分享整个 Wiki」）。对方将持续看到该库的全部页面，
-        包括你之后新增的内容；RAW 目录与维护队列不在分享范围内，页面显式引用的来源
-        可在「源」弹窗预览。默认有效期 30 天——
-        被遗忘的分享会自己失效。关闭任一链接不影响你自己的访问，也不影响其他链接。
+        每个 Wiki 可指定一条通用分享，日常分享页面会复用它；也可以为特定对象新建独立分享，
+        分别设置有效期和撤销。所有链接都是整库只读授权：它们可以从某个页面打开，但对方仍可
+        浏览该 Wiki 的其他页面。RAW 目录与维护队列不在分享范围内。
       </p>
       <SharePanel
         open

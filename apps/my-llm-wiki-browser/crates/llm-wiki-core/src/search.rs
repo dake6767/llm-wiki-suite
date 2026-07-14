@@ -275,10 +275,31 @@ fn is_term_separator(c: char) -> bool {
     c.is_whitespace()
         || matches!(
             c,
-            '的' | ',' | ';' | ':' | '|' | '/' | '\\'
-                | '，' | '、' | '。' | '；' | '：' | '！' | '？'
-                | '（' | '）' | '【' | '】' | '「' | '」' | '『' | '』'
-                | '《' | '》' | '·' | '…'
+            '的' | ','
+                | ';'
+                | ':'
+                | '|'
+                | '/'
+                | '\\'
+                | '，'
+                | '、'
+                | '。'
+                | '；'
+                | '：'
+                | '！'
+                | '？'
+                | '（'
+                | '）'
+                | '【'
+                | '】'
+                | '「'
+                | '」'
+                | '『'
+                | '』'
+                | '《'
+                | '》'
+                | '·'
+                | '…'
         )
 }
 
@@ -483,7 +504,9 @@ mod tests {
         }
         searcher.reindex_wiki("demo", &docs).unwrap();
 
-        let hits = searcher.search(Some("demo"), "Codex", None, None, 5).unwrap();
+        let hits = searcher
+            .search(Some("demo"), "Codex", None, None, 5)
+            .unwrap();
         assert_eq!(hits[0].path, "entities/codex");
     }
 

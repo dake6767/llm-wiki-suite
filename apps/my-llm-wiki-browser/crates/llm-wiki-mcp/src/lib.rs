@@ -256,7 +256,11 @@ mod tests {
         .unwrap();
         assert_eq!(
             args.budget(),
-            (READ_PAGES_MAX_PAGES_CEILING, 200, READ_PAGES_TOTAL_CHARS_CEILING)
+            (
+                READ_PAGES_MAX_PAGES_CEILING,
+                200,
+                READ_PAGES_TOTAL_CHARS_CEILING
+            )
         );
     }
 

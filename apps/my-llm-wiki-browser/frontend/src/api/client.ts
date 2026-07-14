@@ -197,6 +197,7 @@ export interface Page {
   outgoing_links: LinkRef[];
   backlinks: PageRef[];
   sources: string[];
+  source_pages: PageRef[];
   tags: string[];
 }
 export interface SearchHit {
@@ -322,6 +323,7 @@ export interface ShareGrantView {
   last_accessed: number | null;
   revoked: boolean;
   active: boolean;
+  is_default: boolean;
 }
 
 // 创建 / 取链接响应——含完整分享链接（内嵌 secret）。
@@ -427,14 +429,18 @@ export const createShare = (
   wiki: string,
   label: string,
   expiresInDays: number | null,
+  makeDefault = false,
 ) =>
   send<ShareLinkResponse>("/api/v1/config/shares", "POST", {
     wiki,
     label,
     expires_in_days: expiresInDays,
+    make_default: makeDefault,
   });
 export const getShareLink = (grantId: string) =>
   send<ShareLinkResponse>(`/api/v1/config/shares/${grantId}/link`, "POST");
+export const setDefaultShare = (grantId: string) =>
+  send<ShareGrantView>(`/api/v1/config/shares/${grantId}/default`, "POST");
 export const renewShare = (grantId: string, expiresInDays: number | null) =>
   send<ShareGrantView>(`/api/v1/config/shares/${grantId}`, "PATCH", {
     expires_in_days: expiresInDays,
