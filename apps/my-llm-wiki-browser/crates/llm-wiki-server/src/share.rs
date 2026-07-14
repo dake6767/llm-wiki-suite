@@ -6,6 +6,7 @@
 //! - 明文落盘（与 master token 同姿态），撤销即清空 secret；
 //! - grants.json 原子写入（同目录临时文件、创建时即 0600、失败即清理）。
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, RwLock};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -15,7 +16,7 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 
 /// grants.json 顶层 schema 版本，为后续字段迁移预留。
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 
 /// last_accessed 的合并落盘节流间隔（秒）：内存实时更新，最多每 5 分钟落盘一次，
 /// 不为访问时间精度做每次请求的全量重写。
@@ -100,6 +101,9 @@ pub enum GrantAuth {
 struct GrantData {
     schema_version: u32,
     grants: Vec<ShareGrant>,
+    /// 每个 Wiki 至多一个通用分享。独立分享不进入该映射；旧版文件缺省为空。
+    #[serde(default)]
+    default_grants: BTreeMap<String, String>,
 }
 
 impl Default for GrantData {
@@ -107,6 +111,7 @@ impl Default for GrantData {
         Self {
             schema_version: SCHEMA_VERSION,
             grants: Vec::new(),
+            default_grants: BTreeMap::new(),
         }
     }
 }
@@ -123,7 +128,7 @@ pub struct GrantStore {
 impl GrantStore {
     /// 从磁盘加载（缺失/损坏则以空存储启动，损坏会告警但不阻塞服务）。
     pub fn load(path: Option<PathBuf>) -> Self {
-        let data = match &path {
+        let mut data = match &path {
             Some(p) => match std::fs::read(p) {
                 Ok(bytes) => serde_json::from_slice::<GrantData>(&bytes).unwrap_or_else(|err| {
                     tracing::warn!(error = %err, "grants.json 解析失败，以空存储启动（原文件保留）");
@@ -137,6 +142,8 @@ impl GrantStore {
             },
             None => GrantData::default(),
         };
+        // 旧版 schema 在下一次写操作时自动升级；读取阶段不产生额外磁盘写入。
+        data.schema_version = SCHEMA_VERSION;
         Self {
             path,
             inner: RwLock::new(data),
@@ -150,6 +157,7 @@ impl GrantStore {
         wiki: String,
         label: String,
         expires_at: Option<Timestamp>,
+        make_default: bool,
     ) -> std::io::Result<ShareGrant> {
         let grant = ShareGrant {
             grant_id: generate_grant_id(),
@@ -166,6 +174,10 @@ impl GrantStore {
         {
             let mut data = self.inner.write().expect("grant store poisoned");
             data.grants.push(grant.clone());
+            if make_default {
+                data.default_grants
+                    .insert(grant.wiki.clone(), grant.grant_id.clone());
+            }
             self.persist(&data)?;
         }
         Ok(grant)
@@ -177,6 +189,15 @@ impl GrantStore {
             .read()
             .expect("grant store poisoned")
             .grants
+            .clone()
+    }
+
+    /// Wiki → 通用 grant_id 的快照。调用方仍需检查 grant 是否 active。
+    pub fn default_grants(&self) -> BTreeMap<String, String> {
+        self.inner
+            .read()
+            .expect("grant store poisoned")
+            .default_grants
             .clone()
     }
 
@@ -207,15 +228,45 @@ impl GrantStore {
         Ok(Some(snapshot))
     }
 
+    /// 把一个有效 grant 设为所属 Wiki 的通用分享；同一 Wiki 的旧值被原子替换。
+    pub fn set_default(
+        &self,
+        grant_id: &str,
+        now: Timestamp,
+    ) -> std::io::Result<Option<ShareGrant>> {
+        let mut data = self.inner.write().expect("grant store poisoned");
+        let Some(grant) = data
+            .grants
+            .iter()
+            .find(|g| g.grant_id == grant_id && g.is_active(now))
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        data.default_grants
+            .insert(grant.wiki.clone(), grant.grant_id.clone());
+        self.persist(&data)?;
+        Ok(Some(grant))
+    }
+
     /// 撤销：置 revoked 并清空 secret。返回更新后的快照；不存在返回 None。
     pub fn revoke(&self, grant_id: &str) -> std::io::Result<Option<ShareGrant>> {
         let mut data = self.inner.write().expect("grant store poisoned");
-        let Some(grant) = data.grants.iter_mut().find(|g| g.grant_id == grant_id) else {
-            return Ok(None);
+        let (wiki, snapshot) = {
+            let Some(grant) = data.grants.iter_mut().find(|g| g.grant_id == grant_id) else {
+                return Ok(None);
+            };
+            grant.revoked = true;
+            grant.secret = String::new();
+            (grant.wiki.clone(), grant.clone())
         };
-        grant.revoked = true;
-        grant.secret = String::new();
-        let snapshot = grant.clone();
+        if data
+            .default_grants
+            .get(&wiki)
+            .is_some_and(|id| id == grant_id)
+        {
+            data.default_grants.remove(&wiki);
+        }
         self.persist(&data)?;
         Ok(Some(snapshot))
     }
@@ -361,7 +412,7 @@ mod tests {
     fn create_resolve_revoke_lifecycle() {
         let store = GrantStore::load(None);
         let grant = store
-            .create("demo".into(), "小王".into(), None)
+            .create("demo".into(), "小王".into(), None, false)
             .unwrap();
         assert!(grant.grant_id.starts_with("s_"));
         assert_eq!(grant.secret.len(), 24);
@@ -398,7 +449,7 @@ mod tests {
         let store = GrantStore::load(None);
         let now = now_ts();
         let grant = store
-            .create("demo".into(), "过期".into(), Some(now - 10))
+            .create("demo".into(), "过期".into(), Some(now - 10), false)
             .unwrap();
         assert!(matches!(
             store.resolve(&grant.grant_id, &grant.secret, now),
@@ -412,7 +463,9 @@ mod tests {
         let path = tmp.path().join("connector").join("grants.json");
         let grant = {
             let store = GrantStore::load(Some(path.clone()));
-            store.create("demo".into(), "持久".into(), None).unwrap()
+            store
+                .create("demo".into(), "持久".into(), None, false)
+                .unwrap()
         };
         // 重新加载能读回
         let store = GrantStore::load(Some(path.clone()));
@@ -434,5 +487,66 @@ mod tests {
         assert_eq!(split_share_token("nodot"), None);
         assert_eq!(split_share_token(".secret"), None);
         assert_eq!(split_share_token("grant."), None);
+    }
+
+    #[test]
+    fn default_grant_is_unique_per_wiki_and_cleared_on_revoke() {
+        let store = GrantStore::load(None);
+        let first = store
+            .create("demo".into(), "通用一".into(), None, true)
+            .unwrap();
+        let second = store
+            .create("demo".into(), "独立".into(), None, false)
+            .unwrap();
+        assert_eq!(
+            store.default_grants().get("demo"),
+            Some(&first.grant_id)
+        );
+
+        store
+            .set_default(&second.grant_id, now_ts())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            store.default_grants().get("demo"),
+            Some(&second.grant_id)
+        );
+
+        store.revoke(&second.grant_id).unwrap().unwrap();
+        assert!(!store.default_grants().contains_key("demo"));
+    }
+
+    #[test]
+    fn inactive_grant_cannot_be_set_as_default() {
+        let store = GrantStore::load(None);
+        let expired = store
+            .create("demo".into(), "过期".into(), Some(now_ts() - 1), false)
+            .unwrap();
+        assert!(
+            store
+                .set_default(&expired.grant_id, now_ts())
+                .unwrap()
+                .is_none()
+        );
+        assert!(store.default_grants().is_empty());
+    }
+
+    #[test]
+    fn schema_v1_file_loads_without_default_mapping() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("grants.json");
+        std::fs::write(&path, r#"{"schema_version":1,"grants":[]}"#).unwrap();
+
+        let store = GrantStore::load(Some(path.clone()));
+        assert!(store.default_grants().is_empty());
+        let grant = store
+            .create("demo".into(), "通用".into(), None, true)
+            .unwrap();
+
+        let reloaded = GrantStore::load(Some(path));
+        assert_eq!(
+            reloaded.default_grants().get("demo"),
+            Some(&grant.grant_id)
+        );
     }
 }

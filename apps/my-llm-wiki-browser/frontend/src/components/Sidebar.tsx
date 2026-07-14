@@ -270,7 +270,7 @@ export default function Sidebar({
               {/* 分享入口：整库「持续分享」，主入口（浏览时的动作长在浏览界面） */}
               <button
                 onClick={() => setShareOpen(true)}
-                title="分享整个 Wiki"
+                title="分享管理"
                 className="flex items-center gap-1 text-cream-soft/70 transition-colors hover:text-cinnabar"
               >
                 <svg
@@ -345,6 +345,7 @@ export default function Sidebar({
         onClose={() => setShareOpen(false)}
         wikiOptions={wikis}
         lockedWiki={current?.key || wiki}
+        initialView="manage"
       />
 
       <ResizeHandle dark onPointerDown={startResize} />

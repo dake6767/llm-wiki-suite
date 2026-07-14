@@ -188,6 +188,10 @@ pub fn build_router(config: ServerConfig) -> Router {
         )
         .route("/config/shares/{grant_id}/link", post(share_link))
         .route(
+            "/config/shares/{grant_id}/default",
+            post(set_default_share),
+        )
+        .route(
             "/config/shares/{grant_id}",
             axum::routing::patch(patch_share).delete(delete_share),
         )
@@ -1134,7 +1138,7 @@ async fn get_session(
 // ---- grant 管理 API（Owner-only；路径/列表/日志永不含 secret，secret 只出现在
 // create 与 link 两个 ★ 响应里，且这两个响应带 no-store）----
 
-fn grant_view(grant: &ShareGrant, now: i64) -> ShareGrantView {
+fn grant_view(grant: &ShareGrant, now: i64, is_default: bool) -> ShareGrantView {
     ShareGrantView {
         grant_id: grant.grant_id.clone(),
         label: grant.label.clone(),
@@ -1146,6 +1150,7 @@ fn grant_view(grant: &ShareGrant, now: i64) -> ShareGrantView {
         last_accessed: grant.last_accessed,
         revoked: grant.revoked,
         active: grant.is_active(now),
+        is_default: is_default && grant.is_active(now),
     }
 }
 
@@ -1190,11 +1195,17 @@ fn no_store_json<T: Serialize>(value: T) -> Response {
 
 async fn list_shares(State(state): State<AppState>) -> Json<Vec<ShareGrantView>> {
     let now = share::now_ts();
+    let defaults = state.grants.default_grants();
     let mut out = state
         .grants
         .list()
         .iter()
-        .map(|grant| grant_view(grant, now))
+        .map(|grant| {
+            let is_default = defaults
+                .get(&grant.wiki)
+                .is_some_and(|grant_id| grant_id == &grant.grant_id);
+            grant_view(grant, now, is_default)
+        })
         .collect::<Vec<_>>();
     out.sort_by_key(|g| std::cmp::Reverse(g.created_at));
     Json(out)
@@ -1228,7 +1239,7 @@ async fn create_share(
         .map(|days| share::now_ts() + i64::from(days) * 86_400);
     let grant = state
         .grants
-        .create(wiki, label, expires_at)
+        .create(wiki, label, expires_at, req.make_default)
         .map_err(|_| ApiError::internal("写入 grants 失败"))?;
     // 日志只记 grant_id，绝不记 secret / 链接。
     tracing::info!(grant_id = %grant.grant_id, wiki = %grant.wiki, "created share grant");
@@ -1266,6 +1277,31 @@ async fn share_link(
     }))
 }
 
+/// 把一条有效分享设为所属 Wiki 的通用分享。同一 Wiki 旧的通用项会被替换。
+async fn set_default_share(
+    State(state): State<AppState>,
+    AxumPath(grant_id): AxumPath<String>,
+) -> Result<Json<ShareGrantView>, ApiError> {
+    let existing = state
+        .grants
+        .get(&grant_id)
+        .ok_or_else(|| ApiError::not_found("分享不存在"))?;
+    if !existing.is_active(share::now_ts()) {
+        return Err(ApiError::bad_request("只有生效中的分享可以设为通用分享"));
+    }
+    let updated = state
+        .grants
+        .set_default(&grant_id, share::now_ts())
+        .map_err(|_| ApiError::internal("写入 grants 失败"))?
+        .ok_or_else(|| ApiError::bad_request("分享已经失效，请刷新后重试"))?;
+    tracing::info!(
+        grant_id = %updated.grant_id,
+        wiki = %updated.wiki,
+        "set default share grant"
+    );
+    Ok(Json(grant_view(&updated, share::now_ts(), true)))
+}
+
 /// 续期/改期。`expires_in_days = null` 表示改为永久。
 async fn patch_share(
     State(state): State<AppState>,
@@ -1280,7 +1316,14 @@ async fn patch_share(
         .renew(&grant_id, expires_at)
         .map_err(|_| ApiError::internal("写入 grants 失败"))?;
     match updated {
-        Some(grant) => Ok(Json(grant_view(&grant, share::now_ts()))),
+        Some(grant) => {
+            let is_default = state
+                .grants
+                .default_grants()
+                .get(&grant.wiki)
+                .is_some_and(|grant_id| grant_id == &grant.grant_id);
+            Ok(Json(grant_view(&grant, share::now_ts(), is_default)))
+        }
         None => Err(ApiError::not_found("分享不存在")),
     }
 }
@@ -1297,7 +1340,7 @@ async fn delete_share(
     match revoked {
         Some(grant) => {
             tracing::info!(grant_id = %grant.grant_id, "revoked share grant");
-            Ok(Json(grant_view(&grant, share::now_ts())))
+            Ok(Json(grant_view(&grant, share::now_ts(), false)))
         }
         None => Err(ApiError::not_found("分享不存在")),
     }
@@ -1564,6 +1607,7 @@ async fn get_page(
         outgoing_links,
         backlinks,
         sources: rec.sources.clone(),
+        source_pages: Vec::new(),
         tags: rec.tags.clone(),
     }))
 }
@@ -1615,6 +1659,29 @@ fn canonical_raw_source(source: &str) -> Option<String> {
     } else {
         format!("sources/{source}")
     })
+}
+
+/// 找出由某条 RAW 编译出的 Wiki 来源摘要页。概念、实体等页面也可能在
+/// frontmatter.sources 中引用同一 RAW，但「概」入口只代表 wiki/sources 层。
+fn wiki_source_pages_for_raw(idx: &WikiIndex, raw_source: &str) -> Vec<PageRef> {
+    let Some(requested) = canonical_raw_source(raw_source) else {
+        return Vec::new();
+    };
+
+    idx.pages
+        .values()
+        .filter(|page| {
+            matches!(page.page_type.as_str(), "source" | "sources")
+                || page.path.starts_with("sources/")
+        })
+        .filter(|page| {
+            page.sources
+                .iter()
+                .filter_map(|source| canonical_raw_source(source))
+                .any(|source| source == requested)
+        })
+        .map(page_ref)
+        .collect()
 }
 
 /// 读取 `raw/` 下的原始源（含图片重写），用于 Owner 的完整「溯源」查看。
@@ -1686,6 +1753,7 @@ fn load_raw_page(idx: &WikiIndex, wiki: &str, path: &str) -> Result<Page, ApiErr
                 .collect()
         })
         .unwrap_or_default();
+    let source_pages = wiki_source_pages_for_raw(idx, &rel_posix);
 
     Ok(Page {
         wiki: wiki.to_string(),
@@ -1698,6 +1766,7 @@ fn load_raw_page(idx: &WikiIndex, wiki: &str, path: &str) -> Result<Page, ApiErr
         outgoing_links: Vec::new(),
         backlinks: Vec::new(),
         sources: Vec::new(),
+        source_pages,
         tags,
     })
 }
@@ -2177,6 +2246,7 @@ struct Page {
     outgoing_links: Vec<LinkRef>,
     backlinks: Vec<PageRef>,
     sources: Vec<String>,
+    source_pages: Vec<PageRef>,
     tags: Vec<String>,
 }
 
@@ -2211,6 +2281,7 @@ struct ShareGrantView {
     last_accessed: Option<i64>,
     revoked: bool,
     active: bool,
+    is_default: bool,
 }
 
 /// 创建 / 取链接响应——含完整分享链接（内嵌 secret）。仅这两处 + grants.json 落盘
@@ -2234,6 +2305,9 @@ struct CreateShareRequest {
     /// `Some(n)` = n 天后过期；`None`/缺省 = 永久（高级选项）。默认 30 天由前端下发。
     #[serde(default)]
     expires_in_days: Option<u32>,
+    /// true = 同时设为该 Wiki 的通用分享；独立分享默认 false。
+    #[serde(default)]
+    make_default: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2541,6 +2615,8 @@ mod tests {
         let raw_dir = root.join("raw");
         let assets_dir = raw_dir.join("assets");
         fs::create_dir_all(&wiki_dir).unwrap();
+        fs::create_dir_all(wiki_dir.join("sources")).unwrap();
+        fs::create_dir_all(wiki_dir.join("concepts")).unwrap();
         fs::create_dir_all(raw_dir.join("sources").join("video")).unwrap();
         fs::create_dir_all(raw_dir.join("sources").join("wechat")).unwrap();
         fs::create_dir_all(&assets_dir).unwrap();
@@ -2558,6 +2634,16 @@ mod tests {
         )
         .unwrap();
         fs::write(assets_dir.join("pic.png"), b"\x89PNG\r\n\x1a\n").unwrap();
+        fs::write(
+            wiki_dir.join("sources").join("satellite-internet.md"),
+            "---\ntype: source\ntitle: 衛星上網概览\nsources: [raw/sources/video/launch.md]\n---\n摘要",
+        )
+        .unwrap();
+        fs::write(
+            wiki_dir.join("concepts").join("satellite-internet.md"),
+            "---\ntype: concept\ntitle: 衛星上網\nsources: [raw/sources/video/launch.md]\n---\n概念",
+        )
+        .unwrap();
 
         let entry = WikiEntry {
             key: "demo".to_string(),
@@ -2612,6 +2698,9 @@ mod tests {
             Some("https://example.com/v")
         );
         assert!(raw.tags.contains(&"space".to_string()));
+        assert_eq!(raw.source_pages.len(), 1);
+        assert_eq!(raw.source_pages[0].path, "sources/satellite-internet");
+        assert_eq!(raw.source_pages[0].title, "衛星上網概览");
         // 图片被重写到 assets 接口
         assert!(raw.body.contains("/api/v1/wikis/demo/assets/pic.png"));
 
@@ -3899,7 +3988,12 @@ mod tests {
             "POST",
             "/api/v1/config/shares",
             Some("secret"),
-            Some(serde_json::json!({"wiki": "demo", "label": "给小王", "expires_in_days": 30})),
+            Some(serde_json::json!({
+                "wiki": "demo",
+                "label": "通用分享",
+                "expires_in_days": 30,
+                "make_default": true
+            })),
         )
         .await;
         assert_eq!(create.status(), StatusCode::OK);
@@ -3979,7 +4073,51 @@ mod tests {
                 .await;
         assert_eq!(listed[0]["scope"]["kind"], "whole_wiki");
         assert_eq!(listed[0]["include_raw"], false);
+        assert_eq!(listed[0]["is_default"], true);
         assert!(listed[0].get("secret").is_none());
+
+        // Owner 可另建独立分享，并把它切换为 Wiki 的新通用分享。
+        let second = body_json(
+            send_json(
+                &app,
+                "POST",
+                "/api/v1/config/shares",
+                Some("secret"),
+                Some(serde_json::json!({
+                    "wiki": "demo",
+                    "label": "独立分享",
+                    "expires_in_days": 7
+                })),
+            )
+            .await,
+        )
+        .await;
+        let second_id = second["grant_id"].as_str().unwrap();
+        let made_default = body_json(
+            send_json(
+                &app,
+                "POST",
+                &format!("/api/v1/config/shares/{second_id}/default"),
+                Some("secret"),
+                None,
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(made_default["is_default"], true);
+        let relisted = body_json(
+            send_json(&app, "GET", "/api/v1/config/shares", Some("secret"), None).await,
+        )
+        .await;
+        assert_eq!(
+            relisted
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|item| item["is_default"] == true)
+                .count(),
+            1
+        );
 
         // 撤销后 share 全部 401；link 端点 410；master token 不受影响
         let del = send_json(
