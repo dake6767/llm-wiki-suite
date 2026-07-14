@@ -1,8 +1,8 @@
 {
   "version": 3,
-  "pack_version": "1.0.0",
-  "pack_notes": "首个技能包版本基线（doc 21 轻量通知与 Agent 交接）。",
-  "updated_at": "2026-07-10",
+  "pack_version": "1.0.1",
+  "pack_notes": "my-llm-wiki：抓取并整理的终端报告完整逐条转述 review 建议、并带上线上 WIKI 链接（不再塌缩成计数）；修复 normalize_raw.py --help 因未转义 %Y 报错。",
+  "updated_at": "2026-07-14",
   "skills": [
     {
       "slug": "cn-mirrors",
