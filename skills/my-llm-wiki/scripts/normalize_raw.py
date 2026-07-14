@@ -511,7 +511,7 @@ def main() -> None:
                          "source slug, an [[wikilink]], a URL, or a topic) — only "
                          "meaningful for --source-type note")
     ap.add_argument("--captured-at", default="",
-                    help="ISO datetime override (the agent should pass `date -u +%Y-%m-%dT%H:%M:%SZ`)")
+                    help="ISO datetime override (the agent should pass `date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ`)")
     ap.add_argument("--on-exists", choices=["version", "skip", "fail"], default="version",
                     help="what to do if the RAW item already exists (default: version)")
     args = ap.parse_args()
