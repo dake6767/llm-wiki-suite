@@ -332,22 +332,51 @@ fn run_read_raw(state: &AppState, args: PagePathArgs) -> Result<Value, String> {
         .ok_or_else(|| format!("wiki not found: {}", args.wiki))?;
     let raw_root = &idx.entry.raw_dir;
     let rel = args.path.strip_prefix("raw/").unwrap_or(&args.path);
-    let mut target = safe_join(raw_root, rel).ok_or_else(|| "invalid path".to_string())?;
-    if !target.is_file() && !rel.ends_with(".md") {
-        target =
-            safe_join(raw_root, &format!("{rel}.md")).ok_or_else(|| "invalid path".to_string())?;
-    }
-    if !target.is_file() {
-        return Err(format!("raw source not found: {rel}"));
-    }
+    let (target, resolved_rel) =
+        resolve_raw_source(raw_root, rel)?.ok_or_else(|| format!("raw source not found: {rel}"))?;
     let parsed =
         parser::parse_file(&target).map_err(|_| "failed to read raw source".to_string())?;
     Ok(json!({
         "wiki": args.wiki,
-        "path": format!("raw/{rel}"),
+        "path": format!("raw/{resolved_rel}"),
         "frontmatter": parsed.frontmatter,
         "body": parsed.body,
     }))
+}
+
+/// Resolve both canonical raw-relative paths (`sources/x/foo.md`) and legacy
+/// source references (`x/foo.md`) emitted by older wiki pages. Keep all joins
+/// behind `safe_join`, so the compatibility fallback cannot escape raw/.
+fn resolve_raw_source(
+    raw_root: &std::path::Path,
+    rel: &str,
+) -> Result<Option<(std::path::PathBuf, String)>, String> {
+    if let Some(resolved) = resolve_raw_candidate(raw_root, rel)? {
+        return Ok(Some(resolved));
+    }
+    if !rel.starts_with("sources/") {
+        return resolve_raw_candidate(raw_root, &format!("sources/{rel}"));
+    }
+    Ok(None)
+}
+
+fn resolve_raw_candidate(
+    raw_root: &std::path::Path,
+    rel: &str,
+) -> Result<Option<(std::path::PathBuf, String)>, String> {
+    let target = safe_join(raw_root, rel).ok_or_else(|| "invalid path".to_string())?;
+    if target.is_file() {
+        return Ok(Some((target, rel.to_string())));
+    }
+    if !rel.ends_with(".md") {
+        let with_extension = format!("{rel}.md");
+        let target =
+            safe_join(raw_root, &with_extension).ok_or_else(|| "invalid path".to_string())?;
+        if target.is_file() {
+            return Ok(Some((target, with_extension)));
+        }
+    }
+    Ok(None)
 }
 
 fn run_list_wiki_tree(state: &AppState, args: WikiArgs) -> Result<Value, String> {

@@ -75,8 +75,10 @@ impl ToolName {
             }
             Self::ReadRaw => {
                 "Read an original captured source under the wiki's raw/ layer (immutable \
-                 originals the pages cite in their `sources` field), e.g. \
-                 'sources/web/some-article.md'. Use to re-check a page's claims."
+                 originals the pages cite in their `sources` field). Pass a page's source \
+                 path directly; canonical paths such as 'raw/sources/web/some-article.md' \
+                 and legacy paths such as 'web/some-article.md' are both accepted. Use to \
+                 re-check a page's claims."
             }
             Self::ListWikiTree => {
                 "List every page of one wiki grouped by type (entities/concepts/sources/…), \
@@ -137,7 +139,7 @@ impl ToolName {
                 "type": "object",
                 "properties": {
                     "wiki": wiki,
-                    "path": {"type": "string", "description": "Raw source path under raw/, e.g. 'sources/web/foo.md'."}
+                    "path": {"type": "string", "description": "Source path from a compiled page's `sources` field. Accepts canonical 'raw/sources/web/foo.md' or 'sources/web/foo.md' and legacy 'web/foo.md'."}
                 },
                 "required": ["wiki", "path"]
             }),
