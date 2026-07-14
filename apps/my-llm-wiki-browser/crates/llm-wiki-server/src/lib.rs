@@ -2734,7 +2734,7 @@ mod tests {
         let wiki_dir = root.join("wiki");
         let raw_dir = root.join("raw");
         fs::create_dir_all(wiki_dir.join("entities")).unwrap();
-        fs::create_dir_all(raw_dir.join("sources")).unwrap();
+        fs::create_dir_all(raw_dir.join("sources").join("x")).unwrap();
         fs::write(
             wiki_dir.join("entities").join("claude.md"),
             "---\ntitle: Claude\ntype: entities\n---\nhello",
@@ -2742,11 +2742,11 @@ mod tests {
         .unwrap();
         fs::write(
             wiki_dir.join("mcp.md"),
-            "---\ntitle: MCP\n---\nsee [[entities/claude|Claude]]",
+            "---\ntitle: MCP\nsources: [x/origin.md]\n---\nsee [[entities/claude|Claude]]",
         )
         .unwrap();
         fs::write(
-            raw_dir.join("sources").join("origin.md"),
+            raw_dir.join("sources").join("x").join("origin.md"),
             "---\ntitle: Origin\n---\nraw body",
         )
         .unwrap();
@@ -2898,6 +2898,11 @@ mod tests {
         let text = tool_text(&reply);
         assert!(text.contains("[[entities/claude|Claude]]"));
         assert!(text.contains("entities/claude")); // outgoingLinks 已解析
+        let page: serde_json::Value = serde_json::from_str(&text).expect("read_page payload");
+        let legacy_source_path = page["sources"][0]
+            .as_str()
+            .expect("legacy source path")
+            .to_string();
 
         // read_pages → 有界批量读取：缺页进 missing，正常页带 body
         let reply = mcp_rpc(
@@ -2940,10 +2945,24 @@ mod tests {
             &app,
             None,
             serde_json::json!({"jsonrpc":"2.0","id":6,"method":"tools/call",
-                "params":{"name":"read_raw","arguments":{"wiki":"demo","path":"sources/origin"}}}),
+                "params":{"name":"read_raw","arguments":{"wiki":"demo","path":"sources/x/origin"}}}),
         )
         .await;
         assert!(tool_text(&reply).contains("raw body"));
+
+        // 旧版页面把 sources 记录成相对 raw/sources/ 的 x/...；read_raw 直接接力也应成功。
+        let reply = mcp_rpc(
+            &app,
+            None,
+            serde_json::json!({"jsonrpc":"2.0","id":61,"method":"tools/call",
+                "params":{"name":"read_raw","arguments":{"wiki":"demo","path":legacy_source_path}}}),
+        )
+        .await;
+        assert_eq!(reply["result"]["isError"], false);
+        let payload: serde_json::Value =
+            serde_json::from_str(&tool_text(&reply)).expect("legacy read_raw payload");
+        assert_eq!(payload["path"], "raw/sources/x/origin.md");
+        assert_eq!(payload["body"], "raw body");
 
         // list_wiki_tree → 类目分组
         let reply = mcp_rpc(
