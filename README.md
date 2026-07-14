@@ -145,11 +145,17 @@ read_pages      read_raw         list_wiki_tree
 
 ### 推荐：把仓库 URL 交给 agent
 
-本仓库根目录的 [`AGENTS.md`](AGENTS.md) 是端到端安装协议。可以直接对支持本地命令的
-agent 说：
+本仓库根目录的 [`AGENTS.md`](AGENTS.md) 是端到端安装协议。GitHub 是 canonical
+源仓库，Gitee 是自动 Pull 的中国大陆只读镜像；两边保持同一提交。可以把当前网络可达的
+任一地址交给支持本地命令的 agent：
 
 ```text
 安装 https://github.com/dake6767/llm-wiki-suite ，
+然后带我完成第一次 capture → RAW → Wiki → Browser。
+```
+
+```text
+安装 https://gitee.com/dake6767/llm-wiki-suite ，
 然后带我完成第一次 capture → RAW → Wiki → Browser。
 ```
 
@@ -158,7 +164,7 @@ agent 会复用已有 checkout，或安装到稳定目录 `~/.my-llm-wiki/suite`
 
 ### 手动安装 skills
 
-先下载并审阅独立 bootstrap 脚本，不使用 `curl | bash`：
+先下载并审阅独立 bootstrap 脚本，不使用 `curl | bash`。全球入口：
 
 ```bash
 curl -fsSLo bootstrap.sh \
@@ -167,8 +173,20 @@ less bootstrap.sh
 bash bootstrap.sh
 ```
 
+中国大陆入口：
+
+```bash
+curl -fsSLo bootstrap.sh \
+  https://gitee.com/dake6767/llm-wiki-suite/raw/main/bootstrap.sh
+less bootstrap.sh
+bash bootstrap.sh \
+  --repo-url https://gitee.com/dake6767/llm-wiki-suite.git
+```
+
 默认安装使用软链，checkout 是长期 source of truth，不应放在临时目录。脚本会将 active
-skills 同步到已存在的 Codex、Claude、Hermes、Agents 和 WorkBuddy skill 目录。
+skills 同步到已存在的 Codex、Claude、Hermes、Agents 和 WorkBuddy skill 目录。未显式
+指定 `--repo-url` 时，fresh install 会短时探测 GitHub；不可达时优先 Gitee，clone 失败时
+再尝试另一入口。已有 checkout 始终沿其 `origin` 更新。
 
 常用选项：
 

@@ -26,13 +26,22 @@
 #   bash bootstrap.sh
 #   bash bootstrap.sh my-llm-wiki-x
 #   bash bootstrap.sh --target ~/.codex/skills my-llm-wiki-video
+#   bash bootstrap.sh --repo-url https://gitee.com/dake6767/llm-wiki-suite.git
 #   bash bootstrap.sh --repo ~/projects/llm-wiki-suite --update
 set -euo pipefail
 
-# These two bootstrap constants intentionally mirror registry/bootstrap.json.
-# Environment overrides keep private forks and non-standard homes possible
+# These bootstrap constants intentionally mirror registry/bootstrap.json.
+# GitHub remains canonical; Gitee is the mainland-China Pull mirror. Explicit
+# environment/CLI overrides keep private forks and non-standard homes possible
 # before a repository exists to read configuration from.
-DEFAULT_REPO_URL="${LLM_WIKI_REPO_URL:-https://github.com/dake6767/llm-wiki-suite.git}"
+CANONICAL_REPO_URL="https://github.com/dake6767/llm-wiki-suite.git"
+CANONICAL_REPO_PROBE_URL="https://github.com/dake6767/llm-wiki-suite"
+CHINA_MIRROR_REPO_URL="https://gitee.com/dake6767/llm-wiki-suite.git"
+REPO_URL_EXPLICIT=0
+if [ -n "${LLM_WIKI_REPO_URL:-}" ]; then
+  REPO_URL_EXPLICIT=1
+fi
+DEFAULT_REPO_URL="${LLM_WIKI_REPO_URL:-$CANONICAL_REPO_URL}"
 DEFAULT_REPO_HOME="${LLM_WIKI_REPO_HOME:-$HOME/.my-llm-wiki/suite}"
 DEFAULT_REPO_HOME="${DEFAULT_REPO_HOME/#\~/$HOME}"
 
@@ -61,7 +70,7 @@ while [ $# -gt 0 ]; do
       need_value "$@"; REPO_ARG="$2"; shift
       ;;
     --repo-url)
-      need_value "$@"; REPO_URL="$2"; shift
+      need_value "$@"; REPO_URL="$2"; REPO_URL_EXPLICIT=1; shift
       ;;
     --target)
       need_value "$@"; TARGETS+=("${2/#\~/$HOME}"); shift
@@ -89,6 +98,25 @@ done
 
 PY_BIN="$(command -v python3 || command -v python || true)"
 [ -n "$PY_BIN" ] || die "python3/python is required"
+
+build_clone_urls() {
+  CLONE_URLS=()
+  if [ "$REPO_URL_EXPLICIT" -eq 1 ]; then
+    CLONE_URLS+=("$REPO_URL")
+    return
+  fi
+
+  # A short read-only probe avoids waiting on a blocked GitHub clone before
+  # trying the domestic mirror. curl is optional; without it the clone itself
+  # still falls back from GitHub to Gitee.
+  if command -v curl >/dev/null 2>&1 &&
+      ! curl -fsSI --connect-timeout 3 --max-time 5 \
+        "$CANONICAL_REPO_PROBE_URL" >/dev/null 2>&1; then
+    CLONE_URLS+=("$CHINA_MIRROR_REPO_URL" "$CANONICAL_REPO_URL")
+  else
+    CLONE_URLS+=("$CANONICAL_REPO_URL" "$CHINA_MIRROR_REPO_URL")
+  fi
+}
 
 is_repo() {
   [ -n "${1:-}" ] &&
@@ -172,9 +200,11 @@ if [ -z "$REPO_ROOT" ] && is_repo "$DEFAULT_REPO_HOME"; then
 fi
 
 if [ -z "$REPO_ROOT" ]; then
+  build_clone_urls
   if [ "$DRY_RUN" -eq 1 ]; then
-    echo "[dry-run] would clone $REPO_URL"
-    echo "          into $DEFAULT_REPO_HOME"
+    echo "[dry-run] would try fresh-clone source(s), in order:"
+    printf '          %s\n' "${CLONE_URLS[@]}"
+    echo "[dry-run] destination: $DEFAULT_REPO_HOME"
     if [ ${#TARGETS[@]} -eq 0 ]; then
       echo "[dry-run] target dirs would come from registry/bootstrap.json"
     else
@@ -192,13 +222,34 @@ if [ -z "$REPO_ROOT" ]; then
   { [ ! -e "$DEFAULT_REPO_HOME" ] && [ ! -L "$DEFAULT_REPO_HOME" ]; } || die \
     "$DEFAULT_REPO_HOME exists but is not a valid checkout; move it or use --repo"
   echo "No existing checkout found."
-  echo "Cloning $REPO_URL"
-  echo "     to $DEFAULT_REPO_HOME"
   mkdir -p "$(dirname "$DEFAULT_REPO_HOME")"
-  git clone "$REPO_URL" "$DEFAULT_REPO_HOME"
+  CLONE_TMP="${DEFAULT_REPO_HOME}.clone.$$"
+  { [ ! -e "$CLONE_TMP" ] && [ ! -L "$CLONE_TMP" ]; } || die \
+    "$CLONE_TMP already exists; remove it and retry"
+  cleanup_clone_tmp() {
+    if [ -n "${CLONE_TMP:-}" ] && { [ -e "$CLONE_TMP" ] || [ -L "$CLONE_TMP" ]; }; then
+      rm -rf -- "$CLONE_TMP"
+    fi
+  }
+  trap cleanup_clone_tmp EXIT
+  CLONED_FROM=""
+  for candidate_url in "${CLONE_URLS[@]}"; do
+    echo "Cloning $candidate_url"
+    echo "     to $DEFAULT_REPO_HOME"
+    if git clone "$candidate_url" "$CLONE_TMP"; then
+      mv "$CLONE_TMP" "$DEFAULT_REPO_HOME"
+      CLONE_TMP=""
+      CLONED_FROM="$candidate_url"
+      break
+    fi
+    echo "Clone failed; trying the next configured source." >&2
+    cleanup_clone_tmp
+  done
+  trap - EXIT
+  [ -n "$CLONED_FROM" ] || die "all configured clone sources failed"
   is_repo "$DEFAULT_REPO_HOME" || die "clone completed but the suite layout is invalid"
   REPO_ROOT="$(absolute_dir "$DEFAULT_REPO_HOME")"
-  REPO_SOURCE="fresh clone"
+  REPO_SOURCE="fresh clone ($CLONED_FROM)"
 else
   echo "Reusing checkout ($REPO_SOURCE): $REPO_ROOT"
 fi

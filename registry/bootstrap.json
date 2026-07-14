@@ -1,9 +1,24 @@
 {
   "version": 3,
-  "updated_at": "2026-07-10",
+  "updated_at": "2026-07-14",
   "home": "~/.my-llm-wiki",
   "repo_url": "https://github.com/dake6767/llm-wiki-suite.git",
+  "repo_mirrors": [
+    {
+      "name": "gitee",
+      "region": "cn",
+      "url": "https://gitee.com/dake6767/llm-wiki-suite.git",
+      "direction": "pull-from-canonical"
+    }
+  ],
   "bootstrap_script_url": "https://raw.githubusercontent.com/dake6767/llm-wiki-suite/main/bootstrap.sh",
+  "bootstrap_script_mirrors": [
+    {
+      "name": "gitee",
+      "region": "cn",
+      "url": "https://gitee.com/dake6767/llm-wiki-suite/raw/main/bootstrap.sh"
+    }
+  ],
   "default_repo_home": "~/.my-llm-wiki/suite",
   "connector_dir": "~/.my-llm-wiki/connector",
   "wiki_registry_path": "~/.my-llm-wiki/wikis.json",

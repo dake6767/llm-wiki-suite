@@ -1,19 +1,32 @@
 # Agent Bootstrap Protocol
 
-This repository is meant to be installable by an agent from a GitHub URL.
+This repository is meant to be installable by an agent from either the
+canonical GitHub URL or the read-only Gitee Pull mirror for mainland China.
 
 When a user says "install this project" and provides the suite URL, follow this
 release-first flow.
 
 The preferred skills-only entry point is the standalone root `bootstrap.sh`.
 Download and inspect it, then run it; do not pipe a remote script directly into
-a shell:
+a shell. Use the endpoint reachable from the current network.
+
+Canonical/global:
 
 ```bash
 curl -fsSLo bootstrap.sh \
   https://raw.githubusercontent.com/dake6767/llm-wiki-suite/main/bootstrap.sh
 less bootstrap.sh
 bash bootstrap.sh
+```
+
+Mainland China:
+
+```bash
+curl -fsSLo bootstrap.sh \
+  https://gitee.com/dake6767/llm-wiki-suite/raw/main/bootstrap.sh
+less bootstrap.sh
+bash bootstrap.sh \
+  --repo-url https://gitee.com/dake6767/llm-wiki-suite.git
 ```
 
 It implements steps 1–3 below: reuse/clone the permanent checkout, sync active
@@ -37,10 +50,16 @@ Resolve where the repo lives, in this order:
    shadow their working copy and split the source of truth.
 2. **Fresh install** — no checkout exists. Clone to the canonical home from
    `registry/bootstrap.json` → `default_repo_home` (`~/.my-llm-wiki/suite`), then
-   run `install.sh` from there. This keeps the symlinks stable and lets `doctor` /
-   updates always find the repo root. Everything the suite persists lives under
-   the one branded home `~/.my-llm-wiki/` (registry `wikis.json`, `connector/`
-   runtime, `suite/` checkout).
+   run `install.sh` from there. GitHub remains `repo_url`; `repo_mirrors` declares
+   the Gitee Pull mirror. Without an explicit `--repo-url`, bootstrap probes
+   GitHub briefly, prefers Gitee when it is unreachable, and falls back to the
+   other configured source if clone fails. The successful source becomes
+   `origin`, so later `git pull` stays on the same reachable host. This keeps the
+   symlinks stable and lets `doctor` / updates always find the repo root.
+
+The Gitee repository is a read-only consumer mirror. Never make Gitee-specific
+commits or rewrite links during synchronization; change the canonical GitHub
+repository once and let Gitee Pull the identical refs.
 
 If a checkout is already present, `git pull` (or ask) before overwriting local
 changes. Never clone into the agent workspace / current working directory.
