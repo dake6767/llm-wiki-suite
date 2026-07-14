@@ -249,8 +249,8 @@ struct DesktopState {
 }
 
 /// 中继连接后的两个线上入口，严格分离（docs/19 §4.3）：
-/// - `owner_url`：含 master token 的本人入口，只用于「打开线上 WIKI（本人）」与
-///   `/api/v1/config/share`（agent 配置）。**绝不**用于构造分享链接。
+/// - `owner_url`：含 master token 的本人入口，只用于托盘的「打开/复制线上
+///   WIKI（本人/自用）」与 `/api/v1/config/share`（agent 配置）。**绝不**用于构造分享链接。
 /// - `public_base`：无凭证的 `https://<relay>/<uid>/`，是服务端拼分享链接的合法基座。
 ///   两者各自独立构造，`public_base` 不从 `owner_url` 做字符串删除得来。
 #[derive(Default)]
@@ -263,6 +263,7 @@ struct OnlineUrls {
 struct TrayState {
     relay_status: MenuItem<tauri::Wry>,
     open_online_wiki: MenuItem<tauri::Wry>,
+    copy_online_wiki: MenuItem<tauri::Wry>,
     relay_toggle: MenuItem<tauri::Wry>,
     skill_update: MenuItem<tauri::Wry>,
 }
@@ -306,6 +307,7 @@ impl RelayRuntime {
         let _ = self.tray.relay_toggle.set_text("断开中继服务");
         let _ = self.tray.relay_status.set_text("🔴 中继：重连中");
         let _ = self.tray.open_online_wiki.set_enabled(false);
+        let _ = self.tray.copy_online_wiki.set_enabled(false);
 
         let handle_slot = self.handle.clone();
         let generation = self.generation.clone();
@@ -341,6 +343,7 @@ impl RelayRuntime {
         }
         let _ = self.tray.relay_status.set_text("⚪ 中继：已关闭");
         let _ = self.tray.open_online_wiki.set_enabled(false);
+        let _ = self.tray.copy_online_wiki.set_enabled(false);
         let _ = self.tray.relay_toggle.set_text("连接中继服务");
     }
 
@@ -791,12 +794,19 @@ fn build_tray(
     let show_window = MenuItem::with_id(app, "show_window", "设置", true, None::<&str>)?;
     let open_local_wiki =
         MenuItem::with_id(app, "open_local_wiki", "打开本地 WIKI", true, None::<&str>)?;
-    // 本人线上入口（含 master token），只用于打开浏览器，不再提供「复制」入口——
-    // 复制过的东西就会被转发（docs/19 §4.5）。分享改走 web UI 确认面板。
+    // 本人线上入口含 master token；「复制」明确标记为自用，不可作为分享链接。
+    // 对外分享仍须走 web UI 确认面板，生成独立、可撤销的访客凭证。
     let open_online_wiki = MenuItem::with_id(
         app,
         "open_online_wiki",
         "打开线上 WIKI（本人）",
+        false,
+        None::<&str>,
+    )?;
+    let copy_online_wiki = MenuItem::with_id(
+        app,
+        "copy_online_wiki",
+        "复制线上 WIKI 链接（自用）",
         false,
         None::<&str>,
     )?;
@@ -818,6 +828,7 @@ fn build_tray(
             &status,
             &open_local_wiki,
             &open_online_wiki,
+            &copy_online_wiki,
             &relay_toggle,
             &skill_update,
             &show_window,
@@ -850,6 +861,13 @@ fn build_tray(
                     let _ = open::that(url);
                 }
             }
+            "copy_online_wiki" => {
+                let owner_url = online_urls
+                    .lock()
+                    .ok()
+                    .and_then(|guard| guard.owner_url.clone());
+                copy_owner_url_to_clipboard(app, owner_url);
+            }
             "relay_toggle" => {
                 if let Some(relay_runtime) = app.try_state::<RelayRuntime>() {
                     relay_runtime.toggle();
@@ -870,9 +888,39 @@ fn build_tray(
     Ok(TrayState {
         relay_status,
         open_online_wiki,
+        copy_online_wiki,
         relay_toggle,
         skill_update,
     })
+}
+
+fn copy_owner_url_to_clipboard(app: &tauri::AppHandle, owner_url: Option<String>) {
+    use tauri_plugin_notification::NotificationExt;
+
+    let result = owner_url
+        .ok_or_else(|| anyhow::anyhow!("中继未连接，线上 WIKI 链接尚未就绪"))
+        .and_then(|url| {
+            let mut clipboard = arboard::Clipboard::new().context("无法访问系统剪贴板")?;
+            clipboard.set_text(url).context("无法写入系统剪贴板")
+        });
+
+    let (title, body) = match result {
+        Ok(()) => (
+            "线上 WIKI 链接已复制",
+            "该链接含本人访问凭证，请仅限自用，不要转发。",
+        ),
+        Err(err) => {
+            tracing::warn!(error = ?err, "failed to copy owner online wiki URL");
+            (
+                "复制线上 WIKI 链接失败",
+                "请确认中继已连接，且应用可访问系统剪贴板后重试。",
+            )
+        }
+    };
+
+    if let Err(err) = app.notification().builder().title(title).body(body).show() {
+        tracing::warn!(error = ?err, "failed to show clipboard result notification");
+    }
 }
 
 fn show_config_window(app: &tauri::AppHandle) {
@@ -911,6 +959,7 @@ fn update_tray_relay(
                 .relay_status
                 .set_text(format!("🟢 中继：已连接 ({uid})"));
             let _ = tray.open_online_wiki.set_enabled(enabled);
+            let _ = tray.copy_online_wiki.set_enabled(enabled);
         }
         ConnectorEvent::Disconnected => {
             if let Ok(mut guard) = online_urls.lock() {
@@ -918,10 +967,12 @@ fn update_tray_relay(
             }
             let _ = tray.relay_status.set_text("🔴 中继：未连接");
             let _ = tray.open_online_wiki.set_enabled(false);
+            let _ = tray.copy_online_wiki.set_enabled(false);
         }
         ConnectorEvent::Retrying { .. } => {
             let _ = tray.relay_status.set_text("🔴 中继：重连中");
             let _ = tray.open_online_wiki.set_enabled(false);
+            let _ = tray.copy_online_wiki.set_enabled(false);
         }
         ConnectorEvent::Replaced => {
             if let Ok(mut guard) = online_urls.lock() {
@@ -929,6 +980,7 @@ fn update_tray_relay(
             }
             let _ = tray.relay_status.set_text("⚪ 中继：已被其他设备接管");
             let _ = tray.open_online_wiki.set_enabled(false);
+            let _ = tray.copy_online_wiki.set_enabled(false);
             let _ = tray.relay_toggle.set_text("连接中继服务");
         }
         ConnectorEvent::IdentityLoaded { .. } | ConnectorEvent::RequestFinished { .. } => {}
