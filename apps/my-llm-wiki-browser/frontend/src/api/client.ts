@@ -38,14 +38,43 @@ export function decorateInternalHref(path: string): string {
 
 export class AuthError extends Error {}
 
+// 中继瞬时不可达时 Worker 直接回这些状态：503=连接器离线/断开（重连空窗），
+// 502=连接器发送失败。远程访问经 wss 隧道，链路 RST 后有 1-2s 重连窗口，窗口内
+// 落到的 GET 读请求会吃到 503——对只读浏览做短暂重试即可让空窗对用户「隐形」。
+// 只用于 api()（GET 读）；写操作 send() 不重试，可能非幂等（如创建分享）。
+const RELAY_RETRY_STATUSES = new Set([502, 503]);
+// 重试节奏：覆盖典型重连空窗（现约 1-2s）并留余量；若中继真的下线，最坏 ~3.4s 后暴露错误。
+const RELAY_RETRY_DELAYS_MS = [400, 1000, 2000];
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
 async function api<T>(path: string): Promise<T> {
   const headers: Record<string, string> = {};
   const token = authToken();
   if (token) headers["Authorization"] = `Bearer ${token}`;
-  const res = await fetch(withBase(path), { headers });
-  if (res.status === 401) throw new AuthError("未授权");
-  if (!res.ok) throw new Error(`请求失败 ${res.status}`);
-  return res.json() as Promise<T>;
+  const url = withBase(path);
+
+  let lastError: unknown = new Error("请求失败");
+  for (let attempt = 0; attempt <= RELAY_RETRY_DELAYS_MS.length; attempt++) {
+    if (attempt > 0) await sleep(RELAY_RETRY_DELAYS_MS[attempt - 1]);
+    let res: Response;
+    try {
+      res = await fetch(url, { headers });
+    } catch (err) {
+      // fetch 抛出 = CF 边缘/本机网络瞬断（Worker 可达时总会回 HTTP 状态）。同样可重试。
+      lastError = err;
+      continue;
+    }
+    if (res.status === 401) throw new AuthError("未授权");
+    if (res.ok) return res.json() as Promise<T>;
+    // 可重试状态且还有重试额度：记下错误、进入下一轮；否则立即抛出（含 404 等确定性失败）。
+    if (RELAY_RETRY_STATUSES.has(res.status) && attempt < RELAY_RETRY_DELAYS_MS.length) {
+      lastError = new Error(`请求失败 ${res.status}`);
+      continue;
+    }
+    throw new Error(`请求失败 ${res.status}`);
+  }
+  throw lastError instanceof Error ? lastError : new Error("请求失败");
 }
 
 // 带方法/请求体的写操作（PUT/POST/PATCH/DELETE 等）。错误时尽量带上后端 detail 文案。

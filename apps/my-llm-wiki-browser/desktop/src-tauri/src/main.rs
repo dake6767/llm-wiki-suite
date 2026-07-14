@@ -5,6 +5,7 @@
 use std::io::ErrorKind;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -101,6 +102,10 @@ fn main() {
             let online_urls = Arc::new(Mutex::new(OnlineUrls::default()));
             let tray = build_tray(app.handle(), local_url.clone(), online_urls.clone())?;
             let skill_manager = build_skill_version_manager(app.handle(), tray.clone());
+            // 端口已被占用 = 另一个实例在跑本机 server（多半也拿着 relay uid）。
+            // 此时本实例绝不能再起同 uid 的 connector：Worker 按 uid 单连接，
+            // 两个实例会每几秒互踢一次，把远程访问打成筛子。
+            let mut secondary_instance = false;
             match prepare_local_server(app.handle(), online_urls.clone()) {
                 Ok(Some((std_listener, mut server_config))) => {
                     server_config.control = Some(server_control(
@@ -121,7 +126,9 @@ fn main() {
                         }
                     });
                 }
-                Ok(None) => {}
+                Ok(None) => {
+                    secondary_instance = true;
+                }
                 Err(err) => {
                     tracing::error!(error = ?err, "failed to prepare local wiki server");
                 }
@@ -133,8 +140,15 @@ fn main() {
             let _ = app.set_activation_policy(ActivationPolicy::Accessory);
             let relay_runtime = RelayRuntime::new(connector_config, tray.clone(), online_urls);
             // 中继默认关闭，仅当用户上次手动开启过才自动连接。
+            // 二实例跳过自启：主实例已持有本机 server 和 relay uid（见上）。
             if load_relay_enabled() {
-                relay_runtime.start();
+                if secondary_instance {
+                    tracing::warn!(
+                        "skipping relay auto-start: another instance owns the local server and relay uid"
+                    );
+                } else {
+                    relay_runtime.start();
+                }
             }
 
             if let Some(window) = app.get_webview_window("main") {
@@ -260,6 +274,9 @@ struct RelayRuntime {
     tray: TrayState,
     online_urls: Arc<Mutex<OnlineUrls>>,
     handle: Arc<Mutex<Option<tauri::async_runtime::JoinHandle<()>>>>,
+    // start 的代数：连接循环自然退出时只允许清理「自己那一代」的句柄，
+    // 防止与 stop→start 竞态时误清新任务的句柄。
+    generation: Arc<AtomicU64>,
 }
 
 impl RelayRuntime {
@@ -274,6 +291,7 @@ impl RelayRuntime {
             tray,
             online_urls,
             handle: Arc::new(Mutex::new(None)),
+            generation: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -293,6 +311,9 @@ impl RelayRuntime {
         let _ = self.tray.relay_status.set_text("🔴 中继：重连中");
         let _ = self.tray.open_online_wiki.set_enabled(false);
 
+        let handle_slot = self.handle.clone();
+        let generation = self.generation.clone();
+        let my_generation = generation.fetch_add(1, Ordering::SeqCst) + 1;
         *handle = Some(tauri::async_runtime::spawn(async move {
             if let Err(err) = run_connector_with_events(config, move |event| {
                 update_tray_relay(&tray, online_urls.clone(), &worker_ws, event);
@@ -300,6 +321,15 @@ impl RelayRuntime {
             .await
             {
                 tracing::error!(error = ?err, "relay connector stopped");
+            }
+            // 连接循环整体退出（如被其他连接器接管）时清掉句柄，
+            // 托盘再点“连接中继服务”可直接重新 start，而不是先经过一次无效的 stop。
+            // 仅当没有更新一代的 start 时才清，避免误清新任务的句柄。
+            // 代数检查须在持锁后做：start() 持同一把锁递增代数，两者才互斥。
+            if let Ok(mut slot) = handle_slot.lock()
+                && generation.load(Ordering::SeqCst) == my_generation
+            {
+                *slot = None;
             }
         }));
     }
@@ -896,6 +926,14 @@ fn update_tray_relay(
         ConnectorEvent::Retrying { .. } => {
             let _ = tray.relay_status.set_text("🔴 中继：重连中");
             let _ = tray.open_online_wiki.set_enabled(false);
+        }
+        ConnectorEvent::Replaced => {
+            if let Ok(mut guard) = online_urls.lock() {
+                *guard = OnlineUrls::default();
+            }
+            let _ = tray.relay_status.set_text("⚪ 中继：已被其他设备接管");
+            let _ = tray.open_online_wiki.set_enabled(false);
+            let _ = tray.relay_toggle.set_text("连接中继服务");
         }
         ConnectorEvent::IdentityLoaded { .. } | ConnectorEvent::RequestFinished { .. } => {}
     }
