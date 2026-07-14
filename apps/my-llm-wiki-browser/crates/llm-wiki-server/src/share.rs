@@ -8,8 +8,8 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, RwLock};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -498,19 +498,13 @@ mod tests {
         let second = store
             .create("demo".into(), "独立".into(), None, false)
             .unwrap();
-        assert_eq!(
-            store.default_grants().get("demo"),
-            Some(&first.grant_id)
-        );
+        assert_eq!(store.default_grants().get("demo"), Some(&first.grant_id));
 
         store
             .set_default(&second.grant_id, now_ts())
             .unwrap()
             .unwrap();
-        assert_eq!(
-            store.default_grants().get("demo"),
-            Some(&second.grant_id)
-        );
+        assert_eq!(store.default_grants().get("demo"), Some(&second.grant_id));
 
         store.revoke(&second.grant_id).unwrap().unwrap();
         assert!(!store.default_grants().contains_key("demo"));
@@ -544,9 +538,6 @@ mod tests {
             .unwrap();
 
         let reloaded = GrantStore::load(Some(path));
-        assert_eq!(
-            reloaded.default_grants().get("demo"),
-            Some(&grant.grant_id)
-        );
+        assert_eq!(reloaded.default_grants().get("demo"), Some(&grant.grant_id));
     }
 }

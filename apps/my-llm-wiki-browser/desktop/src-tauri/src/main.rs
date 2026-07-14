@@ -280,11 +280,7 @@ struct RelayRuntime {
 }
 
 impl RelayRuntime {
-    fn new(
-        config: ConnectorConfig,
-        tray: TrayState,
-        online_urls: Arc<Mutex<OnlineUrls>>,
-    ) -> Self {
+    fn new(config: ConnectorConfig, tray: TrayState, online_urls: Arc<Mutex<OnlineUrls>>) -> Self {
         Self {
             worker_ws: config.worker_ws.clone(),
             config,
@@ -380,7 +376,8 @@ fn maybe_notify_first_launch(app: &tauri::AppHandle) {
     }
 
     #[cfg(target_os = "windows")]
-    let body = "已在后台运行。点击任务栏右下角的托盘图标（可能折叠在 ∧ 溢出区里）可打开本地 WIKI 和设置。";
+    let body =
+        "已在后台运行。点击任务栏右下角的托盘图标（可能折叠在 ∧ 溢出区里）可打开本地 WIKI 和设置。";
     #[cfg(target_os = "macos")]
     let body = "已在后台运行。点击菜单栏右上角的托盘图标可打开本地 WIKI 和设置。";
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
@@ -511,8 +508,7 @@ const SKILL_HOST_DIRS: &[&str] = &[
 ];
 /// 技能版本信号 endpoints：Worker 优先、GitHub 直连兜底（doc 21 §2.2/§3）。
 const SKILL_VERSION_WORKER_URL: &str = "https://wiki.htmlgo.to/_skills/version.json";
-const SKILL_VERSION_GITHUB_URL: &str =
-    "https://github.com/dake6767/llm-wiki-suite/releases/download/skills-latest/skills-version.json";
+const SKILL_VERSION_GITHUB_URL: &str = "https://github.com/dake6767/llm-wiki-suite/releases/download/skills-latest/skills-version.json";
 
 /// 构造技能版本探测器（只读）。host 目录/endpoint/slug 快照为发布态事实。
 fn build_skill_version_manager(

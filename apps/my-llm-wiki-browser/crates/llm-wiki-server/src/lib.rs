@@ -182,15 +182,9 @@ pub fn build_router(config: ServerConfig) -> Router {
             get(get_server_config).put(put_server_config),
         )
         .route("/config/share", get(get_share_config))
-        .route(
-            "/config/shares",
-            get(list_shares).post(create_share),
-        )
+        .route("/config/shares", get(list_shares).post(create_share))
         .route("/config/shares/{grant_id}/link", post(share_link))
-        .route(
-            "/config/shares/{grant_id}/default",
-            post(set_default_share),
-        )
+        .route("/config/shares/{grant_id}/default", post(set_default_share))
         .route(
             "/config/shares/{grant_id}",
             axum::routing::patch(patch_share).delete(delete_share),
@@ -262,9 +256,10 @@ async fn cache_headers(request: Request<Body>, next: Next) -> Response {
     } else {
         "no-cache" // SPA 外壳与根文件：始终重新校验，避免缓存到旧 index.html。
     };
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static(cache_control));
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(cache_control),
+    );
     response
 }
 
@@ -859,10 +854,7 @@ fn principal_from_parts(parts: &Parts) -> Result<Principal, ApiError> {
 }
 
 /// 从路径参数取 `{wiki}`。用 map 反序列化以兼容 `{wiki}` 与 `{wiki}/{*path}` 两种路由。
-async fn wiki_path_param<S: Send + Sync>(
-    parts: &mut Parts,
-    state: &S,
-) -> Result<String, ApiError> {
+async fn wiki_path_param<S: Send + Sync>(parts: &mut Parts, state: &S) -> Result<String, ApiError> {
     let params =
         AxumPath::<std::collections::HashMap<String, String>>::from_request_parts(parts, state)
             .await
@@ -1112,7 +1104,10 @@ async fn get_server_config(State(state): State<AppState>) -> Json<ServerConfigIn
 
 async fn get_share_config(State(state): State<AppState>) -> Json<ShareConfigInfo> {
     // 本人线上入口（含 master token）。仅本端点使用，绝不进入分享链接构造。
-    let online_url = state.owner_online_url.as_ref().and_then(|provider| provider());
+    let online_url = state
+        .owner_online_url
+        .as_ref()
+        .and_then(|provider| provider());
     Json(ShareConfigInfo {
         relay_connected: online_url.is_some(),
         online_url,
@@ -1120,9 +1115,7 @@ async fn get_share_config(State(state): State<AppState>) -> Json<ShareConfigInfo
 }
 
 /// 前端进访客模式的依据：owner 或 guest（附授权的 wiki）。
-async fn get_session(
-    CurrentPrincipal(principal): CurrentPrincipal,
-) -> Json<SessionInfo> {
+async fn get_session(CurrentPrincipal(principal): CurrentPrincipal) -> Json<SessionInfo> {
     match principal {
         Principal::Owner => Json(SessionInfo {
             principal: "owner",
@@ -1157,11 +1150,7 @@ fn grant_view(grant: &ShareGrant, now: i64, is_default: bool) -> ShareGrantView 
 /// 从**无凭证**的 `public_base_url` 拼稳定 Guest namespace：
 /// `share/<grant_id>/#key=<secret>`。grant_id 可安全进入请求路径；secret 只进 fragment，
 /// 页面导航不会把它发给 relay / Cloudflare。中继未连接时回退本地 URL并带 warning。
-fn build_share_link(
-    state: &AppState,
-    grant_id: &str,
-    secret: &str,
-) -> (String, Option<String>) {
+fn build_share_link(state: &AppState, grant_id: &str, secret: &str) -> (String, Option<String>) {
     if let Some(provider) = &state.public_base_url
         && let Some(base) = provider()
     {
@@ -1177,7 +1166,10 @@ fn build_share_link(
             "http://127.0.0.1:{}/share/{grant_id}/#key={secret}",
             state.port
         ),
-        Some("线上访问未开启，此链接暂时仅本机可用；开启中继后请在管理面板重新复制链接。".to_string()),
+        Some(
+            "线上访问未开启，此链接暂时仅本机可用；开启中继后请在管理面板重新复制链接。"
+                .to_string(),
+        ),
     )
 }
 
@@ -1453,7 +1445,11 @@ async fn post_update_install(
 
 /// 读取当前技能版本快照。宿主未注入 manager 时 `supported:false`，前端隐藏面板。
 async fn get_skills_config(State(state): State<AppState>) -> Json<SkillsConfigInfo> {
-    let Some(manager) = state.control.as_ref().and_then(|c| c.skill_version.as_ref()) else {
+    let Some(manager) = state
+        .control
+        .as_ref()
+        .and_then(|c| c.skill_version.as_ref())
+    else {
         return Json(SkillsConfigInfo {
             supported: false,
             info: None,
@@ -1629,8 +1625,7 @@ async fn get_source_preview(
         .pages
         .get(&page_path)
         .ok_or(ApiError::not_found("页面不存在"))?;
-    let requested = canonical_raw_source(&query.source)
-        .ok_or(ApiError::not_found("来源不存在"))?;
+    let requested = canonical_raw_source(&query.source).ok_or(ApiError::not_found("来源不存在"))?;
     let referenced = page
         .sources
         .iter()
@@ -1654,11 +1649,13 @@ fn canonical_raw_source(source: &str) -> Option<String> {
     if source.is_empty() {
         return None;
     }
-    Some(if source.starts_with("sources/") || source.starts_with("assets/") {
-        source.to_string()
-    } else {
-        format!("sources/{source}")
-    })
+    Some(
+        if source.starts_with("sources/") || source.starts_with("assets/") {
+            source.to_string()
+        } else {
+            format!("sources/{source}")
+        },
+    )
 }
 
 /// 找出由某条 RAW 编译出的 Wiki 来源摘要页。概念、实体等页面也可能在
@@ -1910,7 +1907,12 @@ fn is_open_review(item: &serde_json::Value) -> bool {
     match item.get("status").and_then(|v| v.as_str()) {
         Some(status) => !matches!(
             status,
-            "resolved" | "done" | "closed" | "skipped" | "skip" | "researched"
+            "resolved"
+                | "done"
+                | "closed"
+                | "skipped"
+                | "skip"
+                | "researched"
                 | "queued-for-research"
         ),
         None => true,
@@ -2796,7 +2798,11 @@ mod tests {
             .expect("response")
     }
 
-    async fn mcp_rpc(app: &Router, token: Option<&str>, body: serde_json::Value) -> serde_json::Value {
+    async fn mcp_rpc(
+        app: &Router,
+        token: Option<&str>,
+        body: serde_json::Value,
+    ) -> serde_json::Value {
         let response = mcp_post_raw(app, token, body).await;
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
@@ -2907,7 +2913,12 @@ mod tests {
             serde_json::from_str(&tool_text(&reply)).expect("read_pages payload");
         assert_eq!(payload["pages"].as_array().unwrap().len(), 2);
         assert_eq!(payload["missing"][0], "nope");
-        assert!(payload["pages"][0]["body"].as_str().unwrap().contains("[[entities/claude|Claude]]"));
+        assert!(
+            payload["pages"][0]["body"]
+                .as_str()
+                .unwrap()
+                .contains("[[entities/claude|Claude]]")
+        );
 
         // read_pages 预算：maxPages=1 → 第二页落入 omitted；超长正文被截断并标记
         let reply = mcp_rpc(
@@ -3717,7 +3728,9 @@ mod tests {
             .await
             .expect("response");
         assert_eq!(owner.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(owner.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(owner.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let info: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(info["supported"], true);
         assert_eq!(info["changelogUrl"], skill_version::CHANGELOG_URL);
@@ -3890,17 +3903,11 @@ mod tests {
             fs::create_dir_all(&wiki_dir).unwrap();
             fs::create_dir_all(raw_dir.join("sources")).unwrap();
             let frontmatter = if key == "demo" {
-                format!(
-                    "---\ntitle: {key}\nsources: [sources/referenced.md]\n---\nhello {key}"
-                )
+                format!("---\ntitle: {key}\nsources: [sources/referenced.md]\n---\nhello {key}")
             } else {
                 format!("---\ntitle: {key}\n---\nhello {key}")
             };
-            fs::write(
-                wiki_dir.join("index.md"),
-                frontmatter,
-            )
-            .unwrap();
+            fs::write(wiki_dir.join("index.md"), frontmatter).unwrap();
             if key == "demo" {
                 fs::write(
                     raw_dir.join("sources/referenced.md"),
@@ -4027,7 +4034,11 @@ mod tests {
         let ok = |uri: &'static str| {
             let app = app.clone();
             let token = token.clone();
-            async move { send_json(&app, "GET", uri, Some(&token), None).await.status() }
+            async move {
+                send_json(&app, "GET", uri, Some(&token), None)
+                    .await
+                    .status()
+            }
         };
         assert_eq!(ok("/api/v1/wikis/demo/tree").await, StatusCode::OK);
         assert_eq!(ok("/api/v1/wikis/demo/pages/index").await, StatusCode::OK);
@@ -4045,8 +4056,14 @@ mod tests {
             StatusCode::NOT_FOUND
         );
         assert_eq!(ok("/api/v1/wikis/other/tree").await, StatusCode::NOT_FOUND);
-        assert_eq!(ok("/api/v1/wikis/other/pages/index").await, StatusCode::NOT_FOUND);
-        assert_eq!(ok("/api/v1/wikis/demo/raw-tree").await, StatusCode::NOT_FOUND);
+        assert_eq!(
+            ok("/api/v1/wikis/other/pages/index").await,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            ok("/api/v1/wikis/demo/raw-tree").await,
+            StatusCode::NOT_FOUND
+        );
         assert_eq!(ok("/api/v1/wikis/demo/review").await, StatusCode::NOT_FOUND);
         assert_eq!(ok("/api/v1/config/shares").await, StatusCode::FORBIDDEN);
         assert_eq!(ok("/api/v1/config/share").await, StatusCode::FORBIDDEN);
@@ -4061,10 +4078,12 @@ mod tests {
         assert_eq!(mcp.status(), StatusCode::FORBIDDEN);
 
         // session 端点区分 principal
-        let guest = body_json(send_json(&app, "GET", "/api/v1/session", Some(&token), None).await).await;
+        let guest =
+            body_json(send_json(&app, "GET", "/api/v1/session", Some(&token), None).await).await;
         assert_eq!(guest["principal"], "guest");
         assert_eq!(guest["wiki"], "demo");
-        let owner = body_json(send_json(&app, "GET", "/api/v1/session", Some("secret"), None).await).await;
+        let owner =
+            body_json(send_json(&app, "GET", "/api/v1/session", Some("secret"), None).await).await;
         assert_eq!(owner["principal"], "owner");
 
         // Owner 管理列表公开权限范围但不公开 secret，供设置页直接展示与治理。
@@ -4105,10 +4124,9 @@ mod tests {
         )
         .await;
         assert_eq!(made_default["is_default"], true);
-        let relisted = body_json(
-            send_json(&app, "GET", "/api/v1/config/shares", Some("secret"), None).await,
-        )
-        .await;
+        let relisted =
+            body_json(send_json(&app, "GET", "/api/v1/config/shares", Some("secret"), None).await)
+                .await;
         assert_eq!(
             relisted
                 .as_array()
@@ -4129,7 +4147,10 @@ mod tests {
         )
         .await;
         assert_eq!(del.status(), StatusCode::OK);
-        assert_eq!(ok("/api/v1/wikis/demo/tree").await, StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            ok("/api/v1/wikis/demo/tree").await,
+            StatusCode::UNAUTHORIZED
+        );
         let link_after = send_json(
             &app,
             "POST",
@@ -4186,12 +4207,24 @@ mod tests {
         };
         // 用作 Owner：能读 raw-tree（Owner-only 内容）
         assert_eq!(
-            status_with_auth(&app, "/api/v1/wikis/demo/raw-tree", "Bearer s_custom.master").await,
+            status_with_auth(
+                &app,
+                "/api/v1/wikis/demo/raw-tree",
+                "Bearer s_custom.master"
+            )
+            .await,
             StatusCode::OK
         );
         // 会话判定为 owner
         let session = body_json(
-            send_json(&app, "GET", "/api/v1/session", Some("s_custom.master"), None).await,
+            send_json(
+                &app,
+                "GET",
+                "/api/v1/session",
+                Some("s_custom.master"),
+                None,
+            )
+            .await,
         )
         .await;
         assert_eq!(session["principal"], "owner");
