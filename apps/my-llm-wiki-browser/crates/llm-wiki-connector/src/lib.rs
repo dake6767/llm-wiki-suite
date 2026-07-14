@@ -48,6 +48,12 @@ const END_TO_END_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const END_TO_END_FAILURE_THRESHOLD: u32 = 2;
 // 重连退避上界。
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
+// 退避重置判据 = 本次连接是否「真正工作过」，以收到过任一帧（心跳/请求/响应回程）为准，
+// 而非存活时长。链路 RST 是国内→CF 隧道在高吞吐下的常态：多终端并发浏览时连接会被成簇
+// 掐断，每条只活几秒——但它们确实转发过流量，属链路抖动而非故障，应 1s 级快速重连。
+// 若按「存活 ≥ Ns」判定，这类突发簇会让退避一路爬到十几秒，恰好在负载最高时把所有终端
+// 打成 503（与初衷相反）。真正需要退避的是「连上却零帧即断」（对端拒绝/半开）；而同 uid
+// 互踢已由 replaced 关闭原因单独处理并直接停连，不再依赖退避兜底。
 // 部署版本轮询周期：每隔这么久打一次 Worker 顶层 /_version（永远是最新部署的代码），
 // 版本号变化即认定 Worker 重新部署，主动断开重连以落到新 DO 实例上。
 // 打顶层 fetch 而非 DO，故不受「旧 DO 实例仍存活并继续发心跳、致读空闲兜底永不触发」的影响。
@@ -108,6 +114,9 @@ pub enum ConnectorEvent {
         uid: String,
     },
     Disconnected,
+    /// Worker 用同一 uid 的新连接器替换了本连接器（另一台设备/另一个实例接管）。
+    /// 收到后连接循环整体退出，不再自动重连——无脑重连会和对方形成互踢风暴。
+    Replaced,
     Retrying {
         after_ms: u64,
     },
@@ -164,6 +173,7 @@ enum ConnectionEnd {
     ReadIdleTimeout,
     RemoteStreamClosed,
     RemoteCloseFrame,
+    ReplacedByNewConnector,
     WriterStopped,
     WriterFailed,
     WriterTaskFailed,
@@ -178,6 +188,7 @@ impl ConnectionEnd {
             Self::ReadIdleTimeout => "read_idle_timeout",
             Self::RemoteStreamClosed => "remote_stream_closed",
             Self::RemoteCloseFrame => "remote_close_frame",
+            Self::ReplacedByNewConnector => "replaced_by_new_connector",
             Self::WriterStopped => "writer_stopped",
             Self::WriterFailed => "writer_failed",
             Self::WriterTaskFailed => "writer_task_failed",
@@ -232,7 +243,7 @@ where
     let mut backoff = Duration::from_secs(1);
     loop {
         let connection_id = NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed);
-        let mut connected = false;
+        let mut served_traffic = false;
         match resolve_identity(&config).await {
             Ok(identity) => {
                 emit(ConnectorEvent::IdentityLoaded {
@@ -254,11 +265,22 @@ where
                     emit.clone(),
                     client.clone(),
                     connection_id,
+                    &mut served_traffic,
                 )
                 .await
                 {
+                    Ok(ConnectionEnd::ReplacedByNewConnector) => {
+                        // 另一个连接器（其他设备/实例）用同一 uid 接管了中继。此时重连
+                        // 只会把对方踢下去、形成互踢风暴；整体退出，交由用户显式重启。
+                        tracing::warn!(
+                            connection_id,
+                            reason = ConnectionEnd::ReplacedByNewConnector.as_str(),
+                            "relay connector replaced by another connector; stopping auto-reconnect"
+                        );
+                        emit(ConnectorEvent::Replaced);
+                        return Ok(());
+                    }
                     Ok(reason) => {
-                        connected = true;
                         tracing::warn!(
                             connection_id,
                             reason = reason.as_str(),
@@ -278,8 +300,10 @@ where
                 tracing::warn!(error = ?err, "relay connector identity unavailable");
             }
         }
-        // 成功连过一次就把退避重置回基线；持续失败则指数退避，避免短时间密集重连。
-        if connected {
+        // 真正工作过（收到过任一帧）的连接闪断后把退避重置回基线，链路 RST 只造成秒级空窗；
+        // 连不上或连上零帧即断则持续指数退避，避免密集重连。多终端高吞吐下的成簇 RST 因此
+        // 不会把退避推高——恰是负载最高时最需要快速重连。
+        if served_traffic {
             backoff = Duration::from_secs(1);
         }
         let wait = backoff + retry_jitter(backoff);
@@ -382,6 +406,7 @@ async fn connect_once(
     emit: Arc<dyn Fn(ConnectorEvent) + Send + Sync>,
     client: Arc<reqwest::Client>,
     connection_id: u64,
+    served_traffic: &mut bool,
 ) -> Result<ConnectionEnd> {
     let connect_url = format!(
         "{}/_connect/{}",
@@ -585,7 +610,18 @@ async fn connect_once(
                     break Ok(ConnectionEnd::SendQueueStalled);
                 }
             }
-            Message::Close(_) => break Ok(ConnectionEnd::RemoteCloseFrame),
+            Message::Close(frame) => {
+                // Worker 侧同 uid 新连接器握手成功时会 close(1000, "replaced by new connector")
+                // （relay/worker src/index.js 的替换策略）；据此区分「被接管」和普通断线。
+                let replaced = frame
+                    .as_ref()
+                    .is_some_and(|f| f.reason.contains("replaced by new connector"));
+                break Ok(if replaced {
+                    ConnectionEnd::ReplacedByNewConnector
+                } else {
+                    ConnectionEnd::RemoteCloseFrame
+                });
+            }
             _ => {}
         }
     };
@@ -598,6 +634,9 @@ async fn connect_once(
     }
     version_poll.abort();
     end_to_end_probe.abort();
+    // 收到过任一帧 = 隧道真正通过（心跳/请求/响应回程任一）。无论正常结束还是链路 RST
+    // （走 Err 路径）都据此给退避决策用；握手失败的早退（连不上）不经过这里，天然算「未工作」。
+    *served_traffic = frames_received > 0;
     match &reader_result {
         Ok(reason) => tracing::info!(
             connection_id,
