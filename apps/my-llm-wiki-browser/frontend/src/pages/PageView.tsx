@@ -193,7 +193,18 @@ export default function PageView({ kind }: { kind: "page" | "raw" }) {
             glyph: "概",
             label: "来源概览",
             count: kind === "raw" ? page.source_pages.length : 0,
-            onClick: () =>
+            onClick: () => {
+              const [sourcePage] = page.source_pages;
+              if (page.source_pages.length === 1) {
+                openDrawer({
+                  mode: "doc",
+                  wiki,
+                  kind: "page",
+                  path: sourcePage.path,
+                  title: sourcePage.title,
+                });
+                return;
+              }
               openDrawer({
                 mode: "list",
                 title: `概览 · Wiki Sources (${page.source_pages.length})`,
@@ -208,7 +219,8 @@ export default function PageView({ kind }: { kind: "page" | "raw" }) {
                     title: sourcePage.title,
                   },
                 })),
-              }),
+              });
+            },
           },
           {
             key: "sources",
