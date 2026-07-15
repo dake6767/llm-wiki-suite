@@ -1,7 +1,7 @@
 {
   "version": 3,
-  "pack_version": "1.0.2",
-  "pack_notes": "安装入口：GitHub 保持 canonical，新增 Gitee 中国大陆 Pull 镜像；standalone bootstrap 可按可达性自动选择并在 clone 失败时回退。",
+  "pack_version": "1.0.3",
+  "pack_notes": "RAW 按 source bucket 全局 original_id 去重；X 单帖抓取前查重，并强制使用独立、固定的临时输出目录。",
   "updated_at": "2026-07-14",
   "skills": [
     {
@@ -34,7 +34,7 @@
       "license": "MIT",
       "tags": ["knowledge-base", "rag", "archive", "raw", "wiki", "content-ingestion", "opencli"],
       "last_synced_at": "2026-06-23",
-      "updated_at": "2026-07-09"
+      "updated_at": "2026-07-14"
     },
     {
       "slug": "my-llm-wiki-video",
@@ -66,7 +66,7 @@
       "github_url": "https://github.com/dake6767/llm-wiki-suite/tree/main/skills/my-llm-wiki-x",
       "license": "MIT",
       "tags": ["knowledge-base", "x", "twitter", "bookmarks", "raw", "content-ingestion"],
-      "updated_at": "2026-07-09"
+      "updated_at": "2026-07-14"
     },
     {
       "slug": "my-llm-wiki-maintainer",

@@ -124,5 +124,24 @@ class ToolchainTests(unittest.TestCase):
             preflight.normalize_profiles(self.catalog, ["capture.unknown"])
 
 
+class XSinglePostSopTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.sop = (
+            ROOT / "skills" / "my-llm-wiki-x" / "references" / "x-capture-sop.md"
+        ).read_text(encoding="utf-8")
+
+    def test_dedupe_precedes_network_fetch(self) -> None:
+        dedupe = self.sop.index("## 2. Deduplicate before any network fetch")
+        fetch = self.sop.index("opencli web read --url")
+        self.assertLess(dedupe, fetch)
+        self.assertIn('--find "<tweet-id>"', self.sop)
+
+    def test_opencli_output_is_pinned_to_fresh_temp_root(self) -> None:
+        self.assertIn('mktemp -d "${TMPDIR:-/tmp}/llmwiki-x.XXXXXX"', self.sop)
+        self.assertIn('--output "$CAPTURE_ROOT"', self.sop)
+        self.assertIn('>"$STATUS_FILE"', self.sop)
+
+
 if __name__ == "__main__":
     unittest.main()

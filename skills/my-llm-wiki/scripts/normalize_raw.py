@@ -292,24 +292,57 @@ def assess_capture(body: str, asset_count: int, is_note: bool = False,
     return warnings
 
 
-def existing_original_id(md_file: Path) -> str:
-    """Read original_id from an already-written RAW file's frontmatter, so we can
-    tell a genuine re-capture (same id) from a mere slug collision between two
-    different sources (different ids)."""
-    if not md_file.exists():
-        return ""
+def frontmatter_scalar(md_file: Path, field: str) -> str:
+    """Read one simple scalar without loading the immutable RAW body.
+
+    RAW bodies can be large, while identity fields always live in the short YAML
+    frontmatter.  Keeping this probe bounded makes a source-bucket-wide identity
+    scan cheap enough to run before every commit.
+    """
     try:
-        text = md_file.read_text(encoding="utf-8")
+        with md_file.open(encoding="utf-8") as src:
+            if src.readline().strip() != "---":
+                return ""
+            for line in src:
+                stripped = line.strip()
+                if stripped == "---":
+                    break
+                mm = re.match(rf"^{re.escape(field)}:\s*(.*)$", stripped)
+                if mm:
+                    return mm.group(1).strip().strip("\"'")
     except OSError:
         return ""
-    m = re.match(r"^---\n(.*?)\n---", text, re.S)
-    if not m:
-        return ""
-    for line in m.group(1).splitlines():
-        mm = re.match(r"^original_id:\s*(.*)$", line.strip())
-        if mm:
-            return mm.group(1).strip().strip("\"'")
     return ""
+
+
+def existing_original_id(md_file: Path) -> str:
+    """Return the platform identity stored in an existing RAW file."""
+    return frontmatter_scalar(md_file, "original_id")
+
+
+def find_existing_by_original_id(dest_parent: Path, original_id: str) -> Path | None:
+    """Find the canonical RAW for ``original_id`` across the whole source bucket.
+
+    Identity must not depend on a title-derived slug: adapters can decorate or
+    repair titles between runs (for example ``(1) ... / X``).  When legacy bugs
+    have already produced multiple matches, prefer the earliest ``captured_at``
+    value and use the relative path as a deterministic tie-breaker.
+    """
+    if not original_id or not dest_parent.is_dir():
+        return None
+    matches = [
+        path for path in dest_parent.rglob("*.md")
+        if existing_original_id(path) == original_id
+    ]
+    if not matches:
+        return None
+    return min(
+        matches,
+        key=lambda path: (
+            frontmatter_scalar(path, "captured_at"),
+            path.relative_to(dest_parent).as_posix(),
+        ),
+    )
 
 
 _MONTHS = {m: i for i, m in enumerate(
@@ -600,35 +633,40 @@ def main() -> None:
     base = f"{date_str}-{slug}"
     dest = dest_parent / f"{base}.md"
 
-    if dest.exists():
-        # Identity is the source's original_id, not the slug. Same id → genuine
-        # re-capture (apply the on-exists policy); different ids → two distinct
-        # sources that slugified the same (e.g. two tweets from one author on one
-        # day) — those must each land, never be skipped.
-        existing_id = existing_original_id(dest)
-        same_source = bool(args.original_id) and existing_id == args.original_id
-
-        if same_source:
-            if args.on_exists == "fail":
-                sys.exit(f"error: RAW item already exists (immutable): {dest}")
-            if args.on_exists == "skip":
-                print(_yaml_dump({"status": "skipped_exists", "dest": str(dest)}))
-                return
-            n = 2
-            while (dest_parent / f"{base}-v{n}.md").exists():
-                n += 1
-            base = f"{base}-v{n}"
-            dest = dest_parent / f"{base}.md"
+    # Identity is global within a source bucket and comes from original_id, not
+    # from the adapter-controlled title/slug.  This scan is the final backstop
+    # when a producer's cheap pre-fetch dedupe was unavailable or raced.
+    existing_source = find_existing_by_original_id(dest_parent, args.original_id)
+    if existing_source is not None:
+        if args.on_exists == "fail":
+            sys.exit(f"error: RAW item already exists (immutable): {existing_source}")
+        if args.on_exists == "skip":
+            print(_yaml_dump({
+                "status": "skipped_exists",
+                "dest": str(existing_source),
+                "matched_by": "original_id",
+            }))
+            return
+        # A deliberate immutable recapture stays in the canonical source's
+        # filename family even when the newly fetched title slug has drifted.
+        base = existing_source.stem
+        n = 2
+        while (dest_parent / f"{base}-v{n}.md").exists():
+            n += 1
+        base = f"{base}-v{n}"
+        dest = dest_parent / f"{base}.md"
+    elif dest.exists():
+        # Same slug but a different/no platform id means a real collision, not a
+        # duplicate.  Preserve both sources under deterministic distinct names.
+        suffix = args.original_id[-8:] if args.original_id else ""
+        if suffix and not (dest_parent / f"{base}-{suffix}.md").exists():
+            base = f"{base}-{suffix}"
         else:
-            suffix = args.original_id[-8:] if args.original_id else ""
-            if suffix and not (dest_parent / f"{base}-{suffix}.md").exists():
-                base = f"{base}-{suffix}"
-            else:
-                n = 2
-                while (dest_parent / f"{base}-{n}.md").exists():
-                    n += 1
-                base = f"{base}-{n}"
-            dest = dest_parent / f"{base}.md"
+            n = 2
+            while (dest_parent / f"{base}-{n}.md").exists():
+                n += 1
+            base = f"{base}-{n}"
+        dest = dest_parent / f"{base}.md"
 
     # A `note` is the wiki owner's own first-party writing, not a web capture —
     # it has no HTML→Markdown conversion damage, so the structural "repairs"

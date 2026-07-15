@@ -231,7 +231,9 @@ RAW files are **never edited in place**. If you capture the same URL again, the
 script writes `<date>-<slug>-v2.md` rather than overwriting (`--on-exists version`,
 the default). Use `--on-exists skip` in batch sync to cheaply ignore already-
 captured items, or `--on-exists fail` if you want a hard stop. Identity is the
-`original_id`: two *different* sources that slugify the same get an `-<id8>`
+`original_id`, scanned across the complete source-type bucket rather than only
+at the newly derived slug. A title/slug change therefore still matches the
+canonical RAW. Two *different* sources that slugify the same get an `-<id8>`
 filename suffix and both land — a slug clash never silently drops a capture.
 
 If a user genuinely wants to *replace* a capture (e.g. a bad first fetch), delete

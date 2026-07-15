@@ -50,13 +50,17 @@ scraping around an auth wall.
 
 1. Extract the numeric tweet ID and canonical URL. Use listing results only for
    discovery and IDs, never as the archived body.
-2. Fetch full text and images per post. Fetch X video separately when present and
+2. Before a single-post network fetch, run `scripts/captured_ids.py --find
+   <tweet-id>` against every wiki candidate that can be resolved without the body.
+   Reuse the oldest matching RAW; never fetch or normalize a known ID again.
+3. Fetch full text and images per post into a newly created, explicitly pinned
+   output directory. Fetch X video separately when present and
    add it as a local Markdown media link before normalization.
-3. Detect long-form/article posts even when the URL is `/status/…`; fix
+4. Detect long-form/article posts even when the URL is `/status/…`; fix
    `untitled` metadata in the temp capture before normalization.
-4. Resolve the target wiki from the captured content. For a bookmark batch,
+5. Resolve the target wiki from the captured content. For a bookmark batch,
    resolve before any writes because a routing mistake is multiplied across items.
-5. Commit each verified item through the shared core:
+6. Commit each verified item through the shared core:
 
    ```bash
    python3 "$CORE_SKILL/scripts/normalize_raw.py" --from <temp-folder> \
@@ -68,7 +72,7 @@ scraping around an auth wall.
    Use `--md ... --assets ...` instead when composing the fallback manually.
    Pass explicit title, author, and publish time when the adapter header is weak.
    Surface all capture-health warnings.
-6. Report the wiki and new RAW paths. For bookmarks include listed, already
+7. Report the wiki and new RAW paths. For bookmarks include listed, already
    captured, new, succeeded, and failed counts. For explicit synthesis intent,
    hand the exact wiki root and new RAW path(s) to `my-llm-wiki-maintainer`.
 
