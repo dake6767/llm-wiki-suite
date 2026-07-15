@@ -242,6 +242,9 @@ Use `--md ... --assets ...` for a manually assembled adapter shape. For local
 documents, always pass `--source-file` so the original is archived. The script
 parses metadata, moves media into `raw/assets/`, rewrites links, repairs structural
 Markdown damage, refuses clobbering, and prints the final wiki/path/assets summary.
+It treats `original_id` as identity across the entire source-type bucket, so
+`--on-exists skip|fail|version` still applies when an adapter changes the title
+and therefore the slug between captures.
 
 Surface every `capture_health: warn` and adapter error. Report the resolved wiki,
 final RAW path, localized assets, duplicate/version outcome, and any known gap.
