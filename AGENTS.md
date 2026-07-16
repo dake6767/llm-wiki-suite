@@ -72,10 +72,14 @@ clean.
 ## 2. Install Skills
 
 Before creating or modifying any skills directory, ask the user which installed
-agent host(s) they want to use. Do not infer consent from the presence of
-`~/.codex`, `~/.claude`, `~/.hermes`, `~/.agents`, or `~/.workbuddy`; those
-directories may be stale configuration for a host the user no longer uses.
-Install only the explicitly selected targets, for example:
+agent host(s) they want to use. Ask it as a multi-select built from
+`registry/bootstrap.json` → `default_skill_targets`: enumerate every candidate,
+mark which directories already exist on this machine, and offer the host you
+are currently running in as the natural default choice. Listing a candidate is
+not consent — do not infer consent from the presence of `~/.codex`,
+`~/.claude`, `~/.hermes`, `~/.agents`, or `~/.workbuddy`; those directories may
+be stale configuration for a host the user no longer uses. Install only the
+explicitly selected targets, for example:
 
 ```bash
 scripts/install.sh \

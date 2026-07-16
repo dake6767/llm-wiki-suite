@@ -162,19 +162,13 @@ read_pages      read_raw         list_wiki_tree
 agent：
 
 ```text
-安装 https://github.com/dake6767/llm-wiki-suite 。先问我需要安装到哪些 agent；只安装我明确
-选择的 skills 目录，不能因为目录存在就创建或修改其它 agent。然后完成 checkout、skills、首个
-Wiki 初始化和 doctor；不要创建示例 RAW 或 ingest。Browser 优先使用 wiki.htmlgo.to release；
-HTMLgo 失败后才按 cn-mirrors 探测 GitHub 回退。
-仅在两条 Release 路径都不可达时记录为 optional skip，不要重试或改走源码构建。
+安装 https://github.com/dake6767/llm-wiki-suite ，严格按仓库根目录 AGENTS.md 的安装协议执行；
+先问我要安装到哪些 agent，再创建或修改任何 skills 目录。
 ```
 
 ```text
-安装 https://gitee.com/dake6767/llm-wiki-suite 。先问我需要安装到哪些 agent；只安装我明确
-选择的 skills 目录，不能因为目录存在就创建或修改其它 agent。然后完成 checkout、skills、首个
-Wiki 初始化和 doctor；不要创建示例 RAW 或 ingest。Browser 优先使用 wiki.htmlgo.to release；
-HTMLgo 失败后才按 cn-mirrors 探测 GitHub 回退。仅在两条 Release 路径都不可达时记录为
-optional skip，不要重试或改走源码构建。
+安装 https://gitee.com/dake6767/llm-wiki-suite ，严格按仓库根目录 AGENTS.md 的安装协议执行；
+先问我要安装到哪些 agent，再创建或修改任何 skills 目录。
 ```
 
 agent 会复用已有 checkout，或安装到稳定目录 `~/.my-llm-wiki/suite`；随后同步 skills、
