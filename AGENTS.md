@@ -82,10 +82,10 @@ scripts/install.sh \
 
 Skip targets that do not exist only if the user clearly does not use that agent.
 
-The script works on Windows under Git Bash: it converts paths for native
-Windows Python and installs links as directory junctions (`mklink /J`, no
-admin / Developer Mode needed) because Git Bash's `ln -s` silently degrades to
-a copy. Run it as-is — no manual path fixing.
+The script works on Windows under Git Bash: it normalizes MSYS paths before
+native Windows Python resolves them, and creates links as PowerShell directory
+junctions (no admin / Developer Mode needed) because Git Bash's `ln -s` silently
+degrades to a copy. Run it as-is — no manual links or path rewriting.
 
 ## 3. Detect And Offer The Selected Capture Toolchain
 
@@ -150,6 +150,14 @@ this repo to create the wiki scaffold and register it.
 
 ## 5. Install Browser: Release First
 
+The project-owned htmlgo manifest is the first Browser source. Only if it fails
+and GitHub fallback is needed, run the `cn-mirrors` reachability probe before
+trying the fallback:
+
+```bash
+python3 skills/cn-mirrors/scripts/net_probe.py --json
+```
+
 Always prefer release artifacts over source builds:
 
 ```bash
@@ -158,11 +166,21 @@ python3 scripts/install-browser.py --open
 
 If the repo is private or the release is private, set `GITHUB_TOKEN` first.
 
-On Windows the script prefers the portable zip over `*-setup.exe` and
-auto-extracts it — extraction IS the install; just run the exe inside (pin to
-taskbar / create a shortcut if the user wants one). It needs the WebView2
-runtime, which Windows 10/11 ships by default; only fall back to setup.exe on
-machines without WebView2 (the installer bootstraps it).
+The installer first reads the project-owned `https://wiki.htmlgo.to/_update/latest.json`
+manifest, which is also the desktop app's primary updater source. Only if that
+source fails does it run the GitHub probe and try GitHub Releases. If both paths
+fail, **do not retry or automatically fall back to a source build**. Explain that
+Browser is optional and finish the base install; `wiki_ops.py local-search`
+remains an equivalent read/search path. Gitee mirrors this Git repository only,
+not Browser assets. A third-party GitHub relay is a public-asset, user-approved
+last resort with the `cn-mirrors` trust caveat — never make it the default route.
+
+On Windows the htmlgo manifest supplies the release `*-setup.exe` / MSI, with
+`*-setup.exe` preferred; run the downloaded installer normally. GitHub fallback
+prefers the portable zip and auto-extracts it — extraction IS the install; just
+run the exe inside. It needs the WebView2 runtime, which Windows 10/11 ships by
+default; only fall back to setup.exe on machines without WebView2 (the installer
+bootstraps it).
 
 Only fall back to local source build when:
 
@@ -204,8 +222,9 @@ curl -s "http://127.0.0.1:$(cat ~/.my-llm-wiki/connector/server-port 2>/dev/null
 
 ## 7. Guide First Capture
 
-Do not stop after installation. Ask the user for one URL or note to save, then
-walk the first successful loop:
+Do not create a synthetic capture to demonstrate the product. When the user
+explicitly asked for first capture in the same request, ask for one real URL or
+note after base installation, then walk the first successful loop:
 
 ```text
 capture -> RAW -> maintain/ingest -> browse/search in My LLM Wiki Browser
@@ -217,6 +236,10 @@ Suggested user prompt:
 Send me one article, webpage, video, or note you want to preserve. I will save it
 to RAW, compile it into your wiki, and show where to view it in My LLM Wiki Browser.
 ```
+
+For an installation-only request, stop after the suite check and offer that
+prompt as the next step. Do not treat a README install prompt as permission to
+write a demonstration RAW item or compile it into the user's Wiki.
 
 ## 8. MCP Setup
 

@@ -49,6 +49,7 @@ try:
     import wikis  # type: ignore
 except ImportError:  # pragma: no cover — scaffolding still works without it
     wikis = None  # type: ignore
+from path_compat import native_path
 
 WIKI_SUBDIRS = ("entities", "concepts", "sources", "queries", "comparisons", "synthesis")
 
@@ -149,7 +150,7 @@ def main() -> None:
                     help="make this the default wiki in the registry")
     args = ap.parse_args()
 
-    root = Path(args.path).expanduser().resolve()
+    root = native_path(args.path).resolve()
     name = args.name or root.name
     today = time.strftime("%Y-%m-%d")
 

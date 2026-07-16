@@ -2,8 +2,8 @@
 """Install My LLM Wiki Browser with a release-first strategy.
 
 Default behavior:
-1. Infer the GitHub repo from --repo or git remote origin.
-2. Query the latest GitHub Release.
+1. Read the project-owned Tauri release manifest (htmlgo).
+2. Fall back to the latest GitHub Release if the first-party source fails.
 3. Download the best matching Browser asset for this OS/arch. On Windows the
    portable zip is preferred over setup.exe and auto-extracted next to the
    download — extraction is the whole install.
@@ -27,10 +27,16 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import unquote, urlparse, urlunparse
 
 
 ROOT = Path(__file__).resolve().parent.parent
 BOOTSTRAP = ROOT / "registry" / "bootstrap.json"
+NETWORK_PROBE = ROOT / "skills" / "cn-mirrors" / "scripts" / "net_probe.py"
+
+
+class ReleaseSourcesUnavailable(RuntimeError):
+    """Every configured Browser release source failed or was unreachable."""
 
 
 def load_bootstrap() -> dict:
@@ -49,6 +55,8 @@ def infer_repo() -> str | None:
     patterns = [
         r"github\.com[:/](?P<owner>[^/]+)/(?P<repo>[^/.]+)(?:\.git)?$",
         r"https://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/.]+)(?:\.git)?$",
+        r"gitee\.com[:/](?P<owner>[^/]+)/(?P<repo>[^/.]+)(?:\.git)?$",
+        r"https://gitee\.com/(?P<owner>[^/]+)/(?P<repo>[^/.]+)(?:\.git)?$",
     ]
     for pattern in patterns:
         match = re.search(pattern, remote)
@@ -71,6 +79,17 @@ def platform_keys() -> list[str]:
     return []
 
 
+def json_url(url: str, *, timeout: float = 30, headers: dict[str, str] | None = None) -> dict:
+    request_headers = {
+        "Accept": "application/json",
+        "User-Agent": "llm-wiki-suite-bootstrap",
+    }
+    request_headers.update(headers or {})
+    request = urllib.request.Request(url, headers=request_headers)
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
 def github_json(url: str) -> dict:
     headers = {
         "Accept": "application/vnd.github+json",
@@ -79,9 +98,7 @@ def github_json(url: str) -> dict:
     token = os.environ.get("GITHUB_TOKEN")
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    request = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(request, timeout=30) as response:
-        return json.loads(response.read().decode("utf-8"))
+    return json_url(url, headers=headers)
 
 
 def release_metadata(repo: str, version: str) -> dict:
@@ -90,6 +107,132 @@ def release_metadata(repo: str, version: str) -> dict:
     else:
         url = f"https://api.github.com/repos/{repo}/releases/tags/{version}"
     return github_json(url)
+
+
+def tauri_platform_keys() -> list[str]:
+    """Tauri updater platform keys in preferred install-artifact order."""
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+    if system == "darwin":
+        return (["darwin-aarch64", "darwin-aarch64-app"] if machine in {"arm64", "aarch64"}
+                else ["darwin-x86_64", "darwin-x86_64-app"])
+    if system == "windows":
+        # NSIS is the closest equivalent to GitHub's setup.exe; MSI is a
+        # fallback when a release omitted NSIS.
+        return ["windows-x86_64-nsis", "windows-x86_64", "windows-x86_64-msi"]
+    if system == "linux":
+        return ["linux-x86_64-appimage", "linux-x86_64", "linux-x86_64-deb", "linux-x86_64-rpm"]
+    return []
+
+
+def normalize_manifest_asset_url(asset_url: str, manifest_url: str) -> str:
+    """Keep first-party asset URLs HTTPS when the manifest itself was HTTPS."""
+    asset = urlparse(asset_url)
+    manifest = urlparse(manifest_url)
+    if (manifest.scheme == "https" and asset.scheme == "http"
+            and asset.hostname and asset.hostname == manifest.hostname):
+        return urlunparse(asset._replace(scheme="https"))
+    return asset_url
+
+
+def tauri_manifest_asset(source: dict) -> dict:
+    """Resolve this OS's installer from a Tauri ``latest.json`` manifest."""
+    url = source.get("url")
+    if not isinstance(url, str) or not url:
+        raise RuntimeError(f"{source.get('name', 'tauri')} release source has no manifest URL")
+    release = json_url(url, timeout=10)
+    platforms = release.get("platforms")
+    if not isinstance(platforms, dict):
+        raise RuntimeError(f"{source.get('name', 'tauri')} manifest has no platforms map")
+    for key in tauri_platform_keys():
+        entry = platforms.get(key)
+        asset_url = entry.get("url") if isinstance(entry, dict) else None
+        if isinstance(asset_url, str) and asset_url:
+            normalized = normalize_manifest_asset_url(asset_url, url)
+            return {
+                "name": Path(unquote(urlparse(normalized).path)).name,
+                "browser_download_url": normalized,
+                "version": release.get("version", ""),
+                "source": source.get("name", "tauri"),
+            }
+    raise RuntimeError(
+        f"{source.get('name', 'tauri')} has no installable asset for "
+        f"{platform.system()} {platform.machine()}"
+    )
+
+
+def blocked_github_release_hosts(timeout: float = 4.0) -> list[str]:
+    """Return blocked GitHub hosts needed for a release install, if probeable.
+
+    The suite's cn-mirrors probe is intentionally dependency-free and runs its
+    requests concurrently.  Do not mistake its own absence/failure for a
+    network failure: the legacy download path remains the fallback in that case.
+    """
+    if not NETWORK_PROBE.is_file():
+        return []
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(NETWORK_PROBE), "--json", "--timeout", str(timeout)],
+            capture_output=True,
+            text=True,
+            timeout=timeout + 4,
+            check=True,
+        )
+        report = json.loads(proc.stdout)
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        return []
+    statuses = {row.get("host"): row.get("status") for row in report.get("dev", [])}
+    return [host for host in ("api.github.com", "objects.githubusercontent.com")
+            if statuses.get(host) == "blocked"]
+
+
+def resolve_release_asset(
+    config: dict,
+    repo: str | None,
+    version: str,
+    *,
+    skip_network_probe: bool = False,
+) -> tuple[dict, str]:
+    """Try project-owned release sources first, then canonical GitHub."""
+    browser = config.get("browser") or {}
+    sources = browser.get("release_sources") or [{"name": "github", "format": "github-release"}]
+    errors: list[str] = []
+    github_blocked: list[str] | None = None
+
+    for source in sources:
+        if not isinstance(source, dict):
+            errors.append("invalid release source entry")
+            continue
+        name = str(source.get("name") or source.get("format") or "unknown")
+        format_name = source.get("format")
+        try:
+            if format_name == "tauri-latest":
+                if version != "latest":
+                    errors.append(f"{name}: only supports --version latest")
+                    continue
+                return tauri_manifest_asset(source), name
+            if format_name == "github-release":
+                if not repo:
+                    errors.append(f"{name}: no GitHub repo available for fallback")
+                    continue
+                if not skip_network_probe:
+                    if github_blocked is None:
+                        github_blocked = blocked_github_release_hosts()
+                    if github_blocked:
+                        errors.append(f"{name}: blocked ({', '.join(github_blocked)})")
+                        continue
+                release = release_metadata(repo, version)
+                asset = pick_asset(release, browser["asset_patterns"])
+                if not asset:
+                    names = ", ".join(item.get("name", "") for item in release.get("assets", [])) or "(none)"
+                    raise RuntimeError(f"no matching Browser asset. Release assets: {names}")
+                asset["source"] = name
+                return asset, name
+            errors.append(f"{name}: unsupported release source format {format_name!r}")
+        except (OSError, urllib.error.HTTPError, urllib.error.URLError, RuntimeError, ValueError) as exc:
+            errors.append(f"{name}: {exc}")
+
+    raise ReleaseSourcesUnavailable("all configured release sources unavailable: " + "; ".join(errors))
 
 
 def pick_asset(release: dict, patterns_by_key: dict[str, list[str]]) -> dict | None:
@@ -443,6 +586,11 @@ def main() -> int:
     )
     parser.add_argument("--dry-run", action="store_true", help="Print actions without changing files.")
     parser.add_argument(
+        "--skip-network-probe",
+        action="store_true",
+        help="Skip the cn-mirrors GitHub-release reachability check.",
+    )
+    parser.add_argument(
         "--register-mcp",
         action="store_true",
         help="Only propose/apply Browser MCP registration for detected hosts (no download).",
@@ -474,20 +622,21 @@ def main() -> int:
         return 0
 
     repo = args.repo or infer_repo()
-    if not repo:
-        print("Could not infer GitHub repo. Pass --repo owner/name.", file=sys.stderr)
-        return 2
-
-    print(f"repo: {repo}")
+    if repo:
+        print(f"GitHub fallback repo: {repo}")
+    else:
+        print("GitHub fallback repo: unavailable (project-owned release source will still be tried)")
     print(f"version: {args.version}")
     print("strategy: download release first")
 
     try:
-        release = release_metadata(repo, args.version)
-        asset = pick_asset(release, config["browser"]["asset_patterns"])
-        if not asset:
-            names = ", ".join(asset.get("name", "") for asset in release.get("assets", [])) or "(none)"
-            raise RuntimeError(f"No matching Browser asset for this platform. Release assets: {names}")
+        asset, source = resolve_release_asset(
+            config,
+            repo,
+            args.version,
+            skip_network_probe=args.skip_network_probe or args.dry_run,
+        )
+        print(f"release source: {source}")
 
         dest = download_asset(asset, Path(args.download_dir).expanduser(), args.dry_run)
         maybe_extract_zip(dest, args.dry_run)
@@ -499,7 +648,15 @@ def main() -> int:
     except (urllib.error.HTTPError, urllib.error.URLError, RuntimeError) as err:
         print(f"release install unavailable: {err}", file=sys.stderr)
         if not args.fallback_source:
-            print("Re-run with --fallback-source to build the Tauri app locally.", file=sys.stderr)
+            if isinstance(err, ReleaseSourcesUnavailable):
+                print(
+                    "Browser is optional: continue with wiki_ops.py local-search. "
+                    "The project-owned htmlgo release source was tried before "
+                    "GitHub; do not use a third-party relay by default.",
+                    file=sys.stderr,
+                )
+            else:
+                print("Re-run with --fallback-source to build the Tauri app locally.", file=sys.stderr)
             return 1
         print("falling back to source build")
         source_build(config, args.dry_run)

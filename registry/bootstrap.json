@@ -1,6 +1,6 @@
 {
   "version": 3,
-  "updated_at": "2026-07-14",
+  "updated_at": "2026-07-15",
   "home": "~/.my-llm-wiki",
   "repo_url": "https://github.com/dake6767/llm-wiki-suite.git",
   "repo_mirrors": [
@@ -104,6 +104,19 @@
     "slug": "my-llm-wiki-browser",
     "collection_path": "apps/my-llm-wiki-browser",
     "release_strategy": "download-release-first",
+    "release_sources": [
+      {
+        "name": "htmlgo",
+        "format": "tauri-latest",
+        "url": "https://wiki.htmlgo.to/_update/latest.json",
+        "note": "Project-owned release manifest/CDN. Primary source for mainland-China installations and the desktop auto-updater."
+      },
+      {
+        "name": "github",
+        "format": "github-release",
+        "note": "Canonical GitHub Releases fallback."
+      }
+    ],
     "asset_patterns": {
       "darwin-arm64": [
         "My.LLM.Wiki.Browser*_aarch64.dmg",

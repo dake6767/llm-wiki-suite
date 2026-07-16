@@ -45,6 +45,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from path_compat import native_path
+
 VERSION = 1
 
 
@@ -52,13 +54,13 @@ def registry_path() -> Path:
     # Explicit override, shared with the desktop app ($LLM_WIKI_REGISTRY).
     env = os.environ.get("LLM_WIKI_REGISTRY")
     if env:
-        return Path(env).expanduser()
+        return native_path(env)
     return Path.home() / ".my-llm-wiki" / "wikis.json"
 
 
 def _norm(path: str | Path) -> str:
     """Canonical key for a wiki: absolute, user-expanded, symlink-resolved."""
-    return str(Path(path).expanduser().resolve())
+    return str(native_path(path).resolve())
 
 
 def load() -> dict:

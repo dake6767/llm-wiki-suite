@@ -286,6 +286,9 @@ for target in targets:
 '
   )"
   while IFS= read -r target; do
+    # Native Windows Python writes CRLF; Bash command substitution removes only
+    # the LF, so strip the remaining CR before using a target path.
+    target="${target%$'\r'}"
     [ -n "$target" ] && TARGETS+=("${target/#\~/$HOME}")
   done <<< "$TARGET_OUTPUT"
 fi

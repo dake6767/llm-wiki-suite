@@ -50,6 +50,7 @@ from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from clean_md import clean_markdown  # noqa: E402  (sibling module)
+from path_compat import native_path  # noqa: E402
 try:
     import wikis  # noqa: E402  (sibling module — registry fallback)
 except ImportError:  # pragma: no cover — resolution still works without it
@@ -138,7 +139,7 @@ def _is_wiki_root(d: Path) -> bool:
 
 def resolve_wiki(explicit: str | None) -> Path:
     if explicit:
-        p = Path(explicit).expanduser().resolve()
+        p = native_path(explicit).resolve()
         if not p.exists():
             sys.exit(f"error: --wiki path does not exist: {p}")
         return p
@@ -148,7 +149,7 @@ def resolve_wiki(explicit: str | None) -> Path:
             return cand
     env = os.environ.get("LLM_WIKI_DEFAULT")
     if env:
-        return Path(env).expanduser().resolve()
+        return native_path(env).resolve()
     # Registry fallbacks (a safety net — the agent usually passes --wiki after
     # classifying). Only ever target a wiki that actually exists on disk.
     if wikis is not None:
@@ -553,7 +554,7 @@ def main() -> None:
 
     # Locate source markdown + its media root.
     if args.from_dir:
-        src = Path(args.from_dir).expanduser().resolve()
+        src = native_path(args.from_dir).resolve()
         if not src.is_dir():
             sys.exit(f"error: --from is not a directory: {src}")
         mds = sorted(src.glob("*.md"))
@@ -585,10 +586,10 @@ def main() -> None:
                 )
         media_root = src
     else:
-        md_file = Path(args.md).expanduser().resolve()
+        md_file = native_path(args.md).resolve()
         if not md_file.exists():
             sys.exit(f"error: --md not found: {md_file}")
-        media_root = Path(args.assets).expanduser().resolve() if args.assets else md_file.parent
+        media_root = native_path(args.assets).resolve() if args.assets else md_file.parent
 
     md_text = md_file.read_text(encoding="utf-8")
     parsed, body = parse_capture(md_text)
@@ -689,7 +690,7 @@ def main() -> None:
     # faithful original lives next to its lossy text extraction.
     source_file_rel = ""
     if args.source_file:
-        sf = Path(args.source_file).expanduser().resolve()
+        sf = native_path(args.source_file).resolve()
         if not sf.is_file():
             sys.exit(f"error: --source-file not found: {sf}")
         source_file_rel = archive_source_file(sf, assets_dir, dest_parent, base)

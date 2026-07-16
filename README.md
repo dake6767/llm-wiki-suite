@@ -157,21 +157,28 @@ read_pages      read_raw         list_wiki_tree
 ### 推荐：把仓库 URL 交给 agent
 
 本仓库根目录的 [`AGENTS.md`](AGENTS.md) 是端到端安装协议。GitHub 是 canonical
-源仓库，Gitee 是自动 Pull 的中国大陆只读镜像；两边保持同一提交。可以把当前网络可达的
-任一地址交给支持本地命令的 agent：
+源仓库，Gitee 是自动 Pull 的中国大陆只读镜像；两边保持同一提交。推荐先完成可验证的
+基础安装，首次采集留到你给出真实资料时再做。把当前网络可达的任一地址交给支持本地命令的
+agent：
 
 ```text
-安装 https://github.com/dake6767/llm-wiki-suite ，
-然后带我完成第一次 capture → RAW → Wiki → Browser。
+安装 https://github.com/dake6767/llm-wiki-suite 。只完成 checkout、skills、首个 Wiki 初始化和
+doctor；不要创建示例 RAW 或 ingest。Browser 优先使用 wiki.htmlgo.to release；HTMLgo 失败后才
+按 cn-mirrors 探测 GitHub 回退。
+仅在两条 Release 路径都不可达时记录为 optional skip，不要重试或改走源码构建。
 ```
 
 ```text
-安装 https://gitee.com/dake6767/llm-wiki-suite ，
-然后带我完成第一次 capture → RAW → Wiki → Browser。
+安装 https://gitee.com/dake6767/llm-wiki-suite 。只完成 checkout、skills、首个 Wiki 初始化和
+doctor；不要创建示例 RAW 或 ingest。Browser 优先使用 wiki.htmlgo.to release；HTMLgo 失败后才
+按 cn-mirrors 探测 GitHub 回退。仅在两条 Release 路径都不可达时记录为 optional skip，
+不要重试或改走源码构建。
 ```
 
 agent 会复用已有 checkout，或安装到稳定目录 `~/.my-llm-wiki/suite`；随后同步 skills、
-检查所选抓取工具链、初始化 Wiki、安装 Browser，并引导完成第一次采集。
+检查所选抓取工具链、初始化 Wiki，并优先从 `wiki.htmlgo.to` 安装 Browser（GitHub 仅作回退）。
+两条发布路径均不可达时才记录 Browser optional skip。完成后另发一条真实 URL 或自己的 note，
+即可开始首次 `capture → RAW → Wiki`。
 
 ### 手动安装 skills
 
@@ -210,11 +217,17 @@ bash bootstrap.sh --update            # clean checkout 上执行 ff-only 更新
 
 ### 安装 Browser
 
-Browser 默认优先下载与当前操作系统匹配的 GitHub Release；没有匹配资产时才使用源码构建：
+Browser 默认优先下载项目自有 htmlgo Release；它不可达时才回退到与当前操作系统匹配的
+GitHub Release，没有匹配资产时才使用源码构建：
 
 ```bash
 python3 scripts/install-browser.py --open
 ```
+
+脚本会优先读取项目自有的 [htmlgo Release manifest](https://wiki.htmlgo.to/_update/latest.json)，
+它为大陆网络提供 Browser 安装包；GitHub Release 仅作为回退。仅当 htmlgo 不可用时，脚本才用
+`cn-mirrors` 探测 GitHub metadata 与资产路径。两条路径都不可用时，它会立即提示使用本地
+`wiki_ops.py local-search`。不要默认使用第三方下载中转。
 
 release 提供 macOS Apple Silicon / Intel、Windows 安装包与 portable zip，以及 Linux
 AppImage / deb / rpm。当前产物尚未完成 Apple 公证和 Windows 代码签名，浏览器下载后

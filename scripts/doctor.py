@@ -68,6 +68,20 @@ def load_json(path: Path):
         return e
 
 
+def is_linklike(path: Path) -> bool:
+    """True for a symlink or Windows directory junction/reparse point."""
+    if path.is_symlink():
+        return True
+    is_junction = getattr(path, "is_junction", None)
+    if is_junction is not None and is_junction():
+        return True
+    try:
+        attrs = getattr(path.stat(follow_symlinks=False), "st_file_attributes", 0)
+    except OSError:
+        return False
+    return bool(attrs & 0x400)  # FILE_ATTRIBUTE_REPARSE_POINT
+
+
 def check_repo_home(bootstrap: dict) -> dict:
     """Report where this checkout lives vs the canonical home (informational)."""
     home = bootstrap.get("default_repo_home")
@@ -94,7 +108,7 @@ def check_skills(
 ) -> dict:
     """Check active skill linkage plus declared runtime dependencies."""
     def target_has_skill(path: Path) -> bool:
-        if path.is_symlink():
+        if is_linklike(path):
             try:
                 path.resolve(strict=True)
                 return True
@@ -124,7 +138,7 @@ def check_skills(
         dependency_missing = {}
         for t in existing_targets:
             dest = t / slug
-            if dest.is_symlink():
+            if is_linklike(dest):
                 try:
                     resolved = dest.resolve(strict=True)
                 except OSError:

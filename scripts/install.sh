@@ -90,6 +90,9 @@ GRAPH_OUTPUT="$("$PY_BIN" "$PY_GRAPH" \
   --registry "$PY_REGISTRY" --format install-tsv \
   ${WANT_SLUGS[@]+"${WANT_SLUGS[@]}"})"
 while IFS= read -r line; do
+  # Native Windows Python writes CRLF to a pipe. Bash strips only the LF, so
+  # without this the trailing CR becomes part of every source path.
+  line="${line%$'\r'}"
   [ -n "$line" ] && ENTRIES+=("$line")
 done <<< "$GRAPH_OUTPUT"
 
@@ -105,24 +108,85 @@ done
 ts() { date +%Y%m%d%H%M%S; }
 act() { if [ "$DRY" -eq 1 ]; then echo "  [dry-run] $*"; else eval "$@"; fi; }
 
-# Windows 上 `ln -s` 静默降级为复制，改用目录联接（junction）：语义等同目录
-# 符号链接（MSYS 的 -L/readlink/rm 都按符号链接处理它），创建无需特殊权限。
+# Windows 上 `ln -s` 静默降级为复制，改用 PowerShell 创建目录联接
+# （junction）：无需管理员/开发者模式，也不依赖 Git Bash 对 `cmd //c` 的
+# 参数改写行为。路径通过环境变量传入，避免空格和引号被二次解析。
 make_link() {
   if [ "$IS_WINDOWS" -eq 1 ]; then
-    cmd //c "mklink /J \"$(cygpath -w "$2")\" \"$(cygpath -w "$1")\"" >/dev/null
+    local ps_bin src_win dest_win
+    ps_bin="$(command -v powershell.exe || command -v pwsh.exe || true)"
+    [ -n "$ps_bin" ] || {
+      echo "PowerShell is required to create Windows junctions" >&2
+      return 1
+    }
+    src_win="$(cygpath -w "$1")"
+    dest_win="$(cygpath -w "$2")"
+    LLM_WIKI_JUNCTION_SRC="$src_win" LLM_WIKI_JUNCTION_DEST="$dest_win" \
+      "$ps_bin" -NoLogo -NoProfile -NonInteractive -Command '
+        $ErrorActionPreference = "Stop"
+        $src = [Environment]::GetEnvironmentVariable("LLM_WIKI_JUNCTION_SRC")
+        $dest = [Environment]::GetEnvironmentVariable("LLM_WIKI_JUNCTION_DEST")
+        New-Item -ItemType Junction -Path $dest -Target $src | Out-Null
+      '
   else
     ln -s "$1" "$2"
   fi
 }
 
-# dest 是否已是指向 src 的链接。Windows 上 readlink 返回 /c/Users 式路径，
-# 与仓库侧的 C:/Users 式不同形，两边都过 cygpath -m 归一化后再比较。
-links_to() {
-  [ -L "$1" ] || return 1
+# Python 3.12 exposes Path.is_junction(); older versions expose the Windows
+# reparse-point bit through stat(). This helper keeps install idempotent on both.
+is_linklike() {
   if [ "$IS_WINDOWS" -eq 1 ]; then
-    [ "$(cygpath -m "$(readlink "$1")")" = "$(cygpath -m "$2")" ]
+    "$PY_BIN" -c '
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+is_junction = getattr(p, "is_junction", None)
+linked = p.is_symlink() or bool(is_junction and is_junction())
+if not linked:
+    try:
+        linked = bool(getattr(p.stat(follow_symlinks=False), "st_file_attributes", 0) & 0x400)
+    except OSError:
+        linked = False
+raise SystemExit(0 if linked else 1)
+' "$(cygpath -m "$1")"
   else
+    [ -L "$1" ]
+  fi
+}
+
+# dest 是否已是指向 src 的链接或 junction。Windows 的 MSYS `readlink` 对
+# junction 的行为并不一致，所以让原生 Python 跟随 reparse point 后比较。
+links_to() {
+  if [ "$IS_WINDOWS" -eq 1 ]; then
+    is_linklike "$1" || return 1
+    "$PY_BIN" -c '
+import pathlib, sys
+try:
+    same = pathlib.Path(sys.argv[1]).resolve(strict=True) == pathlib.Path(sys.argv[2]).resolve(strict=True)
+except OSError:
+    same = False
+raise SystemExit(0 if same else 1)
+' "$(cygpath -m "$1")" "$(cygpath -m "$2")"
+  else
+    [ -L "$1" ] || return 1
     [ "$(readlink "$1")" = "$2" ]
+  fi
+}
+
+remove_link() {
+  if [ "$IS_WINDOWS" -eq 1 ]; then
+    local ps_bin dest_win
+    ps_bin="$(command -v powershell.exe || command -v pwsh.exe || true)"
+    [ -n "$ps_bin" ] || return 1
+    dest_win="$(cygpath -w "$1")"
+    LLM_WIKI_JUNCTION_DEST="$dest_win" \
+      "$ps_bin" -NoLogo -NoProfile -NonInteractive -Command '
+        $ErrorActionPreference = "Stop"
+        $dest = [Environment]::GetEnvironmentVariable("LLM_WIKI_JUNCTION_DEST")
+        Remove-Item -LiteralPath $dest -Force
+      '
+  else
+    rm "$1"
   fi
 }
 
@@ -159,9 +223,9 @@ for target in "${TARGETS[@]}"; do
       if links_to "$dest" "$src"; then
         echo "  = $slug (up to date)"; n_ok=$((n_ok+1)); continue
       fi
-      if [ -L "$dest" ]; then
-        echo "  ~ $slug: repointing symlink"
-        act "rm '$dest'"; act "make_link '$src' '$dest'"; n_done=$((n_done+1)); continue
+      if is_linklike "$dest"; then
+        echo "  ~ $slug: repointing link"
+        act "remove_link '$dest'"; act "make_link '$src' '$dest'"; n_done=$((n_done+1)); continue
       fi
       if [ -e "$dest" ]; then
         if [ "$FORCE" -eq 1 ]; then
