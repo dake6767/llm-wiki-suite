@@ -18,6 +18,9 @@ REGISTRY = ROOT / "registry" / "bootstrap.json"
 GITHUB_REPO = "https://github.com/dake6767/llm-wiki-suite.git"
 GITEE_REPO = "https://gitee.com/dake6767/llm-wiki-suite.git"
 GITEE_BOOTSTRAP = "https://gitee.com/dake6767/llm-wiki-suite/raw/main/bootstrap.sh"
+BASH = shutil.which("bash")
+if BASH is None:
+    raise RuntimeError("bash is required for bootstrap protocol tests")
 
 
 def bash_path(path: Path) -> str:
@@ -35,7 +38,7 @@ class BootstrapMirrorTests(unittest.TestCase):
             env = os.environ.copy()
             env["HOME"] = bash_path(home)
             completed = subprocess.run(
-                ["bash", bash_path(BOOTSTRAP), "--repo", bash_path(ROOT), "--dry-run"],
+                [BASH, bash_path(BOOTSTRAP), "--repo", bash_path(ROOT), "--dry-run"],
                 cwd=ROOT,
                 env=env,
                 check=False,
@@ -70,7 +73,7 @@ class BootstrapMirrorTests(unittest.TestCase):
             env["LLM_WIKI_REPO_HOME"] = bash_path(home / ".my-llm-wiki" / "suite")
             completed = subprocess.run(
                 [
-                    "bash",
+                    BASH,
                     bash_path(script),
                     "--repo-url",
                     GITEE_REPO,
@@ -109,7 +112,7 @@ class BootstrapMirrorTests(unittest.TestCase):
             env["CURL_MARKER"] = bash_path(marker)
             env["LLM_WIKI_REPO_HOME"] = bash_path(home / ".my-llm-wiki" / "suite")
             completed = subprocess.run(
-                ["bash", bash_path(script), "--host", "codex", "--dry-run"],
+                [BASH, bash_path(script), "--host", "codex", "--dry-run"],
                 cwd=root,
                 env=env,
                 check=True,
@@ -143,7 +146,7 @@ class BootstrapMirrorTests(unittest.TestCase):
             env["PATH"] = f"{shims}{os.pathsep}{env['PATH']}"
             completed = subprocess.run(
                 [
-                    "bash", bash_path(BOOTSTRAP), "--repo", bash_path(ROOT),
+                    BASH, bash_path(BOOTSTRAP), "--repo", bash_path(ROOT),
                     "--host", "codex", "--update", "--dry-run",
                 ],
                 cwd=ROOT,
@@ -191,7 +194,7 @@ class BootstrapMirrorTests(unittest.TestCase):
             env["LLM_WIKI_REPO_HOME"] = "/c/Users/tester/.my-llm-wiki/suite"
             completed = subprocess.run(
                 [
-                    "bash",
+                    BASH,
                     bash_path(script),
                     "--repo-url",
                     GITEE_REPO,

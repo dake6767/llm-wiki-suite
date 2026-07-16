@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -15,6 +16,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 INSTALL = ROOT / "scripts" / "install.sh"
 BOOTSTRAP = ROOT / "bootstrap.sh"
+BASH = shutil.which("bash")
+if BASH is None:
+    raise RuntimeError("bash is required for installer protocol tests")
 
 
 def bash_path(path: Path) -> str:
@@ -63,7 +67,7 @@ class InstallCrLfTests(unittest.TestCase):
             temp = Path(tmp)
             env = self.make_crlf_python(temp)
             result = subprocess.run(
-                ["bash", bash_path(INSTALL), "--dry-run", "--custom-target",
+                [BASH, bash_path(INSTALL), "--dry-run", "--custom-target",
                  bash_path(temp / "skills"), "my-llm-wiki"],
                 cwd=ROOT,
                 env=env,
@@ -80,7 +84,7 @@ class InstallCrLfTests(unittest.TestCase):
             temp = Path(tmp)
             env = {**os.environ, "HOME": bash_path(temp / "home")}
             result = subprocess.run(
-                ["bash", bash_path(INSTALL), "--dry-run"],
+                [BASH, bash_path(INSTALL), "--dry-run"],
                 cwd=ROOT,
                 env=env,
                 text=True,
@@ -99,7 +103,7 @@ class InstallCrLfTests(unittest.TestCase):
             env["HOME"] = bash_path(temp / "home")
             target = temp / "home" / ".workbuddy" / "skills"
             result = subprocess.run(
-                ["bash", bash_path(BOOTSTRAP), "--repo", bash_path(ROOT),
+                [BASH, bash_path(BOOTSTRAP), "--repo", bash_path(ROOT),
                  "--custom-target", bash_path(target), "--dry-run"],
                 cwd=ROOT,
                 env=env,
