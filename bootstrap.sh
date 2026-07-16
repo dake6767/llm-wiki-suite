@@ -90,6 +90,9 @@ PY_BIN="$(command -v python3 || command -v python || true)"
 [ -n "$PY_BIN" ] || die "Python 3.10+ is required"
 "$PY_BIN" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' || \
   die "Python 3.10+ is required"
+# Child Python commands must render the same machine-readable and human-readable
+# output on Windows terminals regardless of the active legacy code page.
+export PYTHONUTF8=1
 
 DEFAULT_REPO_HOME="$(native_path "${DEFAULT_REPO_HOME/#\~/$HOME}")"
 

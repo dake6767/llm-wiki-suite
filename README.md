@@ -173,9 +173,10 @@ agent：
 
 agent 会显式复用你指定的 checkout，或安装到稳定目录 `~/.my-llm-wiki/suite`；随后按固定顺序
 同步 skills、初始化或复用首个 Wiki、再运行 doctor。Wiki 初始化是基础安装的必做步骤，不会停在
-doctor 后留给用户处理。抓取工具和 Browser 都不会静默安装；只有你确认后，Browser 才优先从
-`wiki.htmlgo.to` 获取 Release（GitHub 仅作回退）。完成后另发一条真实 URL 或自己的 note，
-即可开始首次 `capture → RAW → Wiki`。
+doctor 后留给用户处理。doctor 完成后，agent 会用宿主原生单选控件询问“继续安装 Browser”或
+“暂不安装”，不会让你手动输入确认文字；选择继续后才从 `wiki.htmlgo.to` 获取 Release
+（GitHub 仅作回退）。抓取工具仍需独立确认。完成后另发一条真实 URL 或自己的 note，即可开始
+首次 `capture → RAW → Wiki`。
 
 ### 手动安装 skills
 
@@ -219,6 +220,10 @@ bash bootstrap.sh --host workbuddy --update           # clean checkout 上执行
 
 ### 安装 Browser
 
+基础安装完成 doctor 后，agent 必须通过宿主原生单选控件提供“继续安装 Browser”和
+“暂不安装”两个选择。它不会把这个选择做成 shell 提示，也不会要求用户键入 `yes/no`；宿主
+无法提供原生选择控件时默认跳过 Browser。
+
 Browser 默认优先下载项目自有 htmlgo Release；元数据或资产下载失败时会继续回退到与当前
 操作系统/架构精确匹配的 GitHub Release。源码构建只在显式传入 `--fallback-source` 时运行：
 
@@ -234,15 +239,17 @@ python3 scripts/install-browser.py --open
 release 提供 macOS Apple Silicon / Intel、Windows 安装包与 portable zip，以及 Linux
 AppImage / deb / rpm。当前产物尚未完成 Apple 公证和 Windows 代码签名，浏览器下载后
 首次运行可能需要在系统安全提示中手动放行。Windows 的 `setup.exe` / MSI 会由脚本直接
-启动并等待（最长 15 分钟）；只有安装器成功退出、卸载注册表项存在、且
-`llm-wiki-desktop.exe` 已落盘，才算安装完成。用户取消、超时或校验失败都不会写安装回执，
-也不会换一个下载源再次弹安装器。portable zip 则在安全解压并找到唯一主程序后完成安装。
+启动，随后立即返回 `status: installer-launched`；agent 不等待安装器退出，不轮询注册表或
+主程序，也不会自动重跑 doctor。portable zip 则在安全解压并找到唯一主程序后完成安装。
 
-安装成功后会原子写入 `~/.my-llm-wiki/browser/install.json`。`--open` 的含义是校验成功后
-启动已安装的 Browser，不再用于打开安装包。macOS 必须真正安装 `.app`，Linux 必须得到
-可执行 AppImage；单纯下载 DMG/deb/rpm 不会被报告为安装成功。
+由脚本同步完成的安装会原子写入 `~/.my-llm-wiki/browser/install.json`；启动 Windows
+setup.exe/MSI 不写“已安装”回执，也不宣称 Browser 已安装完成。`--open` 对同步安装产物表示
+安装后启动；对 Windows setup.exe/MSI 只会启动原生安装器，不会等待后再启动 Browser。
+macOS 必须真正安装 `.app`，Linux 必须得到可执行 AppImage；单纯下载 DMG/deb/rpm 不会被
+报告为安装成功。
 
-初始安装到 Browser 验证为止，不提议或配置 MCP，也不会修改任何 agent 的 MCP 配置。
+初始安装完成 Browser 选择后结束；Windows 原生安装器一旦启动就交还给用户，不再跟踪。
+整个流程不提议或配置 MCP，也不会修改任何 agent 的 MCP 配置。
 
 ### 检查安装
 

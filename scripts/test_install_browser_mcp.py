@@ -21,49 +21,44 @@ SPEC.loader.exec_module(installer)
 
 
 class McpRegistrationTests(unittest.TestCase):
-    def test_windows_setup_is_waited_for_and_verified(self):
+    def test_windows_setup_is_launched_without_waiting_or_verification(self):
         setup = Path("C:/Users/Test/Downloads/browser-setup.exe")
-        installed = Path("C:/Users/Test/AppData/Local/My LLM Wiki Browser/llm-wiki-desktop.exe")
-        config = {
-            "browser": {
-                "install_receipt": {
-                    "windows_installer_timeout_seconds": 900,
-                    "windows_postcheck_timeout_seconds": 30,
-                    "windows_main_executable": "llm-wiki-desktop.exe",
-                }
-            }
-        }
-        completed = mock.Mock(returncode=0)
-        with mock.patch.object(installer.platform, "system", return_value="Windows"), \
-             mock.patch.object(installer.subprocess, "run", return_value=completed) as run, \
-             mock.patch.object(
-                 installer, "_windows_registry_install_location", return_value=installed
-             ) as verify:
-            result = installer.install_windows_artifact(config, setup, dry_run=False)
-        self.assertEqual(result, installed)
-        run.assert_called_once_with(
-            [str(setup)], stdin=installer.subprocess.DEVNULL, timeout=900, check=False
+        with mock.patch.object(installer.subprocess, "Popen") as popen, \
+             mock.patch.object(installer.subprocess, "run") as run, \
+             mock.patch.object(installer, "_windows_registry_install_location") as verify:
+            result = installer.install_windows_artifact({}, setup, dry_run=False)
+        self.assertIsInstance(result, installer.InstallerLaunch)
+        self.assertEqual(result.artifact, setup)
+        popen.assert_called_once_with(
+            [str(setup)],
+            stdin=installer.subprocess.DEVNULL,
+            stdout=installer.subprocess.DEVNULL,
+            stderr=installer.subprocess.DEVNULL,
+            close_fds=True,
         )
-        verify.assert_called_once_with(config)
-
-    def test_windows_setup_failure_never_produces_an_install_target(self):
-        setup = Path("C:/Downloads/browser-setup.exe")
-        config = {
-            "browser": {
-                "install_receipt": {
-                    "windows_installer_timeout_seconds": 900,
-                    "windows_postcheck_timeout_seconds": 30,
-                    "windows_main_executable": "llm-wiki-desktop.exe",
-                }
-            }
-        }
-        with mock.patch.object(installer.platform, "system", return_value="Windows"), \
-             mock.patch.object(
-                 installer.subprocess, "run", return_value=mock.Mock(returncode=2)
-             ), mock.patch.object(installer, "_windows_registry_install_location") as verify:
-            with self.assertRaisesRegex(installer.InstallerCompletionError, "cancelled or failed"):
-                installer.install_windows_artifact(config, setup)
+        run.assert_not_called()
         verify.assert_not_called()
+
+    def test_windows_msi_uses_native_installer_and_returns_immediately(self):
+        msi = Path("C:/Users/Test/Downloads/browser.msi")
+        with mock.patch.object(installer.subprocess, "Popen") as popen:
+            result = installer.install_windows_artifact({}, msi)
+        self.assertIsInstance(result, installer.InstallerLaunch)
+        popen.assert_called_once_with(
+            ["msiexec.exe", "/i", str(msi)],
+            stdin=installer.subprocess.DEVNULL,
+            stdout=installer.subprocess.DEVNULL,
+            stderr=installer.subprocess.DEVNULL,
+            close_fds=True,
+        )
+
+    def test_windows_installer_launch_failure_is_reported(self):
+        setup = Path("C:/Downloads/browser-setup.exe")
+        with mock.patch.object(
+            installer.subprocess, "Popen", side_effect=OSError("blocked")
+        ):
+            with self.assertRaisesRegex(RuntimeError, "could not launch"):
+                installer.install_windows_artifact({}, setup)
 
     def test_infers_github_fallback_repo_from_gitee_origin(self):
         with mock.patch.object(
@@ -164,32 +159,27 @@ class McpRegistrationTests(unittest.TestCase):
         self.assertEqual((downloaded, installed, source), (second, second, "github"))
         self.assertEqual(resolve.call_count, 2)
 
-    def test_started_installer_failure_does_not_start_fallback_installer(self):
-        config = {
-            "browser": {
-                "release_sources": [
-                    {"name": "htmlgo", "format": "tauri-latest"},
-                    {"name": "github", "format": "github-release"},
-                ],
-                "asset_patterns": {},
-            }
-        }
-        artifact = Path("/tmp/browser-setup.exe")
-        prepare = mock.Mock(
-            side_effect=installer.InstallerCompletionError("installer cancelled")
+    def test_launched_windows_installer_writes_no_receipt_and_is_not_opened(self):
+        artifact = Path("C:/Downloads/browser-setup.exe")
+        args = mock.Mock(
+            repo="owner/repo",
+            version="latest",
+            dry_run=False,
+            download_dir="C:/Downloads",
+            fallback_source=False,
+            open=True,
         )
+        config = {"browser": {"release_sources": []}}
         with mock.patch.object(
-            installer, "resolve_source_asset", return_value={"name": artifact.name}
-        ) as resolve, mock.patch.object(
-            installer, "download_asset", return_value=artifact
-        ):
-            with self.assertRaisesRegex(
-                installer.InstallerCompletionError, "installer cancelled"
-            ):
-                installer.install_release(
-                    config, "owner/repo", "latest", Path("/tmp"), prepare=prepare
-                )
-        self.assertEqual(resolve.call_count, 1)
+            installer,
+            "install_release",
+            return_value=(artifact, installer.InstallerLaunch(artifact), "htmlgo"),
+        ), mock.patch.object(installer, "write_install_receipt") as receipt, \
+             mock.patch.object(installer, "maybe_launch_installed") as launch:
+            result = installer.perform_browser_install(config, args)
+        self.assertEqual(result, 0)
+        receipt.assert_not_called()
+        launch.assert_not_called()
 
     def test_receipt_is_valid_only_while_installed_target_exists(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -4,10 +4,11 @@
 Default behavior:
 1. Read the project-owned Tauri release manifest (htmlgo).
 2. Fall back to the latest GitHub Release if the first-party source fails.
-3. Download and complete installation of the exact Browser asset for this
-   OS/arch. Windows installers are executed synchronously and verified.
-4. Atomically write an installation receipt only after verification succeeds.
-5. Optionally launch the installed application.
+3. Download the exact Browser asset for this OS/arch. Windows setup.exe/MSI
+   installers are launched and handed back to the user without monitoring.
+4. Atomically write an installation receipt only for an installation completed
+   by this process, such as a Windows portable archive or macOS app archive.
+5. Optionally launch an application whose installation completed synchronously.
 
 If no release or matching asset exists, the script exits with a clear message.
 Use --fallback-source to build the Tauri app from source as a developer fallback.
@@ -67,7 +68,14 @@ class ReleaseSourcesUnavailable(RuntimeError):
 
 
 class InstallerCompletionError(RuntimeError):
-    """An installer was launched but did not produce a verified installation."""
+    """A downloaded artifact did not produce a completed installation."""
+
+
+class InstallerLaunch:
+    """A native installer was started and now owns the remaining UI flow."""
+
+    def __init__(self, artifact: Path):
+        self.artifact = artifact
 
 
 def load_bootstrap() -> dict:
@@ -352,8 +360,8 @@ def install_release(
     *,
     dry_run: bool = False,
     skip_network_probe: bool = False,
-    prepare: Callable[[Path], Path] | None = None,
-) -> tuple[Path, Path, str]:
+    prepare: Callable[[Path], Path | InstallerLaunch] | None = None,
+) -> tuple[Path, Path | InstallerLaunch, str]:
     """Resolve, verify, and prepare a source before accepting it as successful."""
     browser = config.get("browser") or {}
     policy = browser.get("download_policy") or {}
@@ -382,9 +390,8 @@ def install_release(
             installed = prepare(downloaded) if prepare is not None else downloaded
             return downloaded, installed, name
         except InstallerCompletionError:
-            # User cancellation, timeout, or failed post-install verification is
-            # final. Starting a second installer from another source would be
-            # surprising and could race a partially completed first install.
+            # Preparation crossed an installation boundary. Starting another
+            # source could race or overwrite the partially prepared target.
             raise
         except (
             OSError,
@@ -706,8 +713,10 @@ def _windows_portable_executable(config: dict, directory: Path) -> Path:
     return candidates[0]
 
 
-def install_windows_artifact(config: dict, path: Path, dry_run: bool = False) -> Path:
-    """Complete a Windows install and return the verified application exe."""
+def install_windows_artifact(
+    config: dict, path: Path, dry_run: bool = False
+) -> Path | InstallerLaunch:
+    """Install a portable build or launch a native Windows installer."""
     if path.suffix.lower() == ".zip":
         extracted = maybe_extract_zip(path, dry_run)
         if extracted is None:
@@ -725,51 +734,22 @@ def install_windows_artifact(config: dict, path: Path, dry_run: bool = False) ->
     suffix = path.suffix.lower()
     if suffix not in {".exe", ".msi"}:
         raise RuntimeError(f"unsupported Windows Browser artifact: {path.name}")
-    timeout = config["browser"]["install_receipt"][
-        "windows_installer_timeout_seconds"
-    ]
     argv = [str(path)] if suffix == ".exe" else ["msiexec.exe", "/i", str(path)]
     if dry_run:
-        print(f"[dry-run] run and wait up to {timeout}s: {display_argv(argv, 'windows')}")
-        print("[dry-run] verify Windows uninstall registration and application executable")
-        return path
-    print(f"starting Windows installer; waiting up to {timeout}s for completion")
+        print(f"[dry-run] launch and return: {display_argv(argv, 'windows')}")
+        return InstallerLaunch(path)
+    print("starting Windows installer; returning without monitoring completion")
     try:
-        result = subprocess.run(
+        subprocess.Popen(
             argv,
             stdin=subprocess.DEVNULL,
-            timeout=timeout,
-            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
         )
-    except subprocess.TimeoutExpired as exc:
-        raise InstallerCompletionError(
-            f"Windows installer did not finish within {timeout}s"
-        ) from exc
-    accepted = {0, 3010} if suffix == ".msi" else {0}
-    if result.returncode not in accepted:
-        raise InstallerCompletionError(
-            f"Windows installer exited with code {result.returncode}; "
-            "installation was cancelled or failed"
-        )
-    postcheck_timeout = config["browser"]["install_receipt"][
-        "windows_postcheck_timeout_seconds"
-    ]
-    deadline = time.monotonic() + postcheck_timeout
-    while True:
-        try:
-            executable = _windows_registry_install_location(config)
-            break
-        except InstallerCompletionError as exc:
-            if time.monotonic() >= deadline:
-                raise InstallerCompletionError(
-                    f"Windows installation did not become verifiable within "
-                    f"{postcheck_timeout}s: {exc}"
-                ) from exc
-            time.sleep(0.5)
-    print(f"verified Windows installation: {executable}")
-    if result.returncode == 3010:
-        print("Windows installer requested a reboot; Browser files are installed")
-    return executable
+    except OSError as exc:
+        raise RuntimeError(f"could not launch Windows installer: {exc}") from exc
+    return InstallerLaunch(path)
 
 
 def _receipt_path(config: dict) -> Path:
@@ -898,7 +878,9 @@ def browser_install_state(config: dict) -> dict:
     }
 
 
-def install_downloaded_artifact(config: dict, path: Path, dry_run: bool = False) -> Path:
+def install_downloaded_artifact(
+    config: dict, path: Path, dry_run: bool = False
+) -> Path | InstallerLaunch:
     system = platform.system().lower()
     if system == "windows":
         return install_windows_artifact(config, path, dry_run)
@@ -1368,6 +1350,14 @@ def perform_browser_install(config: dict, args: argparse.Namespace) -> int:
             ),
         )
         print(f"release source: {source}")
+        if isinstance(open_target, InstallerLaunch):
+            print(f"installer: {open_target.artifact}")
+            print("status: installer-launched")
+            print(
+                "Complete the installation in the Windows UI. "
+                "This process will not wait, poll the registry, or launch Browser afterward."
+            )
+            return 0
         try:
             write_install_receipt(
                 config,
@@ -1441,7 +1431,10 @@ def main() -> int:
     parser.add_argument(
         "--open",
         action="store_true",
-        help="Launch Browser only after installation and receipt verification succeed.",
+        help=(
+            "Launch Browser after a synchronous install. Windows setup.exe/MSI "
+            "launches the installer and returns without monitoring it."
+        ),
     )
     parser.add_argument(
         "--fallback-source",
