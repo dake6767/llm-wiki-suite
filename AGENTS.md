@@ -1,300 +1,278 @@
-# Agent Bootstrap Protocol
+# Agent Bootstrap Protocol 4
 
-This repository is meant to be installable by an agent from either the
-canonical GitHub URL or the read-only Gitee Pull mirror for mainland China.
+This repository has one deterministic install protocol for Codex, Claude,
+Hermes, agents-compatible hosts, and WorkBuddy. It intentionally does not
+accept the pre-v4 `--target`, `--force`, `--yes`, or implicit-host flows.
 
-When a user says "install this project" and provides the suite URL, follow this
-release-first flow.
+## 1. Ask For The Host Before Writing
 
-The preferred skills-only entry point is the standalone root `bootstrap.sh`.
-Download and inspect it, then run it; do not pipe a remote script directly into
-a shell. Use the endpoint reachable from the current network.
+Read `registry/bootstrap.json` → `agent_hosts`. Present every host id and its
+expanded `skills_dir`, marking whether its `detect_dir` currently exists. The
+agent running this install is the natural default, but directory presence is
+not consent. The user may select multiple hosts.
 
-Canonical/global:
+Use a registry id whenever possible:
 
 ```bash
-curl -fsSLo bootstrap.sh \
+bash bootstrap.sh --host codex
+bash bootstrap.sh --host codex --host claude my-llm-wiki-video
+```
+
+`--custom-target DIR` is only for a real host not represented by the registry.
+Never translate a known host into a custom path, create unselected agent homes,
+or infer consent from stale `~/.codex`, `~/.claude`, `~/.hermes`, `~/.agents`,
+or `~/.workbuddy` directories.
+
+## 2. Release-First Entry Point
+
+For a URL-only installation, download the root `bootstrap.sh`, inspect it, and
+then execute it. Never pipe a remote script into a shell and never open an
+interactive pager during an unattended run.
+
+Canonical:
+
+```bash
+curl -fsSLo bootstrap.sh --connect-timeout 5 --max-time 30 --retry 1 \
   https://raw.githubusercontent.com/dake6767/llm-wiki-suite/main/bootstrap.sh
-less bootstrap.sh
-# after the user explicitly selects WorkBuddy (example)
-bash bootstrap.sh --target ~/.workbuddy/skills
+sed -n '1,260p' bootstrap.sh
+bash bootstrap.sh --host codex
 ```
 
 Mainland China:
 
 ```bash
-curl -fsSLo bootstrap.sh \
+curl -fsSLo bootstrap.sh --connect-timeout 5 --max-time 30 --retry 1 \
   https://gitee.com/dake6767/llm-wiki-suite/raw/main/bootstrap.sh
-less bootstrap.sh
-bash bootstrap.sh \
-  --repo-url https://gitee.com/dake6767/llm-wiki-suite.git \
-  --target ~/.workbuddy/skills
+sed -n '1,260p' bootstrap.sh
+bash bootstrap.sh --repo-url https://gitee.com/dake6767/llm-wiki-suite.git \
+  --host codex
 ```
 
-It implements steps 1–3 below: reuse/clone the permanent checkout, sync active
-skills into the registry's default agent targets, and run the scoped doctor. It
-detects external capture tools but never installs them. Use the manual commands
-below when an agent needs to control an individual step.
+GitHub is canonical. Gitee is a read-only Pull mirror; never make mirror-only
+commits or rewrite repository links for it.
 
-## 1. Clone Or Open The Repo
+## 3. Checkout Selection Is Explicit
 
-The default install mode is **symlink** (`scripts/install.sh`), so the checkout is
-not throwaway — every agent's skill dir links back into it, and its location is
-**load-bearing and permanent**. Updates are a single `git pull` here that
-propagates to all agents through the symlinks. So the clone needs a stable home,
-not a random CWD or `/tmp`.
+The checkout is load-bearing because link mode is the default. Bootstrap uses
+exactly one of these locations:
 
-Resolve where the repo lives, in this order:
+1. `--repo DIR`, when supplied;
+2. the directory containing `bootstrap.sh`, if it is a valid checkout;
+3. `registry/bootstrap.json` → `default_repo_home` for a managed install.
 
-1. **Existing dev checkout** — the user already works on the suite (e.g. a clone
-   under `~/projects/…`, or the skill symlinks already resolve into one). **Reuse
-   it.** Do not clone a second copy into the canonical home below — that would
-   shadow their working copy and split the source of truth.
-2. **Fresh install** — no checkout exists. Clone to the canonical home from
-   `registry/bootstrap.json` → `default_repo_home` (`~/.my-llm-wiki/suite`), then
-   run `install.sh` from there. GitHub remains `repo_url`; `repo_mirrors` declares
-   the Gitee Pull mirror. Without an explicit `--repo-url`, bootstrap probes
-   GitHub briefly, prefers Gitee when it is unreachable, and falls back to the
-   other configured source if clone fails. The successful source becomes
-   `origin`, so later `git pull` stays on the same reachable host. This keeps the
-   symlinks stable and lets `doctor` / updates always find the repo root.
-
-The Gitee repository is a read-only consumer mirror. Never make Gitee-specific
-commits or rewrite links during synchronization; change the canonical GitHub
-repository once and let Gitee Pull the identical refs.
-
-If a checkout is already present, `git pull` (or ask) before overwriting local
-changes. Never clone into the agent workspace / current working directory.
-`bootstrap.sh` is conservative for developer checkouts: it reuses them without
-changing them, and only pulls when `--update` is explicit and the worktree is
-clean.
-
-## 2. Install Skills
-
-Before creating or modifying any skills directory, ask the user which installed
-agent host(s) they want to use. Ask it as a multi-select built from
-`registry/bootstrap.json` → `default_skill_targets`: enumerate every candidate,
-mark which directories already exist on this machine, and offer the host you
-are currently running in as the natural default choice. Listing a candidate is
-not consent — do not infer consent from the presence of `~/.codex`,
-`~/.claude`, `~/.hermes`, `~/.agents`, or `~/.workbuddy`; those directories may
-be stale configuration for a host the user no longer uses. Install only the
-explicitly selected targets, for example:
+It does not scan the current directory, project folders, old skill links, or
+other agent homes. If the user has a development checkout, pass it explicitly:
 
 ```bash
-scripts/install.sh \
-  --target ~/.workbuddy/skills
+bash bootstrap.sh --repo ~/projects/llm-wiki-suite --host codex
 ```
 
-Never create an empty agent home or skills directory merely because it appears
-in `default_skill_targets`. The user may select multiple `--target` values.
+A fresh clone goes to `~/.my-llm-wiki/suite` through a temporary directory and
+is moved into place only after its protocol/layout is validated. Git is
+non-interactive, has low-speed and total-operation deadlines, and never reads
+credentials from a TTY. Without an explicit `--repo-url`, bootstrap briefly
+probes GitHub, tries the reachable source first, and falls back once to the
+other configured source. Dry-run is offline and reports both candidates.
 
-Both `bootstrap.sh` and `scripts/install.sh` work on Windows under Git Bash:
-they normalize MSYS `/c/...` paths before native git/Python resolve them (some
-Git Bash environments skip that translation and native tools would misplace
-files under `C:\c\...`), and `install.sh` creates links as PowerShell directory
-junctions (no admin / Developer Mode needed) because Git Bash's `ln -s` silently
-degrades to a copy. Run them as-is — no manual links, `cygpath` calls, or path
-rewriting needed.
+An existing checkout is never pulled implicitly. `--update` requires a clean
+`main` branch, upstream `origin/main`, and the canonical GitHub origin or the
+declared Gitee mirror. It runs bounded `git pull --ff-only` and succeeds only if
+`HEAD == origin/main`; local-ahead, divergent, detached, dirty, or foreign
+checkouts stop without replacement. Do not overwrite local changes.
 
-## 3. Detect And Offer The Selected Capture Toolchain
+## 4. Skill Installation Contract
 
-The skills ship no fetchers. After step 2, run the exact `toolchain check:`
-command printed by `install.sh`. It scopes detection to feature skills the user
-requested plus their `bundles`; runtime-only `requires` are installed but do not
-contribute unrelated capability profiles. Examples:
+`scripts/install.py` owns target resolution, dependency/bundle closure,
+conflicts, provenance, locking, rollback, and the exact doctor command.
+`scripts/install.sh` is only its launcher. Run them as-is on macOS, Linux, and
+Windows Git Bash; do not create links manually or rewrite MSYS paths yourself.
+
+Default link mode creates POSIX directory symlinks or Windows PowerShell
+junctions. A destination is current only when it resolves to this exact skill
+source. A foreign/broken link or ordinary directory is a conflict.
+
+Copy mode is explicit:
 
 ```bash
-python3 scripts/doctor.py --target ~/.workbuddy/skills --skills my-llm-wiki-x
-python3 scripts/doctor.py --target ~/.workbuddy/skills --skills my-llm-wiki-video
-python3 scripts/doctor.py --target ~/.workbuddy/skills
+scripts/install.sh --host codex --copy
 ```
 
-Read the `toolchain` component. `unavailable` means the selected capability has
-no viable path; `degraded` means a fallback works with the stated limitation;
-`ok` may still carry an optional quality recommendation. Explain exactly which
-selected capability improves or breaks, give the reported install command and
-project home URL, and get the user's go-ahead. Never install silently.
+Every copy is built in a temporary directory, excludes runtime state, and gets
+`.llm-wiki-install.json` with its pack version, source commit, and content
+digest. A copy is current only when both the manifest and installed bytes match
+the current source. Copy mode never merges into a stale directory.
 
-For `capture.video`, always relay the `asr routing:` line as well — Chinese
-routes to SenseVoice (FunASR) and everything else to faster-whisper, and the
-capture SOP treats that routing as a gate, so a machine with only one backend
-still needs the user to know the other exists (or to knowingly skip it).
+Conflicts stop the whole plan before destination writes. When the user explicitly
+approves replacement, use `--replace`; every displaced path is atomically renamed into
+the target registry's `.llm-wiki-backups/` directory on the same filesystem. If
+a later operation fails, the installer rolls back every destination changed in
+that run. Never rename or repoint a foreign path outside this mechanism.
 
-The single machine-readable catalog is
-`skills/my-llm-wiki/references/toolchain.json`; skills declare only capability
-ids in `registry/skills.json`, while `registry/bootstrap.json` points to the
-catalog. Do not re-create a hardcoded tool table in AGENTS.md or doctor.py.
+The installer is non-interactive. It never prompts, installs external tools, or
+changes host configuration. Exit codes are:
 
-**Mainland-China networks:** before recommending any command above, check
-reachability — `python3 skills/cn-mirrors/scripts/net_probe.py` (or the
-`network:` line of my-llm-wiki's `preflight.py`). If github/PyPI/npm are
-blocked or crawling, recommend the `install_cn` variants from the toolchain
-report instead of the defaults (they route through official
-domestic mirrors, and for yt-dlp switch channels entirely so self-update
-keeps working). The full playbook — including cloning this repo itself via a
-mirror — is the `cn-mirrors` skill.
+- `0`: installed/verified (optional degradation may remain);
+- `1`: invalid installation or failed operation;
+- `2`: bad invocation/protocol/configuration;
+- `3`: installation succeeded but a selected capability needs user action.
 
-Two follow-ups that bite later if skipped now:
+## 5. Toolchain Detection And Network Routing
 
-- **PATH for daemon agents**: npm global bins usually get exported only in
-  `~/.zprofile`, but daemon-launched agents snapshot a `bash -l` env, which
-  reads `~/.profile` / `~/.bash_profile` — export the npm-global bin dir there
-  too, or opencli will look "not installed" to those agents.
-- **opencli logins are per-platform and one-time** (`opencli xiaohongshu login`,
-  `opencli douyin login`, …). Don't front-load them all — surface the login
-  step when a capture first needs that platform.
-- **Hermes unattended runs**: when Hermes is one of the selected targets, offer
-  `approvals.mode: smart` plus `security.redact_secrets: true`, while keeping
-  `approvals.cron_mode: deny` and `security.tirith_enabled: true`. Never switch
-  to `off` / `yolo` or unconditional cron approval as an installation shortcut,
-  and never edit an existing Hermes config without user consent. Repository
-  examples must pass `python3 scripts/check_approval_safety.py`.
-
-## 4. Initialize A Wiki
-
-If the user does not already have a wiki registry (`~/.my-llm-wiki/wikis.json`),
-initialize a first wiki under the default root from `registry/bootstrap.json`:
-
-```text
-~/wikis/my-llm-wiki
-```
-
-Use the `my-llm-wiki` / `my-llm-wiki-maintainer` scripts already installed from
-this repo to create the wiki scaffold and register it.
-
-## 5. Install Browser: Release First
-
-The project-owned htmlgo manifest is the first Browser source. Only if it fails
-and GitHub fallback is needed, run the `cn-mirrors` reachability probe before
-trying the fallback:
+After skill installation, bootstrap runs the scoped doctor automatically. For
+manual runs, use the host ids and the same selected skills:
 
 ```bash
-python3 skills/cn-mirrors/scripts/net_probe.py --json
+python3 scripts/doctor.py --host codex --skills my-llm-wiki-x
+python3 scripts/doctor.py --host codex --skills my-llm-wiki-video --json
+python3 scripts/doctor.py --host codex
 ```
 
-Always prefer release artifacts over source builds:
+The toolchain catalog is
+`skills/my-llm-wiki/references/toolchain.json`. It contains structured argv
+arrays per OS and per network route. Do not turn them into shell strings, use
+`eval`, guess another package manager, or invent an installation command.
+
+`preflight.py` validates executable postchecks and Python modules with bounded,
+parallel probes. It also runs `skills/cn-mirrors/scripts/net_probe.py` once and
+routes GitHub, PyPI, npm, and Hugging Face independently. `global`, `cn`, and
+`unavailable` are per-ecosystem results; do not use one GitHub result as a proxy
+for every package source.
+
+System packages are also host-specific: ffmpeg recipes distinguish Homebrew,
+apt, dnf, pacman, root/non-root Linux, and winget. If no declared package
+manager exists, report `unavailable`; never substitute a guessed distro command.
+
+Interpret capability states exactly:
+
+- `ok`: selected capability is complete;
+- `degraded`: a stated fallback works with the reported limitation;
+- `unavailable`: the selected capability cannot complete;
+- doctor `action-required` / exit 3: show the structured recipe and project
+  home, explain the affected capability, and ask for consent.
+
+Never install a recommended tool silently. After consent, execute each reported
+argv array directly with an argv-capable runner, apply only its reported `env`,
+enforce its exact `step_timeout_seconds`, and run its `postcheck` with
+`postcheck_timeout_seconds`. All reported commands are non-interactive; do not
+remove those flags or concatenate/evaluate the argv as shell input.
+
+`runtime_env` is distinct from install `env`: apply it when the capture backend
+first downloads/loads a model (for example `HF_ENDPOINT`), not merely during
+pip installation. Persist it in a profile only with separate user consent.
+
+For `capture.video`, always relay `asr routing:`. Chinese routes to SenseVoice;
+other languages route to faster-whisper. A one-backend machine is intentionally
+reported as incomplete for the other language route.
+
+Daemon agents must see tools on their actual startup `PATH`. In particular, an
+npm global bin exported only from `~/.zprofile` may be absent from a host that
+launches `bash -l`; add it to that host's login environment only with user
+consent, then rerun doctor. `opencli` logins are per-platform and one-time;
+surface `opencli <platform> login` only when the first real capture needs it.
+
+If Hermes is selected, offer `approvals.mode: smart` and
+`security.redact_secrets: true`, while retaining `approvals.cron_mode: deny` and
+`security.tirith_enabled: true`. Never use `off`, `yolo`, unconditional cron
+approval, or edit an existing Hermes config without consent. Repository
+examples must pass `python3 scripts/check_approval_safety.py`.
+
+## 6. Wiki Initialization
+
+If `~/.my-llm-wiki/wikis.json` does not exist, initialize the first wiki at
+`registry/bootstrap.json` → `default_wiki_root` (`~/wikis/my-llm-wiki`) using
+the installed `my-llm-wiki` / `my-llm-wiki-maintainer` scripts. Do not invent a
+second registry or write a synthetic RAW item.
+
+## 7. Browser Installation
+
+Browser is optional and release-first:
 
 ```bash
 python3 scripts/install-browser.py --open
 ```
 
-If the repo is private or the release is private, set `GITHUB_TOKEN` first.
+The installer tries the project-owned htmlgo Tauri manifest first. A source is
+successful only after its asset finishes downloading; metadata success followed
+by a stalled/failed asset continues to GitHub. Downloads use HTTPS, a 20-second
+socket timeout, a 5-minute total deadline, a 2 GiB limit, `.part` files, and an
+atomic rename. `GITHUB_TOKEN` is sent only to the GitHub host allowlist and is
+stripped on redirects to other hosts.
 
-The installer first reads the project-owned `https://wiki.htmlgo.to/_update/latest.json`
-manifest, which is also the desktop app's primary updater source. Only if that
-source fails does it run the GitHub probe and try GitHub Releases. If both paths
-fail, **do not retry or automatically fall back to a source build**. Explain that
-Browser is optional and finish the base install; `wiki_ops.py local-search`
-remains an equivalent read/search path. Gitee mirrors this Git repository only,
-not Browser assets. A third-party GitHub relay is a public-asset, user-approved
-last resort with the `cn-mirrors` trust caveat — never make it the default route.
+Browser download/source-build and MCP mutations share a non-waiting advisory
+lock. A concurrent agent exits immediately with an active-operation error;
+never retry it in a tight loop.
 
-On Windows the htmlgo manifest supplies the release `*-setup.exe` / MSI, with
-`*-setup.exe` preferred; `--open` launches the downloaded installer normally. GitHub fallback
-prefers the portable zip and auto-extracts it — extraction IS the install; just
-run the exe inside. It needs the WebView2 runtime, which Windows 10/11 ships by
-default; only fall back to setup.exe on machines without WebView2 (the installer
-bootstraps it).
+Unsupported OS/architecture combinations fail rather than selecting an x64
+asset. A Windows setup.exe/MSI is always executed synchronously, with closed
+stdin and a 15-minute deadline; success additionally requires the exact
+uninstall registration and `llm-wiki-desktop.exe` to exist. User cancellation,
+timeout, or failed verification writes no receipt and must not try a second
+installer source. Portable ZIP extraction rejects path traversal and requires
+the exact executable. macOS requires an installed `.app`, and Linux requires an
+executable AppImage; downloading a DMG/deb/rpm alone is never reported as an
+install.
 
-Only fall back to local source build when:
+Only a verified install atomically writes
+`~/.my-llm-wiki/browser/install.json`. `--open` launches that installed target
+after receipt creation; it never opens an installer. A source build is a
+development artifact, returns action-required, and does not create an install
+receipt.
 
-- no release exists yet,
-- no asset matches the user's OS/arch,
-- the user explicitly asks for a dev build.
+If htmlgo and GitHub both fail, stop retrying, explain that Browser is optional,
+and finish the skills-only installation. `wiki_ops.py local-search` remains the
+equivalent local path. Gitee mirrors source code, not Browser assets. A public
+third-party relay requires separate user approval and is never the default.
 
-Fallback command:
+Use a source build only when no release exists, no asset matches the exact
+OS/architecture, or the user explicitly asks for a development build:
 
 ```bash
 python3 scripts/install-browser.py --fallback-source
 ```
 
-## 6. Verify The Whole Suite
-
-Run the suite-level health check — one shot covering skills linkage, the wiki
-registry, Browser reachability, and capture adapters:
-
-```bash
-python3 scripts/doctor.py --target ~/.workbuddy/skills
-python3 scripts/doctor.py --target ~/.workbuddy/skills --json
-```
-
-Without `--target`, doctor inspects only hosts that already have canonical links
-to this checkout; use `--all-targets` only to audit old copies and every
-configured host.
-
-Each component reports `ok` / `warn` / `error` / `skip`; the process exits
-non-zero only on `error` (skills not linked into any agent dir, a declared skill
-runtime dependency missing, or an invalid registry reference). Fix any `error`, and relay `warn`s the user cares
-about (e.g. a skill installed as a `--copy` won't track repo edits; Browser not
-running is fine if they only want the skills).
-
-The Browser row resolves the port the way the app itself does
-(`~/.my-llm-wiki/connector/server-port` > `$PORT` > default 8800) and treats any
-HTTP response as "up" — an auth-gated `401` (the API requires a token by default)
-still proves the server is running, so the probe needs no token. To hand-check,
-use the port doctor prints:
-
-```bash
-curl -s "http://127.0.0.1:$(cat ~/.my-llm-wiki/connector/server-port 2>/dev/null || echo 8800)/api/v1/healthz"
-```
-
-## 7. Guide First Capture
-
-Do not create a synthetic capture to demonstrate the product. When the user
-explicitly asked for first capture in the same request, ask for one real URL or
-note after base installation, then walk the first successful loop:
-
-```text
-capture -> RAW -> maintain/ingest -> browse/search in My LLM Wiki Browser
-```
-
-Suggested user prompt:
-
-```text
-Send me one article, webpage, video, or note you want to preserve. I will save it
-to RAW, compile it into your wiki, and show where to view it in My LLM Wiki Browser.
-```
-
-For an installation-only request, stop after the suite check and offer that
-prompt as the next step. Do not treat a README install prompt as permission to
-write a demonstration RAW item or compile it into the user's Wiki.
-
 ## 8. MCP Setup
 
-The Browser serves MCP at `http://127.0.0.1:<port>/mcp` behind the same Bearer
-token as the Web API (`~/.my-llm-wiki/connector/token`), but **local hosts must
-default to the suite-owned stdio bridge**, not a direct loopback URL. Hermes and
-WorkBuddy can send loopback through the system proxy; the bridge disables all
-proxies and resolves the current port/token at runtime. Remote relay access
-continues to use native streamable HTTP.
+Browser MCP is optional and is never proposed or registered as a side effect of
+Browser installation. Local hosts default to the suite-owned stdio bridge; do
+not register direct loopback HTTP or reintroduce `npx mcp-remote`.
 
-Registration recipes for every host live in `registry/bootstrap.json` → `mcp`
-(the single source of truth, parallel to `default_skill_targets`). They are argv
-arrays, not shell strings: `install-browser.py` substitutes the absolute current
-Python executable and permanent-checkout bridge path, preserving Windows drive
-letters/backslashes and paths containing spaces. Do not guess an app-bundle,
-portable-extraction, or Linux package path, and do not reintroduce `npx
-mcp-remote`.
+Registration requires an explicit host id, which is the consent boundary:
 
 ```bash
-python3 scripts/install-browser.py --register-mcp     # propose per detected host; runs only on explicit consent
-python3 scripts/install-browser.py --unregister-mcp   # cleanup: no stale entries after a Browser uninstall
+python3 scripts/install-browser.py --register-mcp --host codex
+python3 scripts/install-browser.py --unregister-mcp --host codex
 ```
 
-`install-browser.py` offers the same proposal automatically after a successful
-install (suppress with `--skip-mcp`). Consent rules: show the exact command,
-run it only after the user confirms, skip without error otherwise — the
-generalization of "never edit an existing Hermes config without user consent"
-to all hosts. WorkBuddy has no registration CLI, so print the exact JSON for the
-user to merge manually; never edit its config directly. `doctor.py` reports
-unregistered/stale entries, legacy direct-loopback registrations, and the result
-of a real bridge `tools/list` probe when the Browser is running.
+Registration first validates the Browser install receipt and its target. If the
+receipt is missing/stale, it exits without reading or changing any host config.
+Connector token/port files and a listening process are not installation proof.
+Unregistration remains available so stale host entries can always be removed.
 
-MCP is an access form, not the capability itself: hosts without MCP reach the
-same backend through `wiki_ops.py browser-search` / `local-search` /
-`read-pages`, fully equivalent. Local stdio host configs contain neither the
-port nor the token; the bridge reads them from `~/.my-llm-wiki/connector` on
-every request, so rotations need no re-registration. For remote access, use the
-relay URL shown by the Browser tray/settings UI and prefer an Authorization
-header over putting long-lived tokens in URLs.
+There is no prompt/TTY branch and no `--yes`. Host CLI commands run with closed
+stdin and a 30-second timeout. A conflicting existing registration is an error:
+unregister it explicitly, then register the v4 entry. Every attempted host-config
+write is snapshotted and restored if the host CLI fails. WorkBuddy has no
+registration CLI: the command prints the exact JSON and exits 3 for manual
+action; never edit it directly.
+
+The bridge resolves `~/.my-llm-wiki/connector/server-port`, then
+`$LLM_WIKI_PORT`, then 8800, and reads the token file on every request. It
+disables proxies. Remote relay access remains native HTTPS with an Authorization
+header; do not put long-lived tokens in URLs.
+
+## 9. Final Verification And First Capture
+
+Doctor verifies exact skill provenance, dependency closure, wiki registry,
+Browser health, selected-host MCP state, and the scoped capture toolchain. A
+missing explicit target, foreign link, stale/mutated copy, missing required
+skill, or invalid registry reference is an error. Browser absence is only a
+warning when skills-only use was selected.
+
+For an installation-only request, stop after doctor and offer:
+
+> Send me one article, webpage, video, or note you want to preserve. I will save
+> it to RAW, compile it into your wiki, and show where to view it.
+
+Only perform the first capture when the user supplies a real source and asks for
+it. The loop is `capture → RAW → maintain/ingest → browse/search`; never create
+a demonstration capture on the user's behalf.

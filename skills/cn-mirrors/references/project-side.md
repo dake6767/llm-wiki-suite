@@ -48,26 +48,30 @@ Either way, the install script's contract is: **probe, then pick** — try the
 fast path (GitHub direct) with a short timeout, fall back to the
 proxy/mirror. Never hardcode only one.
 
-## 3. Install manifest — the `install` / `install_cn` dual-command convention
+## 3. Install manifest — structured OS / route / argv recipes
 
-Wherever the project lists tool install commands machine-readably (a
-`bootstrap.json`, a docs table an agent reads), give each entry two fields:
+Wherever the project lists tool installation machine-readably, store the
+ecosystem separately and make every recipe an argv array. Shell strings are
+ambiguous across macOS, Linux, Windows, and agent runners, and invite `eval`.
 
 ```json
 {
   "name": "yt-dlp",
-  "install": "brew install yt-dlp",
-  "install_cn": "python3 -m pip install -U yt-dlp -i https://pypi.tuna.tsinghua.edu.cn/simple"
+  "ecosystem": "pypi",
+  "install": {
+    "linux": {
+      "global": {"steps": [["python3", "-m", "pip", "install", "-U", "yt-dlp"]]},
+      "cn": {"steps": [["python3", "-m", "pip", "install", "-U", "yt-dlp", "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"]]}
+    }
+  },
+  "postcheck": ["yt-dlp", "--version"]
 }
 ```
 
-The `install_cn` variant is not just "same command + mirror flag" — sometimes
-it's a **different channel** (yt-dlp above: the pip build self-updates through
-the PyPI mirror, while brew/winget builds self-update against GitHub Releases
-and stay stale in CN). Doctor/preflight scripts pick the variant by probing
-(`net_probe.py --json`, or an inline 10-liner hitting api.github.com with a
-3 s timeout — keep scripts dependency-free rather than importing across
-skills).
+The `cn` route may use a **different channel**, not merely an added mirror flag.
+Doctor/preflight must probe each ecosystem independently, select exactly one OS
+and route, execute argv without a shell, enforce a timeout, and run `postcheck`.
+Do not infer PyPI/npm/Hugging Face reachability from GitHub alone.
 
 ## 4. Dependency placement — prefer ecosystems with domestic CDNs
 

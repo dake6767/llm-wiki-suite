@@ -1,0 +1,56 @@
+name: installer-ci
+
+on:
+  pull_request:
+    paths:
+      - 'bootstrap.sh'
+      - 'AGENTS.md'
+      - 'README.md'
+      - 'registry/**'
+      - 'scripts/**'
+      - 'skills/cn-mirrors/**'
+      - 'skills/my-llm-wiki/references/toolchain.json'
+      - 'skills/my-llm-wiki/scripts/preflight.py'
+      - 'apps/my-llm-wiki-browser/crates/llm-wiki-server/src/skill_version.rs'
+      - '.github/workflows/installer-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'bootstrap.sh'
+      - 'registry/**'
+      - 'scripts/**'
+      - 'skills/cn-mirrors/**'
+      - 'skills/my-llm-wiki/references/toolchain.json'
+      - 'skills/my-llm-wiki/scripts/preflight.py'
+      - '.github/workflows/installer-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  protocol-tests:
+    name: protocol tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Validate shell and JSON
+        shell: bash
+        run: |
+          bash -n bootstrap.sh scripts/install.sh
+          python -m json.tool registry/bootstrap.json >/dev/null
+          python -m json.tool registry/skills.json >/dev/null
+          python -m json.tool skills/my-llm-wiki/references/toolchain.json >/dev/null
+      - name: Compile Python
+        run: python -m compileall -q scripts skills/cn-mirrors/scripts skills/my-llm-wiki/scripts
+      - name: Run installer protocol tests
+        shell: bash
+        run: python -m unittest discover -s scripts -p "test_*.py"
+      - name: Check approval-safe examples
+        run: python scripts/check_approval_safety.py

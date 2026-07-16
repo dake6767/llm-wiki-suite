@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -35,9 +36,10 @@ class DoctorTargetScopeTests(unittest.TestCase):
             except OSError as exc:  # pragma: no cover - Windows without symlink privileges
                 self.skipTest(f"cannot create test symlink: {exc}")
 
-            bootstrap = {
-                "default_skill_targets": [str(copied_target), str(linked_target)]
-            }
+            bootstrap = {"agent_hosts": {
+                "codex": {"skills_dir": str(copied_target)},
+                "workbuddy": {"skills_dir": str(linked_target)},
+            }}
             auto = doctor.check_skills(bootstrap, registry, {slug})
             audited = doctor.check_skills(
                 bootstrap,
@@ -51,26 +53,20 @@ class DoctorTargetScopeTests(unittest.TestCase):
         self.assertEqual(auto["status"], "ok")
         self.assertEqual(auto["skills"][0]["targets"], {str(linked_target): "linked"})
         self.assertEqual(audited["target_scope"], "all-configured")
-        self.assertEqual(audited["status"], "warn")
-        self.assertEqual(audited["skills"][0]["targets"][str(copied_target)], "copy")
+        self.assertEqual(audited["status"], "error")
+        self.assertEqual(audited["skills"][0]["targets"][str(copied_target)], "invalid-copy")
 
 
 class DoctorExpandTests(unittest.TestCase):
-    """--target may arrive shell-expanded as an MSYS path from Git Bash."""
+    """--custom-target may arrive shell-expanded as an MSYS path from Git Bash."""
 
-    def test_msys_target_normalized_on_windows(self):
-        with mock.patch("os.name", "nt"):
-            self.assertEqual(
-                doctor.expand("/c/Users/x/.workbuddy/skills"),
-                Path("C:/Users/x/.workbuddy/skills"),
-            )
-
-    def test_msys_like_target_untouched_on_posix(self):
-        with mock.patch("os.name", "posix"):
-            self.assertEqual(
-                doctor.expand("/c/Users/x/.workbuddy/skills"),
-                Path("/c/Users/x/.workbuddy/skills"),
-            )
+    def test_msys_target_follows_the_actual_runner_platform(self):
+        expected = (
+            Path("C:/Users/x/.workbuddy/skills")
+            if os.name == "nt"
+            else Path("/c/Users/x/.workbuddy/skills")
+        )
+        self.assertEqual(doctor.expand("/c/Users/x/.workbuddy/skills"), expected)
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@
 Skills declare capability profile ids in ``registry/skills.json``. This script
 evaluates only the requested profiles, using the sibling
 ``references/toolchain.json`` as the single source for tool descriptions,
-project homes, and normal/mainland-China install commands.
+project homes, and structured OS/network-route install argv.
 
 Examples:
 
@@ -20,17 +20,19 @@ from __future__ import annotations
 
 import argparse
 import functools
-import glob
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_CATALOG = SKILL_DIR / "references" / "toolchain.json"
+NETWORK_PROBE = SKILL_DIR.parents[1] / "skills" / "cn-mirrors" / "scripts" / "net_probe.py"
 PROFILE_ALIASES = {
     "web": "capture.web",
     "doc": "capture.doc",
@@ -57,6 +59,54 @@ def load_catalog(path: Path | str | None = None) -> dict:
         unknown = sorted(set(spec.get("tools", [])) - set(data["tools"]))
         if unknown:
             raise ValueError(f"{profile} references unknown tool(s): {', '.join(unknown)}")
+    for name, spec in data["tools"].items():
+        if not isinstance(spec, dict):
+            raise ValueError(f"invalid tool definition: {name}")
+        probe_spec = spec.get("probe")
+        if not isinstance(probe_spec, dict) or probe_spec.get("kind") not in {
+            "command", "python-module"
+        } or not isinstance(probe_spec.get("name"), str):
+            raise ValueError(f"invalid probe definition: {name}")
+        installs = spec.get("install")
+        if installs is None:
+            continue
+        if not isinstance(installs, dict):
+            raise ValueError(f"invalid install recipes: {name}")
+        for field in ("step_timeout_seconds", "postcheck_timeout_seconds"):
+            if not isinstance(spec.get(field), int) or spec[field] <= 0:
+                raise ValueError(f"invalid {field}: {name}")
+        postcheck = spec.get("postcheck")
+        if (
+            not isinstance(postcheck, list)
+            or not postcheck
+            or any(not isinstance(arg, str) or not arg for arg in postcheck)
+        ):
+            raise ValueError(f"invalid postcheck: {name}")
+        valid_platforms = {
+            "darwin", "darwin-brew", "linux", "linux-apt", "linux-apt-root",
+            "linux-dnf", "linux-dnf-root", "linux-pacman", "linux-pacman-root",
+            "windows", "windows-winget",
+        }
+        for os_name, routes in installs.items():
+            if os_name not in valid_platforms or not isinstance(routes, dict):
+                raise ValueError(f"invalid install platform for {name}: {os_name}")
+            for route, recipe in routes.items():
+                if route not in {"global", "cn"} or not isinstance(recipe, dict):
+                    raise ValueError(f"invalid install route for {name}: {os_name}/{route}")
+                steps = recipe.get("steps")
+                if not isinstance(steps, list) or not steps or any(
+                    not isinstance(step, list)
+                    or not step
+                    or any(not isinstance(arg, str) or not arg for arg in step)
+                    for step in steps
+                ):
+                    raise ValueError(f"invalid argv steps for {name}: {os_name}/{route}")
+                env = recipe.get("env", {})
+                if not isinstance(env, dict) or any(
+                    not isinstance(key, str) or not isinstance(value, str)
+                    for key, value in env.items()
+                ):
+                    raise ValueError(f"invalid install env for {name}: {os_name}/{route}")
     return data
 
 
@@ -82,48 +132,27 @@ def profile_tool_names(catalog: dict, profiles: list[str]) -> list[str]:
     return names
 
 
-def _candidate_dirs() -> list[str]:
-    home = str(Path.home())
-    if os.name == "nt":
-        local = os.environ.get("LOCALAPPDATA", f"{home}/AppData/Local")
-        roaming = os.environ.get("APPDATA", f"{home}/AppData/Roaming")
-        dirs = [
-            f"{local}/Microsoft/WinGet/Links",
-            f"{local}/Microsoft/WinGet/Packages/*",
-            f"{local}/Microsoft/WinGet/Packages/*/*/bin",
-            f"{home}/scoop/shims",
-            "C:/ProgramData/chocolatey/bin",
-            f"{roaming}/npm",
-            f"{roaming}/Python/Python3*/Scripts",
-            f"{local}/Programs/Python/Python3*/Scripts",
-        ]
-    else:
-        dirs = glob.glob(f"{home}/.nvm/versions/node/*/bin")
-        dirs += [
-            "/opt/homebrew/bin",
-            "/usr/local/bin",
-            f"{home}/.local/bin",
-            f"{home}/Library/Python/3.*/bin",
-        ]
-    out = []
-    for directory in dirs:
-        out += glob.glob(directory) if "*" in directory else [directory]
-    return out
-
-
-_EXTS = ("", ".exe", ".cmd", ".bat") if os.name == "nt" else ("",)
-
-
-def find_tool(name: str) -> str | None:
+def command_tool(spec: dict, name: str) -> str:
+    """Return the executable only after its declared postcheck succeeds."""
     path = shutil.which(name)
-    if path:
-        return path
-    for directory in _candidate_dirs():
-        for ext in _EXTS:
-            candidate = Path(directory) / (name + ext)
-            if candidate.is_file() and os.access(candidate, os.X_OK):
-                return str(candidate)
-    return None
+    if not path:
+        return ""
+    postcheck = spec.get("postcheck") or [name, "--help"]
+    if not isinstance(postcheck, list) or not postcheck:
+        raise ValueError(f"invalid command postcheck for {name}")
+    argv = [path, *postcheck[1:]]
+    try:
+        result = subprocess.run(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return path if result.returncode == 0 else ""
 
 
 _ASR_VENV = Path.home() / ".local" / "share" / "llm-wiki" / "asr-venv"
@@ -135,23 +164,21 @@ ASR_VENV_PYTHON = _ASR_VENV / (
 @functools.lru_cache(maxsize=None)
 def _module_python(module: str) -> str:
     """Return an interpreter that can import ``module``, or ""."""
-    candidates = [
-        os.environ.get("LLM_WIKI_ASR_PYTHON", ""),
-        sys.executable,
-        "python3",
-        str(ASR_VENV_PYTHON),
-    ]
+    candidates = [os.environ.get("LLM_WIKI_ASR_PYTHON", ""), str(ASR_VENV_PYTHON), sys.executable]
     seen = set()
     for candidate in candidates:
         if not candidate or candidate in seen:
             continue
-        seen.add(candidate)
+        resolved = str(Path(candidate).expanduser().resolve()) if Path(candidate).exists() else candidate
+        if resolved in seen:
+            continue
+        seen.add(resolved)
         try:
             result = subprocess.run(
                 [candidate, "-c", "import importlib.util as u,sys; "
                  f"sys.exit(0 if u.find_spec('{module}') else 1)"],
                 capture_output=True,
-                timeout=30,
+                timeout=2,
             )
             if result.returncode == 0:
                 return candidate
@@ -160,53 +187,155 @@ def _module_python(module: str) -> str:
     return ""
 
 
-def _torch_version(python: str) -> str:
-    if not python:
-        return ""
+@functools.lru_cache(maxsize=1)
+def network_routes(timeout: float = 3.0) -> dict[str, str]:
+    defaults = {name: "unavailable" for name in ("github", "pypi", "npm", "huggingface")}
+    defaults["system"] = "global"
     try:
         result = subprocess.run(
-            [python, "-c", "import torch; print(torch.__version__)"],
+            [sys.executable, str(NETWORK_PROBE), "--json", "--timeout", str(timeout)],
             capture_output=True,
             text=True,
-            timeout=30,
+            check=True,
+            timeout=timeout + 4,
         )
-        return result.stdout.strip() if result.returncode == 0 else ""
-    except Exception:  # noqa: BLE001 - diagnostic only
-        return ""
+        report = json.loads(result.stdout)
+        routes = report.get("ecosystems")
+        if isinstance(routes, dict):
+            return {**defaults, **{str(k): str(v) for k, v in routes.items()}}
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        pass
+    return defaults
 
 
-@functools.lru_cache(maxsize=1)
-def github_reachable(timeout: float = 3.0) -> bool:
-    import urllib.error
-    import urllib.request
+def platform_keys() -> list[str]:
+    system = platform.system().lower()
+    if system == "darwin":
+        return (["darwin-brew", "darwin"] if shutil.which("brew") else ["darwin"])
+    if system == "windows":
+        return (["windows-winget", "windows"] if shutil.which("winget") else ["windows"])
+    if system == "linux":
+        root = hasattr(os, "geteuid") and os.geteuid() == 0
+        sudo = shutil.which("sudo") is not None
+        for manager in ("apt-get", "dnf", "pacman"):
+            if shutil.which(manager) and (root or sudo):
+                suffix = manager.removesuffix("-get")
+                key = f"linux-{suffix}{'-root' if root else ''}"
+                return [key, "linux"]
+        return ["linux"]
+    return []
 
-    request = urllib.request.Request(
-        "https://api.github.com/",
-        method="HEAD",
-        headers={"User-Agent": "llm-wiki-preflight"},
+
+def _replace_placeholders(value, replacements: dict[str, str]):
+    if isinstance(value, str):
+        for name, replacement in replacements.items():
+            value = value.replace("{" + name + "}", replacement)
+        return value
+    if isinstance(value, list):
+        return [_replace_placeholders(item, replacements) for item in value]
+    if isinstance(value, dict):
+        return {key: _replace_placeholders(item, replacements) for key, item in value.items()}
+    return value
+
+
+def install_recipe(spec: dict, routes: dict[str, str]) -> dict | None:
+    installs = spec.get("install")
+    if not isinstance(installs, dict):
+        return None
+    ecosystem = spec.get("ecosystem", "system")
+    route = routes.get(ecosystem, "unavailable")
+    replacements = {
+        "python": sys.executable,
+        "asr_venv": str(_ASR_VENV),
+        "asr_python": str(ASR_VENV_PYTHON),
+    }
+    execution = {
+        "step_timeout_seconds": spec["step_timeout_seconds"],
+        "postcheck_timeout_seconds": spec["postcheck_timeout_seconds"],
+    }
+    missing_prerequisites = [
+        command for command in spec.get("install_requires", [])
+        if shutil.which(command) is None
+    ]
+    if missing_prerequisites:
+        return {
+            **execution,
+            "route": "unavailable",
+            "reason": "missing install prerequisite(s): " + ", ".join(missing_prerequisites),
+            "steps": [],
+            "env": {},
+            "runtime_env": {},
+            "unavailable_runtime": [],
+            "postcheck": _replace_placeholders(spec.get("postcheck", []), replacements),
+        }
+    if route == "unavailable":
+        return {
+            **execution,
+            "route": route,
+            "reason": f"{ecosystem} has no reachable global or cn route",
+            "steps": [],
+            "env": {},
+            "runtime_env": {},
+            "unavailable_runtime": [],
+            "postcheck": _replace_placeholders(spec.get("postcheck", []), replacements),
+        }
+    selected_platform = next(
+        (key for key in platform_keys() if isinstance(installs.get(key), dict)), None
     )
-    try:
-        urllib.request.urlopen(request, timeout=timeout)
-        return True
-    except urllib.error.HTTPError:
-        return True
-    except Exception:  # noqa: BLE001 - timeout/offline/restricted all mean unreachable
-        return False
+    if selected_platform is None:
+        return {
+            **execution,
+            "route": "unavailable",
+            "reason": f"no install recipe for {platform.system()} on this machine",
+            "steps": [],
+            "env": {},
+            "runtime_env": {},
+            "unavailable_runtime": [],
+            "postcheck": _replace_placeholders(spec.get("postcheck", []), replacements),
+        }
+    platform_recipes = installs[selected_platform]
+    if route not in platform_recipes:
+        raise ValueError(
+            f"no {selected_platform}/{route} install recipe for {spec.get('description', 'tool')}"
+        )
+    recipe = _replace_placeholders(platform_recipes[route], replacements)
+    env = dict(recipe.get("env", {}))
+    selected_runtime_env = {}
+    unavailable_runtime = []
+    runtime_env = spec.get("runtime_env") or {}
+    for runtime_ecosystem in spec.get("runtime_ecosystems", []):
+        runtime_route = routes.get(runtime_ecosystem, "unavailable")
+        if runtime_route == "unavailable":
+            unavailable_runtime.append(runtime_ecosystem)
+            continue
+        overlay = (runtime_env.get(runtime_ecosystem) or {}).get(runtime_route) or {}
+        selected_runtime_env.update(_replace_placeholders(overlay, replacements))
+    return {
+        **execution,
+        "route": route,
+        "platform": selected_platform,
+        "steps": recipe.get("steps", []),
+        "env": env,
+        "runtime_env": selected_runtime_env,
+        "unavailable_runtime": unavailable_runtime,
+        "postcheck": _replace_placeholders(spec.get("postcheck", []), replacements),
+    }
 
 
 def probe(catalog: dict, profiles: list[str]) -> dict:
     """Probe only tools relevant to the requested profiles."""
-    tools = {}
-    for name in profile_tool_names(catalog, profiles):
+    names = profile_tool_names(catalog, profiles)
+
+    def inspect(name: str) -> tuple[str, str]:
         spec = catalog["tools"][name]
-        probe_name = spec.get("probe", name)
-        if probe_name.startswith("python:"):
-            tools[name] = _module_python(probe_name.split(":", 1)[1])
-            if name == "sensevoice":
-                tools["_sensevoice_torch"] = _torch_version(tools[name])
-        else:
-            tools[name] = find_tool(probe_name) or ""
-    return tools
+        probe_spec = spec["probe"]
+        probe_name = str(probe_spec.get("name", name))
+        if probe_spec.get("kind") == "python-module":
+            return name, _module_python(probe_name)
+        return name, command_tool(spec, probe_name)
+
+    with ThreadPoolExecutor(max_workers=max(1, min(8, len(names)))) as executor:
+        return dict(executor.map(inspect, names))
 
 
 def _add_recommendation(
@@ -216,12 +345,11 @@ def _add_recommendation(
     profile: str,
     reason: str,
     priority: str,
-    github_ok: bool,
+    routes: dict[str, str],
 ) -> None:
     spec = catalog["tools"][tool]
     existing = next((r for r in recommendations if r["tool"] == tool), None)
-    install_key = "install" if github_ok else "install_cn"
-    install = spec.get(install_key) or spec.get("install", "")
+    install = install_recipe(spec, routes)
     if existing is None:
         recommendations.append({
             "tool": tool,
@@ -244,7 +372,7 @@ def assess_profiles(
     tools: dict,
     catalog: dict,
     profiles: list[str],
-    github_ok: bool = True,
+    routes: dict[str, str],
 ) -> tuple[dict, list[dict]]:
     """Return profile results and structured, deduplicated recommendations."""
     have = lambda name: bool(tools.get(name))  # noqa: E731 - compact capability checks
@@ -275,7 +403,7 @@ def assess_profiles(
                 _add_recommendation(
                     recommendations, catalog, "opencli", profile,
                     "cleaner Web/WeChat/Xiaohongshu capture with localized images",
-                    "recommended", github_ok,
+                    "recommended", routes,
                 )
 
         elif profile == "capture.doc":
@@ -290,7 +418,7 @@ def assess_profiles(
                 _add_recommendation(
                     recommendations, catalog, "markitdown", profile,
                     "required for local PDF/docx/pptx/xlsx/epub capture",
-                    "required", github_ok,
+                    "required", routes,
                 )
 
         elif profile == "capture.note":
@@ -310,7 +438,7 @@ def assess_profiles(
                 _add_recommendation(
                     recommendations, catalog, "opencli", profile,
                     "preferred for logged-in X pages and automatic media localization",
-                    "optional", github_ok,
+                    "optional", routes,
                 )
 
         elif profile == "capture.x.bookmarks":
@@ -329,7 +457,7 @@ def assess_profiles(
                 _add_recommendation(
                     recommendations, catalog, "opencli", profile,
                     "required to list and incrementally sync logged-in X bookmarks",
-                    "required", github_ok,
+                    "required", routes,
                 )
 
         elif profile == "capture.video":
@@ -393,25 +521,25 @@ def assess_profiles(
                 _add_recommendation(
                     recommendations, catalog, "yt-dlp", profile,
                     "caption retrieval and the audio-only fallback",
-                    "required" if not caption_path else "recommended", github_ok,
+                    "required" if not caption_path else "recommended", routes,
                 )
             if not have("ffmpeg"):
                 _add_recommendation(
                     recommendations, catalog, "ffmpeg", profile,
                     "audio conversion for videos without captions",
-                    "recommended", github_ok,
+                    "recommended", routes,
                 )
             if not have("sensevoice"):
                 _add_recommendation(
                     recommendations, catalog, "sensevoice", profile,
                     "preferred local ASR for Chinese videos without captions",
-                    "recommended", github_ok,
+                    "recommended", routes,
                 )
             if not have("faster-whisper"):
                 _add_recommendation(
                     recommendations, catalog, "faster-whisper", profile,
                     "preferred local ASR for non-Chinese videos without captions",
-                    "recommended", github_ok,
+                    "recommended", routes,
                 )
         else:  # guarded by normalize_profiles; protects direct callers too
             raise ValueError(f"unsupported capture profile: {profile}")
@@ -424,21 +552,21 @@ def build_report(
     catalog_path: Path | str | None = None,
     *,
     tools: dict | None = None,
-    github_ok: bool | None = None,
+    routes: dict[str, str] | None = None,
 ) -> dict:
     catalog = load_catalog(catalog_path)
     profiles = normalize_profiles(catalog, profiles)
-    tools = probe(catalog, profiles) if tools is None else tools
-    if github_ok is None:
-        capabilities, recommendations = assess_profiles(tools, catalog, profiles, True)
-        if recommendations:
-            github_ok = github_reachable()
-            if not github_ok:
-                capabilities, recommendations = assess_profiles(
-                    tools, catalog, profiles, False
-                )
+    if tools is None and routes is None:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            tools_future = executor.submit(probe, catalog, profiles)
+            routes_future = executor.submit(network_routes)
+            tools = tools_future.result()
+            routes = routes_future.result()
     else:
-        capabilities, recommendations = assess_profiles(tools, catalog, profiles, github_ok)
+        tools = probe(catalog, profiles) if tools is None else tools
+        routes = network_routes() if routes is None else routes
+    routes = {"system": "global", **routes}
+    capabilities, recommendations = assess_profiles(tools, catalog, profiles, routes)
 
     relevant_tools = profile_tool_names(catalog, profiles)
     tool_report = {}
@@ -450,25 +578,17 @@ def build_report(
             "description": spec.get("description", ""),
             "home": spec.get("home", ""),
         }
-        if name == "sensevoice" and tools.get(name):
-            item["torch"] = tools.get("_sensevoice_torch", "")
         tool_report[name] = item
 
-    status = "ok"
-    if any(c.get("status") in ("degraded", "unavailable") for c in capabilities.values()):
-        status = "warn"
+    capability_states = {c.get("status") for c in capabilities.values()}
+    status = (
+        "action-required" if "unavailable" in capability_states
+        else "warn" if "degraded" in capability_states
+        else "ok"
+    )
     return {
         "status": status,
-        "network": {
-            "github.com": (
-                "not-probed" if github_ok is None
-                else "reachable" if github_ok else "unreachable"
-            ),
-            "install_variant": (
-                "none" if github_ok is None
-                else "install" if github_ok else "install_cn"
-            ),
-        },
+        "network": {"ecosystems": routes},
         "profiles": profiles,
         "tools": tool_report,
         "capabilities": capabilities,
@@ -478,7 +598,7 @@ def build_report(
 
 def emit_human(report: dict) -> None:
     print("network:")
-    for key, value in report["network"].items():
+    for key, value in report["network"]["ecosystems"].items():
         print(f"  {key}: {value}")
     print("profiles:")
     for profile in report["profiles"]:
@@ -504,7 +624,33 @@ def emit_human(report: dict) -> None:
             reasons = "; ".join(rec["reasons"])
             print(f"  - {rec['tool']} [{rec['priority']}]: {reasons}")
             if rec["install"]:
-                print(f"    install: {rec['install']}")
+                print(f"    route: {rec['install']['route']}")
+                if rec["install"].get("reason"):
+                    print(f"    reason: {rec['install']['reason']}")
+                if rec["install"].get("env"):
+                    print(f"    env: {json.dumps(rec['install']['env'], ensure_ascii=False)}")
+                if rec["install"].get("runtime_env"):
+                    print(
+                        "    runtime env: "
+                        + json.dumps(rec["install"]["runtime_env"], ensure_ascii=False)
+                    )
+                if rec["install"].get("unavailable_runtime"):
+                    print(
+                        "    unavailable runtime ecosystems: "
+                        + ", ".join(rec["install"]["unavailable_runtime"])
+                    )
+                for step in rec["install"].get("steps", []):
+                    print(f"    step: {json.dumps(step, ensure_ascii=False)}")
+                print(
+                    "    step timeout: "
+                    f"{rec['install']['step_timeout_seconds']}s"
+                )
+                if rec["install"].get("postcheck"):
+                    print(f"    postcheck: {json.dumps(rec['install']['postcheck'], ensure_ascii=False)}")
+                    print(
+                        "    postcheck timeout: "
+                        f"{rec['install']['postcheck_timeout_seconds']}s"
+                    )
             if rec["home"]:
                 print(f"    home: {rec['home']}")
     else:
@@ -520,7 +666,6 @@ def main() -> int:
         help="profile id or alias; repeat to select several (default: all)",
     )
     ap.add_argument("--json", action="store_true", help="machine-readable report")
-    ap.add_argument("--quiet", action="store_true", help="deprecated; retained for compatibility")
     ap.add_argument("--catalog", type=Path, default=DEFAULT_CATALOG)
     args = ap.parse_args()
 

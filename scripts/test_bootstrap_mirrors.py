@@ -18,6 +18,17 @@ REGISTRY = ROOT / "registry" / "bootstrap.json"
 GITHUB_REPO = "https://github.com/dake6767/llm-wiki-suite.git"
 GITEE_REPO = "https://gitee.com/dake6767/llm-wiki-suite.git"
 GITEE_BOOTSTRAP = "https://gitee.com/dake6767/llm-wiki-suite/raw/main/bootstrap.sh"
+BASH = shutil.which("bash")
+if BASH is None:
+    raise RuntimeError("bash is required for bootstrap protocol tests")
+
+
+def bash_path(path: Path) -> str:
+    """Render a filesystem path for Bash itself, including MSYS drive form."""
+    value = path.resolve().as_posix()
+    if os.name == "nt" and len(value) >= 3 and value[1:3] == ":/":
+        return f"/{value[0].lower()}{value[2:]}"
+    return value
 
 
 class BootstrapMirrorTests(unittest.TestCase):
@@ -25,9 +36,9 @@ class BootstrapMirrorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
             env = os.environ.copy()
-            env["HOME"] = str(home)
+            env["HOME"] = bash_path(home)
             completed = subprocess.run(
-                ["bash", str(BOOTSTRAP), "--repo", str(ROOT), "--dry-run"],
+                [BASH, bash_path(BOOTSTRAP), "--repo", bash_path(ROOT), "--dry-run"],
                 cwd=ROOT,
                 env=env,
                 check=False,
@@ -36,7 +47,7 @@ class BootstrapMirrorTests(unittest.TestCase):
             )
 
         self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("no agent target selected", completed.stderr)
+        self.assertIn("select at least one --host or --custom-target", completed.stderr)
         self.assertNotIn("Syncing skills", completed.stdout)
 
     def test_registry_declares_canonical_and_gitee_mirror(self) -> None:
@@ -57,19 +68,17 @@ class BootstrapMirrorTests(unittest.TestCase):
             script = root / "bootstrap.sh"
             shutil.copy2(BOOTSTRAP, script)
             home = root / "home"
-            target = home / ".codex" / "skills"
-            target.mkdir(parents=True)
             env = os.environ.copy()
-            env["HOME"] = str(home)
-            env["LLM_WIKI_REPO_HOME"] = str(home / ".my-llm-wiki" / "suite")
+            env["HOME"] = bash_path(home)
+            env["LLM_WIKI_REPO_HOME"] = bash_path(home / ".my-llm-wiki" / "suite")
             completed = subprocess.run(
                 [
-                    "bash",
-                    str(script),
+                    BASH,
+                    bash_path(script),
                     "--repo-url",
                     GITEE_REPO,
-                    "--target",
-                    str(target),
+                    "--host",
+                    "codex",
                     "--dry-run",
                 ],
                 cwd=root,
@@ -81,7 +90,75 @@ class BootstrapMirrorTests(unittest.TestCase):
 
         self.assertIn(GITEE_REPO, completed.stdout)
         self.assertNotIn(GITHUB_REPO, completed.stdout)
-        self.assertIn("requested skills: all active skills", completed.stdout)
+        self.assertIn("host: codex", completed.stdout)
+
+    def test_fresh_dry_run_never_probes_network(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            script = root / "bootstrap.sh"
+            shutil.copy2(BOOTSTRAP, script)
+            home = root / "home"
+            shims = root / "shims"
+            shims.mkdir()
+            marker = root / "curl-called"
+            curl = shims / "curl"
+            curl.write_text(
+                "#!/bin/sh\ntouch \"$CURL_MARKER\"\nexit 99\n", encoding="utf-8"
+            )
+            curl.chmod(0o755)
+            env = os.environ.copy()
+            env["HOME"] = bash_path(home)
+            env["PATH"] = f"{shims}{os.pathsep}{env['PATH']}"
+            env["CURL_MARKER"] = bash_path(marker)
+            env["LLM_WIKI_REPO_HOME"] = bash_path(home / ".my-llm-wiki" / "suite")
+            completed = subprocess.run(
+                [BASH, bash_path(script), "--host", "codex", "--dry-run"],
+                cwd=root,
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            curl_called = marker.exists()
+
+        self.assertFalse(curl_called)
+        self.assertIn(GITHUB_REPO, completed.stdout)
+        self.assertIn(GITEE_REPO, completed.stdout)
+
+    def test_update_rejects_non_main_checkout_before_network(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            shims = root / "shims"
+            shims.mkdir()
+            git = shims / "git"
+            git.write_text(
+                "#!/bin/sh\n"
+                "case \"$*\" in\n"
+                "  *'rev-parse --is-inside-work-tree'*) echo true ;;\n"
+                "  *'status --porcelain'*) : ;;\n"
+                "  *'symbolic-ref --quiet --short HEAD'*) echo feature/test ;;\n"
+                "  *) echo unexpected-git-call >&2; exit 90 ;;\n"
+                "esac\n",
+                encoding="utf-8",
+            )
+            git.chmod(0o755)
+            env = os.environ.copy()
+            env["PATH"] = f"{shims}{os.pathsep}{env['PATH']}"
+            completed = subprocess.run(
+                [
+                    BASH, bash_path(BOOTSTRAP), "--repo", bash_path(ROOT),
+                    "--host", "codex", "--update", "--dry-run",
+                ],
+                cwd=ROOT,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("requires branch main", completed.stderr)
+        self.assertNotIn("checkout:", completed.stderr)
 
     def test_windows_gitbash_normalizes_msys_paths_for_native_tools(self) -> None:
         """Simulated Git Bash: /c/... args must become C:/... before git/python."""
@@ -112,16 +189,16 @@ class BootstrapMirrorTests(unittest.TestCase):
                 (shims / shim).chmod(0o755)
 
             env = os.environ.copy()
-            env["HOME"] = str(home)
+            env["HOME"] = bash_path(home)
             env["PATH"] = f"{shims}{os.pathsep}{env['PATH']}"
             env["LLM_WIKI_REPO_HOME"] = "/c/Users/tester/.my-llm-wiki/suite"
             completed = subprocess.run(
                 [
-                    "bash",
-                    str(script),
+                    BASH,
+                    bash_path(script),
                     "--repo-url",
                     GITEE_REPO,
-                    "--target",
+                    "--custom-target",
                     "/c/Users/tester/.workbuddy/skills",
                     "--dry-run",
                 ],
@@ -132,8 +209,8 @@ class BootstrapMirrorTests(unittest.TestCase):
                 text=True,
             )
 
-        self.assertIn("destination: C:/Users/tester/.my-llm-wiki/suite", completed.stdout)
-        self.assertIn("target: C:/Users/tester/.workbuddy/skills", completed.stdout)
+        self.assertIn("repo: C:/Users/tester/.my-llm-wiki/suite", completed.stdout)
+        self.assertIn("custom-target: C:/Users/tester/.workbuddy/skills", completed.stdout)
         self.assertNotIn("/c/Users/tester", completed.stdout)
 
 

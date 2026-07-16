@@ -77,7 +77,7 @@ def resolve_port(mcp: dict) -> int:
                 return value
         except (OSError, ValueError):
             pass
-    env_name = resolution.get("env", "PORT")
+    env_name = resolution.get("env", "LLM_WIKI_PORT")
     env_value = os.environ.get(env_name, "").strip()
     if env_value.isdigit() and int(env_value) >= 1024:
         return int(env_value)

@@ -10,16 +10,9 @@ Self-locating: resolves the repo root from this file (following symlinks, so it
 works whether run from a dev checkout or through an installed-skill symlink) and
 reads registry/bootstrap.json + registry/skills.json as the source of truth.
 
-Output: a human summary by default, or machine-readable JSON with --json
-(mirrors `agent-reach doctor --json`). Each component reports one of:
-  ok    — good to go
-  warn  — works with a caveat / optional piece missing
-  error — critical skill linkage/dependency wiring is broken (drives non-zero)
-  skip  — not applicable on this machine
-
-Exit code: 0 unless a component is in "error" (skill linkage, missing declared
-runtime dependencies, invalid registry references, or an invalid toolchain
-catalog/profile). Missing optional tools and viable fallbacks degrade to warn.
+Output: human summary or JSON. Exit 0 is ready/degraded, 1 is invalid, 2 is a
+doctor invocation/configuration error, and 3 means selected capability setup
+requires an explicit user action.
 
 Scope note: this is the repo-resident version — it assumes the repo is present
 (the install-time / dev-checkout case). Surfacing it to any session regardless of
@@ -43,6 +36,7 @@ SKILLS_REGISTRY = REPO_ROOT / "registry" / "skills.json"
 
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 from skill_graph import SkillGraphError, resolve_selection  # noqa: E402
+from install_state import content_digest, is_linklike, verified_copy  # noqa: E402
 
 sys.path.insert(0, str(REPO_ROOT / "skills" / "my-llm-wiki" / "scripts"))
 import preflight as capture_preflight  # noqa: E402
@@ -58,7 +52,7 @@ _spec.loader.exec_module(install_browser)
 
 def expand(p: str) -> Path:
     # Reuse the installer's expand: it normalizes Git Bash /c/... paths on
-    # Windows so a shell-expanded --target is found by native Python.
+    # Windows so a shell-expanded --custom-target is found by native Python.
     return install_browser.expand(p)
 
 
@@ -68,20 +62,6 @@ def load_json(path: Path):
             return json.load(f)
     except Exception as e:  # noqa: BLE001 - surface any read/parse failure
         return e
-
-
-def is_linklike(path: Path) -> bool:
-    """True for a symlink or Windows directory junction/reparse point."""
-    if path.is_symlink():
-        return True
-    is_junction = getattr(path, "is_junction", None)
-    if is_junction is not None and is_junction():
-        return True
-    try:
-        attrs = getattr(path.stat(follow_symlinks=False), "st_file_attributes", 0)
-    except OSError:
-        return False
-    return bool(attrs & 0x400)  # FILE_ATTRIBUTE_REPARSE_POINT
 
 
 def check_repo_home(bootstrap: dict) -> dict:
@@ -110,25 +90,44 @@ def check_skills(
     target_scope: str | None = None,
 ) -> dict:
     """Check active skill linkage plus declared runtime dependencies."""
-    def target_has_skill(path: Path) -> bool:
-        if is_linklike(path):
-            try:
-                path.resolve(strict=True)
-                return True
-            except OSError:
-                return False
-        return path.exists()
-
     all_active = [s for s in skills_registry.get("skills", [])
                   if s.get("lifecycle", "active") == "active"]
+    by_slug = {skill["slug"]: skill for skill in all_active}
+    digest_cache: dict[str, str] = {}
+
+    def source_for(slug: str) -> Path:
+        return (REPO_ROOT / by_slug[slug]["collection_path"]).resolve()
+
+    def source_digest(slug: str) -> str:
+        if slug not in digest_cache:
+            digest_cache[slug] = content_digest(source_for(slug))
+        return digest_cache[slug]
+
+    def target_has_skill(path: Path) -> bool:
+        slug = path.name
+        if slug not in by_slug:
+            return False
+        if is_linklike(path):
+            try:
+                return path.resolve(strict=True) == source_for(slug)
+            except OSError:
+                return False
+        return verified_copy(
+            path,
+            slug,
+            str(skills_registry.get("pack_version", "")),
+            source_digest(slug),
+        )
+
     active_slugs = {s["slug"] for s in all_active}
     active = [s for s in all_active
               if selected_slugs is None or s["slug"] in selected_slugs]
-    configured_targets = bootstrap.get("default_skill_targets", [])
+    configured_hosts = bootstrap.get("agent_hosts") or {}
+    configured_targets = [spec["skills_dir"] for spec in configured_hosts.values()]
     configured_paths = [expand(t) for t in configured_targets]
     if target_dirs is not None:
         targets = [expand(t) for t in target_dirs]
-        existing_targets = [t for t in targets if t.is_dir()]
+        existing_targets = targets
         scope = target_scope or "explicit"
     else:
         # Do not turn unrelated pre-existing agent directories into a verdict
@@ -157,7 +156,7 @@ def check_skills(
         requires = s.get("requires", [])
         bundles = s.get("bundles", [])
         unknown_refs = sorted((set(requires) | set(bundles)) - active_slugs)
-        src = (REPO_ROOT / s["collection_path"]).resolve()
+        src = source_for(slug)
         states = {}  # target -> state
         dependency_missing = {}
         for t in existing_targets:
@@ -170,7 +169,16 @@ def check_skills(
                     continue
                 states[str(t)] = "linked" if resolved == src else "foreign-link"
             elif dest.exists():
-                states[str(t)] = "copy"
+                states[str(t)] = (
+                    "copy-current"
+                    if verified_copy(
+                        dest,
+                        slug,
+                        str(skills_registry.get("pack_version", "")),
+                        source_digest(slug),
+                    )
+                    else "invalid-copy"
+                )
             else:
                 states[str(t)] = "missing"
 
@@ -194,15 +202,15 @@ def check_skills(
         elif all(v == "missing" for v in vals):
             status = "error"
             note = "not installed in any agent dir"
-        elif any(v in ("foreign-link", "broken-link") for v in vals):
-            status = "warn"
-            note = "a target points outside this repo (or is broken)"
-        elif any(v == "copy" for v in vals):
-            status = "warn"
-            note = "installed as a copy (--copy): won't track repo edits"
+        elif any(v in ("foreign-link", "broken-link", "invalid-copy") for v in vals):
+            status = "error"
+            note = "target provenance is invalid, foreign, or broken"
         elif any(v == "missing" for v in vals):
-            status = "warn"
-            note = "linked in some agent dirs but missing in others"
+            status = "error" if target_dirs is not None else "warn"
+            note = "missing from one or more selected agent dirs"
+        elif any(v == "copy-current" for v in vals):
+            status = "ok"
+            note = "installed with verified link/copy provenance"
         else:
             status = "ok"
             note = "linked into repo"
@@ -241,7 +249,7 @@ def check_wiki(bootstrap: dict) -> dict:
 
 
 def resolve_browser_port(fr: dict) -> tuple[int, str]:
-    """Mirror the app's own resolution (main.rs): pref file > $PORT > default."""
+    """Mirror the app's own resolution: pref file > $LLM_WIKI_PORT > default."""
     default = fr.get("default_port", 8800)
     pref = fr.get("port_pref_file")
     if pref:
@@ -251,7 +259,7 @@ def resolve_browser_port(fr: dict) -> tuple[int, str]:
                 return v, f"persisted ({pref})"
         except Exception:  # noqa: BLE001 - absent/unparseable → fall through
             pass
-    env_name = fr.get("port_env", "PORT")
+    env_name = fr.get("port_env", "LLM_WIKI_PORT")
     ev = os.environ.get(env_name, "").strip()
     if ev.isdigit() and int(ev) >= 1024:
         return int(ev), f"${env_name}"
@@ -259,33 +267,40 @@ def resolve_browser_port(fr: dict) -> tuple[int, str]:
 
 
 def check_browser(bootstrap: dict) -> dict:
+    install_state = install_browser.browser_install_state(bootstrap)
     fr = bootstrap.get("first_run") or {}
     health_path = fr.get("health_path")
     if not health_path:
-        return {"status": "skip", "detail": "no health_path in bootstrap.json"}
+        return {"status": "skip", "install": install_state,
+                "detail": "no health_path in bootstrap.json"}
     host = fr.get("host", "127.0.0.1")
     port, port_src = resolve_browser_port(fr)
     url = f"http://{host}:{port}{health_path}"
-    # Liveness only — any HTTP response (even an auth-gated 401) proves the server
-    # is up. We deliberately do NOT read the API token; reachability != auth.
+    # Liveness only: a successful health response or auth-gated 401/403 proves
+    # the server is up. We deliberately do not read the API token here.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
-        with urllib.request.urlopen(url, timeout=2) as resp:  # noqa: S310 - localhost
+        with opener.open(url, timeout=2) as resp:  # noqa: S310 - fixed localhost
             try:
                 body = json.load(resp)
             except Exception:  # noqa: BLE001 - non-JSON body still means "up"
                 body = None
         healthy = isinstance(body, dict) and body.get("ok") is True
-        return {"status": "ok", "port": port,
+        return {"status": "ok", "port": port, "install": install_state,
                 "detail": f"{'healthy' if healthy else 'up'} at {url} (port from {port_src})"}
     except urllib.error.HTTPError as e:
-        return {"status": "ok", "port": port,
-                "detail": f"up at {url} — responding (HTTP {e.code}, auth-gated); port from {port_src}"}
+        if e.code in (401, 403):
+            return {"status": "ok", "port": port, "install": install_state,
+                    "detail": f"up at {url} — responding (HTTP {e.code}, auth-gated); port from {port_src}"}
+        return {"status": "warn", "port": port, "install": install_state,
+                "detail": f"unexpected HTTP {e.code} at {url}; Browser health is unknown"}
     except Exception:  # noqa: BLE001 - connection refused/timeout = not running (optional)
-        return {"status": "warn", "port": port,
-                "detail": f"not reachable at {url} (port from {port_src}) — Browser optional / not running"}
+        installed = "installed but not running" if install_state["ok"] else "not installed"
+        return {"status": "warn", "port": port, "install": install_state,
+                "detail": f"not reachable at {url} (port from {port_src}) — Browser {installed}"}
 
 
-def check_mcp(bootstrap: dict, browser: dict) -> dict:
+def check_mcp(bootstrap: dict, browser: dict, hosts: list[str]) -> dict:
     """Browser-MCP registration state per host.
 
     - Browser installed but a host with a known register command has no entry →
@@ -298,15 +313,13 @@ def check_mcp(bootstrap: dict, browser: dict) -> dict:
     mcp = bootstrap.get("mcp")
     if not mcp:
         return {"status": "skip", "detail": "no mcp block in bootstrap.json"}
-    connector_files = [mcp.get("token_file"), (mcp.get("port_resolution") or {}).get("pref_file")]
-    browser_present = browser.get("status") == "ok" or any(
-        p and expand(p).is_file() for p in connector_files
-    )
-    rows = install_browser.build_mcp_commands(bootstrap)
+    install_state = browser.get("install") or install_browser.browser_install_state(bootstrap)
+    browser_present = bool(install_state.get("ok"))
+    rows = install_browser.build_mcp_commands(bootstrap, hosts=hosts)
     hosts_out = []
     warns = []
     bridge_probe = None
-    if browser.get("status") == "ok":
+    if browser_present and browser.get("status") == "ok":
         bridge_rel = mcp.get("stdio_bridge_script", "scripts/mcp-stdio-bridge.py")
         bridge_path = (REPO_ROOT / bridge_rel).resolve()
         if not bridge_path.is_file():
@@ -343,29 +356,26 @@ def check_mcp(bootstrap: dict, browser: dict) -> dict:
                     f"{row['host']}: MCP entry present but Browser not installed — "
                     f"remove it: {row['unregister_command'] or 'see host config'}"
                 )
-            elif row.get("transport") == "http-loopback":
-                host["issue"] = "legacy-loopback-http"
+            elif row.get("transport") != "stdio":
+                host["issue"] = "conflicting-registration"
+                remove = row["unregister_command"] or "remove it from the host config"
                 warns.append(
-                    f"{row['host']}: loopback HTTP can be captured by system proxies — "
-                    "migrate: python3 scripts/install-browser.py --register-mcp"
-                )
-            elif row.get("transport") == "stdio-external":
-                host["issue"] = "external-stdio-bridge"
-                warns.append(
-                    f"{row['host']}: external stdio bridge still depends on npx/package state — "
-                    "migrate: python3 scripts/install-browser.py --register-mcp"
+                    f"{row['host']}: conflicting MCP registration "
+                    f"({row.get('transport') or 'unknown'}); run `{remove}`, then "
+                    f"`python3 scripts/install-browser.py --register-mcp --host {row['host']}`"
                 )
         elif (row["command"] or row.get("manual_config")) and browser_present:
             host["issue"] = "unregistered"
             warns.append(
                 f"{row['host']}: Browser installed but MCP not registered — "
-                "run: python3 scripts/install-browser.py --register-mcp"
+                f"run: python3 scripts/install-browser.py --register-mcp --host {row['host']}"
             )
         hosts_out.append(host)
     if not rows:
-        return {"status": "skip", "detail": "no agent host dirs detected"}
+        return {"status": "skip", "detail": "no MCP-capable host selected"}
     if not browser_present and not any(r["registered"] for r in rows):
         return {"status": "skip", "browser_present": False, "hosts": hosts_out,
+                "install": install_state,
                 "detail": "Browser not installed (optional) — skills use the CLI fallback"}
     status = "warn" if warns else "ok"
     detail = (
@@ -375,6 +385,7 @@ def check_mcp(bootstrap: dict, browser: dict) -> dict:
         + (", ".join(r["host"] for r in rows if r["registered"]) or "none needed")
     )
     return {"status": status, "browser_present": browser_present,
+            "install": install_state,
             "bridge_probe": bridge_probe, "hosts": hosts_out,
             "warnings": warns, "detail": detail}
 
@@ -403,7 +414,7 @@ def check_toolchain(bootstrap: dict, selection: dict) -> dict:
     return report
 
 
-_ORDER = {"ok": 0, "skip": 0, "warn": 1, "error": 2}
+_ORDER = {"ok": 0, "skip": 0, "warn": 1, "action-required": 1, "error": 2}
 
 
 def _worse(a: str, b: str) -> str:
@@ -412,8 +423,9 @@ def _worse(a: str, b: str) -> str:
 
 def build_report(
     requested_skills: list[str] | None = None,
-    target_dirs: list[str] | None = None,
-    all_targets: bool = False,
+    hosts: list[str] | None = None,
+    custom_targets: list[str] | None = None,
+    all_hosts: bool = False,
 ) -> dict:
     bootstrap = load_json(BOOTSTRAP)
     skills_registry = load_json(SKILLS_REGISTRY)
@@ -421,37 +433,63 @@ def build_report(
         return {"fatal": f"cannot read {BOOTSTRAP}: {bootstrap}"}
     if isinstance(skills_registry, Exception):
         return {"fatal": f"cannot read {SKILLS_REGISTRY}: {skills_registry}"}
+    if bootstrap.get("version") != 4:
+        return {"fatal": f"unsupported bootstrap protocol: {bootstrap.get('version')}"}
 
     try:
         selection = resolve_selection(skills_registry, requested_skills)
     except SkillGraphError as exc:
         return {"fatal": f"skill graph invalid: {exc}"}
     selected_slugs = {s["slug"] for s in selection["skills"]}
-    if all_targets and target_dirs is None:
-        target_dirs = list(bootstrap.get("default_skill_targets", []))
-        target_scope = "all-configured"
-    else:
-        target_scope = "explicit" if target_dirs is not None else None
+    host_specs = bootstrap.get("agent_hosts") or {}
+    selected_hosts = list(host_specs) if all_hosts else list(dict.fromkeys(hosts or []))
+    unknown_hosts = sorted(set(selected_hosts) - set(host_specs))
+    if unknown_hosts:
+        return {"fatal": "unknown host(s): " + ", ".join(unknown_hosts)}
+    target_dirs = [host_specs[name]["skills_dir"] for name in selected_hosts]
+    target_dirs.extend(dict.fromkeys(custom_targets or []))
+    if not target_dirs:
+        return {"fatal": "select at least one --host or --custom-target"}
+    target_scope = "all-hosts" if all_hosts else "explicit"
 
-    browser = check_browser(bootstrap)
-    components = {
-        "repo_home": check_repo_home(bootstrap),
-        "skills": check_skills(
-            bootstrap, skills_registry, selected_slugs, target_dirs=target_dirs,
-            target_scope=target_scope,
-        ),
-        "wiki_registry": check_wiki(bootstrap),
-        "browser": browser,
-        "mcp": check_mcp(bootstrap, browser),
-        "toolchain": check_toolchain(bootstrap, selection),
-    }
+    try:
+        browser = check_browser(bootstrap)
+        components = {
+            "repo_home": check_repo_home(bootstrap),
+            "skills": check_skills(
+                bootstrap, skills_registry, selected_slugs, target_dirs=target_dirs,
+                target_scope=target_scope,
+            ),
+            "wiki_registry": check_wiki(bootstrap),
+            "browser": browser,
+            "mcp": check_mcp(bootstrap, browser, selected_hosts),
+            "toolchain": check_toolchain(bootstrap, selection),
+        }
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        return {"fatal": f"doctor check failed: {exc}"}
     overall = "ok"
     for c in components.values():
         overall = _worse(overall, c.get("status", "ok"))
-    return {"overall": overall, "repo_root": str(REPO_ROOT), "components": components}
+    action_required = any(
+        item.get("status") == "unavailable"
+        for item in components["toolchain"].get("capabilities", {}).values()
+    )
+    state = (
+        "failed" if overall == "error"
+        else "action-required" if action_required or overall == "action-required"
+        else "degraded" if overall == "warn"
+        else "ready"
+    )
+    return {
+        "state": state,
+        "overall": overall,
+        "repo_root": str(REPO_ROOT),
+        "selected_hosts": selected_hosts,
+        "components": components,
+    }
 
 
-_ICON = {"ok": "✓", "warn": "!", "error": "✗", "skip": "·"}
+_ICON = {"ok": "✓", "warn": "!", "action-required": "!", "error": "✗", "skip": "·"}
 
 
 def render_human(report: dict) -> str:
@@ -499,13 +537,51 @@ def render_human(report: dict) -> str:
             reasons = "; ".join(rec.get("reasons", []))
             lines.append(f"     → {rec['tool']} [{rec['priority']}]: {reasons}")
             if rec.get("install"):
-                lines.append(f"       `{rec['install']}` ({rec.get('home', '')})")
+                recipe = rec["install"]
+                lines.append(f"       route: {recipe.get('route', 'unavailable')}")
+                if recipe.get("reason"):
+                    lines.append(f"       reason: {recipe['reason']}")
+                if recipe.get("env"):
+                    lines.append(
+                        "       env: " + json.dumps(recipe["env"], ensure_ascii=False)
+                    )
+                if recipe.get("runtime_env"):
+                    lines.append(
+                        "       runtime env: "
+                        + json.dumps(recipe["runtime_env"], ensure_ascii=False)
+                    )
+                if recipe.get("unavailable_runtime"):
+                    lines.append(
+                        "       unavailable runtime ecosystems: "
+                        + ", ".join(recipe["unavailable_runtime"])
+                    )
+                for step in recipe.get("steps", []):
+                    lines.append(
+                        "       argv: " + json.dumps(step, ensure_ascii=False)
+                    )
+                lines.append(
+                    f"       step timeout: {recipe['step_timeout_seconds']}s"
+                )
+                if recipe.get("postcheck"):
+                    lines.append(
+                        "       postcheck: "
+                        + json.dumps(recipe["postcheck"], ensure_ascii=False)
+                    )
+                    lines.append(
+                        "       postcheck timeout: "
+                        f"{recipe['postcheck_timeout_seconds']}s"
+                    )
+                if rec.get("home"):
+                    lines.append(f"       home: {rec['home']}")
 
     lines.append("")
-    verdict = {"ok": "all systems go",
-               "warn": "usable, with caveats above",
-               "error": "critical issue above — fix before use"}[report["overall"]]
-    lines.append(f"{_ICON[report['overall']]} overall: {verdict}")
+    verdict = {
+        "ready": "ready",
+        "degraded": "installed with optional degradation",
+        "action-required": "selected capability needs user action",
+        "failed": "installation is invalid",
+    }[report["state"]]
+    lines.append(f"{_ICON[report['overall']]} state: {report['state']} — {verdict}")
     return "\n".join(lines)
 
 
@@ -518,22 +594,17 @@ def main() -> int:
         metavar="SLUG",
         help="scope linkage and toolchain checks to requested skills plus graph closure",
     )
+    ap.add_argument("--host", action="append", default=[], help="named agent host; repeatable")
     ap.add_argument(
-        "--target",
-        action="append",
-        metavar="DIR",
-        help="check this user-selected agent skills directory (repeatable)",
+        "--custom-target", action="append", default=[],
+        help="explicit non-registry skills directory; repeatable",
     )
-    ap.add_argument(
-        "--all-targets",
-        action="store_true",
-        help="inspect every configured agent target, including old copies and unrelated hosts",
-    )
+    ap.add_argument("--all-hosts", action="store_true", help="inspect every configured host")
     args = ap.parse_args()
 
-    if args.target and args.all_targets:
-        ap.error("--target and --all-targets cannot be used together")
-    report = build_report(args.skills, target_dirs=args.target, all_targets=args.all_targets)
+    if args.host and args.all_hosts:
+        ap.error("--host and --all-hosts cannot be used together")
+    report = build_report(args.skills, args.host, args.custom_target, args.all_hosts)
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:
@@ -541,7 +612,11 @@ def main() -> int:
 
     if "fatal" in report:
         return 2
-    return 1 if report["overall"] == "error" else 0
+    if report["state"] == "failed":
+        return 1
+    if report["state"] == "action-required":
+        return 3
+    return 0
 
 
 if __name__ == "__main__":

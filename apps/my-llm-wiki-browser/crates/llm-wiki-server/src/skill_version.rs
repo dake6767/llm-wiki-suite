@@ -396,7 +396,7 @@ pub fn build_gitlink_prompt(repo_path: &str, candidate: &Candidate) -> String {
 技能源检出在数据块的 `repo_path`。请：\n\
 1. 先读并遵守该检出里的 **AGENTS.md**；\n\
 2. **先 `git fetch`**，再确认：当前分支 = **main**、upstream = **`origin/main`**（官方 remote `dake6767/llm-wiki-suite`）、**整个工作树干净**、且 **HEAD 相对 `origin/main` 既不 ahead 也不 diverged**——任一不满足就停下报告、不要 pull（feature 分支 / 非官方 remote / 无 upstream / dirty / 本地领先或分叉 都不更；注意 `git pull --ff-only` 对「本地领先」会误判为无需更新而**静默跳过**真正的更新）；\n\
-3. 满足则以 `repo_path`（正确 quoting）运行 `bash bootstrap.sh --repo <repo_path> --update`（它会 `git pull --ff-only`、按 registry 的 5 个默认 target 同步 `install.sh`、跑 `doctor.py` toolchain 检查，缺工具**只提示别静默装**，国内先过 cn-mirrors 可达性）；\n\
+3. 从 `registry/bootstrap.json → agent_hosts` 找出技能链接实际指向该 `repo_path` 的 host id；把这些明确的 id 作为重复 `--host <id>` 参数，以 `repo_path`（正确 quoting）运行 `bash bootstrap.sh --repo <repo_path> --update --host <id>...`。没有匹配 host 就停下，绝不猜路径。bootstrap 会 `git pull --ff-only`、原子同步并跑 scoped doctor；exit 3 时只报告结构化工具安装方案，**不要静默安装**；\n\
 4. 更新后核对：本机 `registry/skills.json` 的 `pack_version` **≥ `candidate_version`**{commit_clause}。不满足就报告「version 信号与 main 不同步」。"
     )
 }
@@ -410,8 +410,8 @@ pub fn build_unknown_prompt(reason: &str) -> String {
 ```json\n{data_block}\n```\n\n\
 请**只做诊断**：读 canonical 检出的 AGENTS.md、定位/克隆官方检出（`dake6767/llm-wiki-suite`），\
 **逐一比对我各 host 技能目录与 canonical 副本，把差异报告给我**。\
-**不要执行任何 `install.sh --copy` / `--force` / 目录替换或覆盖**——普通 `--copy`（即使没有 `--force`）\
-也会覆盖已存在真实目录里的同名文件、且可能残留旧版已删文件、各 host 副本可能各有修改。\
+**不要执行任何 `install.sh --copy` / `--replace` / 目录替换或覆盖**。v4 copy 有内容摘要和来源清单；\
+旧副本或被修改副本会严格报冲突，必须先报告每个 host 的 provenance/差异并取得明确替换授权。\
 等我确认后，再在**新对话**里制定备份 + 同步方案。"
     )
 }
@@ -423,7 +423,7 @@ pub struct SkillVersionConfig {
     pub app_version: String,
     /// app 内置的 suite skill slug 快照（构建时固化；槽位以此为准）。
     pub builtin_slugs: Vec<String>,
-    /// default_skill_targets ∩ 实存（已 tilde 展开），每项形如 `~/.claude/skills`。
+    /// agent_hosts ∩ 实存（已 tilde 展开），每项形如 `~/.claude/skills`。
     pub host_targets: Vec<PathBuf>,
     /// version.json endpoints，按序尝试（Worker 优先、GitHub 兜底）。
     pub endpoints: Vec<String>,

@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
+import os
+import tarfile
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest import mock
 
@@ -17,12 +21,49 @@ SPEC.loader.exec_module(installer)
 
 
 class McpRegistrationTests(unittest.TestCase):
-    def test_open_windows_setup_with_native_installer_ui(self):
+    def test_windows_setup_is_waited_for_and_verified(self):
         setup = Path("C:/Users/Test/Downloads/browser-setup.exe")
+        installed = Path("C:/Users/Test/AppData/Local/My LLM Wiki Browser/llm-wiki-desktop.exe")
+        config = {
+            "browser": {
+                "install_receipt": {
+                    "windows_installer_timeout_seconds": 900,
+                    "windows_postcheck_timeout_seconds": 30,
+                    "windows_main_executable": "llm-wiki-desktop.exe",
+                }
+            }
+        }
+        completed = mock.Mock(returncode=0)
         with mock.patch.object(installer.platform, "system", return_value="Windows"), \
-             mock.patch.object(installer.os, "startfile", create=True) as startfile:
-            installer.maybe_open(setup, dry_run=False)
-        startfile.assert_called_once_with(str(setup))
+             mock.patch.object(installer.subprocess, "run", return_value=completed) as run, \
+             mock.patch.object(
+                 installer, "_windows_registry_install_location", return_value=installed
+             ) as verify:
+            result = installer.install_windows_artifact(config, setup, dry_run=False)
+        self.assertEqual(result, installed)
+        run.assert_called_once_with(
+            [str(setup)], stdin=installer.subprocess.DEVNULL, timeout=900, check=False
+        )
+        verify.assert_called_once_with(config)
+
+    def test_windows_setup_failure_never_produces_an_install_target(self):
+        setup = Path("C:/Downloads/browser-setup.exe")
+        config = {
+            "browser": {
+                "install_receipt": {
+                    "windows_installer_timeout_seconds": 900,
+                    "windows_postcheck_timeout_seconds": 30,
+                    "windows_main_executable": "llm-wiki-desktop.exe",
+                }
+            }
+        }
+        with mock.patch.object(installer.platform, "system", return_value="Windows"), \
+             mock.patch.object(
+                 installer.subprocess, "run", return_value=mock.Mock(returncode=2)
+             ), mock.patch.object(installer, "_windows_registry_install_location") as verify:
+            with self.assertRaisesRegex(installer.InstallerCompletionError, "cancelled or failed"):
+                installer.install_windows_artifact(config, setup)
+        verify.assert_not_called()
 
     def test_infers_github_fallback_repo_from_gitee_origin(self):
         with mock.patch.object(
@@ -35,16 +76,19 @@ class McpRegistrationTests(unittest.TestCase):
             "version": "1.0.14",
             "platforms": {
                 "windows-x86_64": {
-                    "url": "http://wiki.htmlgo.to/_update/dl/v1.0.14/browser.msi"
+                    "url": "http://wiki.htmlgo.to/_update/dl/v1.0.14/browser.msi",
+                    "signature": "msi-signature",
                 },
                 "windows-x86_64-nsis": {
-                    "url": "http://wiki.htmlgo.to/_update/dl/v1.0.14/browser-setup.exe"
+                    "url": "http://wiki.htmlgo.to/_update/dl/v1.0.14/browser-setup.exe",
+                    "signature": "setup-signature",
                 },
             },
         }
         source = {"name": "htmlgo", "format": "tauri-latest",
                   "url": "https://wiki.htmlgo.to/_update/latest.json"}
         with mock.patch.object(installer, "json_url", return_value=manifest), \
+             mock.patch.object(installer, "tauri_updater_public_key", return_value="public-key"), \
              mock.patch.object(installer.platform, "system", return_value="Windows"), \
              mock.patch.object(installer.platform, "machine", return_value="AMD64"):
             asset = installer.tauri_manifest_asset(source)
@@ -53,8 +97,26 @@ class McpRegistrationTests(unittest.TestCase):
             asset["browser_download_url"],
             "https://wiki.htmlgo.to/_update/dl/v1.0.14/browser-setup.exe",
         )
+        self.assertEqual(asset["signature"], "setup-signature")
+        self.assertEqual(asset["public_key"], "public-key")
 
-    def test_project_release_source_wins_before_github_fallback(self):
+    def test_htmlgo_unsigned_asset_is_rejected(self):
+        manifest = {
+            "version": "1.0.14",
+            "platforms": {"darwin-aarch64": {"url": "https://example.test/app.tar.gz"}},
+        }
+        source = {
+            "name": "htmlgo",
+            "format": "tauri-latest",
+            "url": "https://example.test/latest.json",
+        }
+        with mock.patch.object(installer, "json_url", return_value=manifest), \
+             mock.patch.object(installer.platform, "system", return_value="Darwin"), \
+             mock.patch.object(installer.platform, "machine", return_value="arm64"):
+            with self.assertRaisesRegex(RuntimeError, "unsigned"):
+                installer.tauri_manifest_asset(source)
+
+    def test_asset_download_failure_advances_to_github_fallback(self):
         config = {
             "browser": {
                 "release_sources": [
@@ -64,12 +126,100 @@ class McpRegistrationTests(unittest.TestCase):
                 "asset_patterns": {},
             }
         }
-        expected = {"name": "browser-setup.exe", "browser_download_url": "https://example.test/browser.exe"}
-        with mock.patch.object(installer, "tauri_manifest_asset", return_value=expected), \
-             mock.patch.object(installer, "release_metadata") as github_release:
-            asset, source = installer.resolve_release_asset(config, "owner/repo", "latest")
-        self.assertEqual((asset, source), (expected, "htmlgo"))
-        github_release.assert_not_called()
+        first = {"name": "browser.exe", "browser_download_url": "https://example.test/browser.exe"}
+        second = {"name": "browser.dmg", "browser_download_url": "https://github.com/browser.dmg"}
+        destination = Path("/tmp/browser.dmg")
+        with mock.patch.object(
+            installer, "resolve_source_asset", side_effect=[first, second]
+        ) as resolve, mock.patch.object(
+            installer, "download_asset", side_effect=[RuntimeError("CDN stalled"), destination]
+        ):
+            result, installed, source = installer.install_release(
+                config, "owner/repo", "latest", Path("/tmp")
+            )
+        self.assertEqual((result, installed, source), (destination, destination, "github"))
+        self.assertEqual(resolve.call_count, 2)
+
+    def test_artifact_prepare_failure_advances_to_next_source(self):
+        config = {
+            "browser": {
+                "release_sources": [
+                    {"name": "htmlgo", "format": "tauri-latest"},
+                    {"name": "github", "format": "github-release"},
+                ],
+                "asset_patterns": {},
+            }
+        }
+        first = Path("/tmp/browser.app.tar.gz")
+        second = Path("/tmp/browser.dmg")
+        prepare = mock.Mock(side_effect=[RuntimeError("bad archive"), second])
+        with mock.patch.object(
+            installer, "resolve_source_asset", side_effect=[{"name": first.name}, {"name": second.name}]
+        ) as resolve, mock.patch.object(
+            installer, "download_asset", side_effect=[first, second]
+        ):
+            downloaded, installed, source = installer.install_release(
+                config, "owner/repo", "latest", Path("/tmp"), prepare=prepare
+            )
+        self.assertEqual((downloaded, installed, source), (second, second, "github"))
+        self.assertEqual(resolve.call_count, 2)
+
+    def test_started_installer_failure_does_not_start_fallback_installer(self):
+        config = {
+            "browser": {
+                "release_sources": [
+                    {"name": "htmlgo", "format": "tauri-latest"},
+                    {"name": "github", "format": "github-release"},
+                ],
+                "asset_patterns": {},
+            }
+        }
+        artifact = Path("/tmp/browser-setup.exe")
+        prepare = mock.Mock(
+            side_effect=installer.InstallerCompletionError("installer cancelled")
+        )
+        with mock.patch.object(
+            installer, "resolve_source_asset", return_value={"name": artifact.name}
+        ) as resolve, mock.patch.object(
+            installer, "download_asset", return_value=artifact
+        ):
+            with self.assertRaisesRegex(
+                installer.InstallerCompletionError, "installer cancelled"
+            ):
+                installer.install_release(
+                    config, "owner/repo", "latest", Path("/tmp"), prepare=prepare
+                )
+        self.assertEqual(resolve.call_count, 1)
+
+    def test_receipt_is_valid_only_while_installed_target_exists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "My.AppImage"
+            target.write_bytes(b"app")
+            target.chmod(0o755)
+            artifact = root / "release.AppImage"
+            artifact.write_bytes(b"release")
+            config = {
+                "browser": {
+                    "install_receipt": {
+                        "path": str(root / "install.json"),
+                        "schema": 1,
+                        "windows_main_executable": "llm-wiki-desktop.exe",
+                    }
+                }
+            }
+            with mock.patch.object(installer.platform, "system", return_value="Linux"), \
+                 mock.patch.object(installer.platform, "machine", return_value="x86_64"):
+                installer.write_install_receipt(
+                    config,
+                    artifact=artifact,
+                    target=target,
+                    source="htmlgo",
+                    requested_version="latest",
+                )
+                self.assertTrue(installer.browser_install_state(config)["ok"])
+                target.unlink()
+                self.assertFalse(installer.browser_install_state(config)["ok"])
 
     def test_blocked_release_hosts_are_reported_from_cn_probe(self):
         probe = {
@@ -81,12 +231,35 @@ class McpRegistrationTests(unittest.TestCase):
         completed = mock.Mock(stdout=json.dumps(probe))
         with mock.patch.object(installer, "NETWORK_PROBE", Path(__file__)), \
              mock.patch.object(installer.subprocess, "run", return_value=completed):
-            self.assertEqual(installer.blocked_github_release_hosts(), ["api.github.com"])
+            self.assertEqual(installer.unavailable_github_release_hosts(), ["api.github.com"])
 
-    def test_network_probe_failure_does_not_block_legacy_install(self):
+    def test_network_probe_failure_does_not_invent_a_network_verdict(self):
         with mock.patch.object(installer, "NETWORK_PROBE", Path(__file__)), \
              mock.patch.object(installer.subprocess, "run", side_effect=OSError):
-            self.assertEqual(installer.blocked_github_release_hosts(), [])
+            self.assertEqual(installer.unavailable_github_release_hosts(), [])
+
+    def test_non_github_download_never_receives_github_token(self):
+        class Response(io.BytesIO):
+            headers = {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                self.close()
+
+        opener = mock.Mock()
+        opener.open.return_value = Response(b"asset")
+        asset = {
+            "name": "browser.dmg",
+            "browser_download_url": "https://wiki.htmlgo.to/browser.dmg",
+        }
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            os.environ, {"GITHUB_TOKEN": "top-secret"}
+        ), mock.patch.object(installer.urllib.request, "build_opener", return_value=opener):
+            installer.download_asset(asset, Path(tmp))
+        request = opener.open.call_args.args[0]
+        self.assertIsNone(request.get_header("Authorization"))
 
     def test_release_patterns_match_tauri_canonical_asset_names(self):
         patterns = installer.load_bootstrap()["browser"]["asset_patterns"]
@@ -104,6 +277,56 @@ class McpRegistrationTests(unittest.TestCase):
                     {"assets": [{"name": asset_name}]}, patterns
                 )
                 self.assertEqual(selected["name"], asset_name)
+
+    def test_unsupported_linux_architecture_has_no_x64_fallback(self):
+        with mock.patch.object(installer.platform, "system", return_value="Linux"), \
+             mock.patch.object(installer.platform, "machine", return_value="aarch64"):
+            self.assertEqual(installer.platform_keys(), [])
+            self.assertEqual(installer.tauri_platform_keys(), [])
+
+    def test_portable_zip_rejects_path_traversal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive_path = root / "browser.zip"
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr("../outside.exe", b"bad")
+            with self.assertRaisesRegex(RuntimeError, "unsafe archive member"):
+                installer.maybe_extract_zip(archive_path, dry_run=False)
+            self.assertFalse((root / "outside.exe").exists())
+
+    def test_macos_app_tar_installs_single_bundle_atomically(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            payload = root / "payload"
+            executable = payload / "My LLM Wiki Browser.app" / "Contents" / "MacOS" / "browser"
+            executable.parent.mkdir(parents=True)
+            executable.write_bytes(b"new")
+            archive_path = root / "browser.app.tar.gz"
+            with tarfile.open(archive_path, "w:gz") as archive:
+                archive.add(payload / "My LLM Wiki Browser.app", arcname="My LLM Wiki Browser.app")
+            install_dir = root / "Applications"
+            old = install_dir / "My LLM Wiki Browser.app" / "Contents" / "MacOS" / "browser"
+            old.parent.mkdir(parents=True)
+            old.write_bytes(b"old")
+
+            installed = installer.install_macos_app_archive(archive_path, install_dir)
+
+            self.assertEqual(installed, install_dir / "My LLM Wiki Browser.app")
+            self.assertEqual((installed / "Contents" / "MacOS" / "browser").read_bytes(), b"new")
+            self.assertFalse(any(install_dir.glob(".*.backup-*")))
+
+    def test_macos_app_tar_rejects_links(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive_path = root / "browser.app.tar.gz"
+            link = tarfile.TarInfo("My LLM Wiki Browser.app/escape")
+            link.type = tarfile.SYMTYPE
+            link.linkname = "../../outside"
+            with tarfile.open(archive_path, "w:gz") as archive:
+                archive.addfile(link)
+            with self.assertRaisesRegex(RuntimeError, "unsupported archive member"):
+                installer.install_macos_app_archive(archive_path, root / "Applications")
+            self.assertFalse((root / "outside").exists())
 
     def test_registry_defaults_every_local_host_to_suite_bridge(self):
         mcp = installer.load_bootstrap()["mcp"]
@@ -147,6 +370,7 @@ class McpRegistrationTests(unittest.TestCase):
             }
             row = installer.build_mcp_commands(
                 config,
+                hosts=["demo"],
                 root=root,
                 python_executable="/opt/Python Stable/bin/python3",
                 system="Darwin",
@@ -194,7 +418,8 @@ class McpRegistrationTests(unittest.TestCase):
                 }
             }
             row = installer.build_mcp_commands(
-                config, root=root, python_executable="/path with space/python3"
+                config, hosts=["workbuddy"], root=root,
+                python_executable="/path with space/python3"
             )[0]
             encoded = json.dumps(row["manual_config"])
             self.assertIn("/path with space/python3", encoded)
@@ -204,20 +429,19 @@ class McpRegistrationTests(unittest.TestCase):
 class ExpandShellPathTests(unittest.TestCase):
     """CLI path args may arrive shell-expanded as MSYS /c/... from Git Bash."""
 
-    def test_msys_drive_path_normalized_on_windows(self):
-        with mock.patch("os.name", "nt"):
-            self.assertEqual(
-                installer.expand("/c/Users/x/.my-llm-wiki/browser"),
-                Path("C:/Users/x/.my-llm-wiki/browser"),
-            )
+    def test_msys_path_follows_the_actual_runner_platform(self):
+        expected = (
+            Path("C:/Users/x/.my-llm-wiki/browser")
+            if os.name == "nt"
+            else Path("/c/Users/x/.my-llm-wiki/browser")
+        )
+        self.assertEqual(
+            installer.expand("/c/Users/x/.my-llm-wiki/browser"), expected
+        )
 
-    def test_msys_like_path_untouched_on_posix(self):
-        with mock.patch("os.name", "posix"):
-            self.assertEqual(installer.expand("/c/Users/x/y"), Path("/c/Users/x/y"))
 
-
-class McpPromptNonInteractiveTests(unittest.TestCase):
-    def test_eof_at_prompt_is_decline_not_crash(self):
+class McpNonInteractiveTests(unittest.TestCase):
+    def test_explicit_host_registration_never_reads_input(self):
         row = {
             "host": "hermes",
             "registered": False,
@@ -233,13 +457,78 @@ class McpPromptNonInteractiveTests(unittest.TestCase):
             "argv": ["hermes", "mcp", "add"],
             "unregister_argv": [],
         }
+        completed = mock.Mock(returncode=0, stderr="")
         with mock.patch.object(installer, "build_mcp_commands", return_value=[row]), \
-             mock.patch.object(installer.sys.stdin, "isatty", return_value=True), \
-             mock.patch.object(installer.sys.stdout, "isatty", return_value=True), \
-             mock.patch("builtins.input", side_effect=EOFError), \
-             mock.patch.object(installer.subprocess, "run") as run:
-            installer.propose_mcp_registration({}, assume_yes=False, dry_run=False)
+             mock.patch.object(installer, "browser_install_state", return_value={"ok": True}), \
+             mock.patch("builtins.input", side_effect=AssertionError("must not prompt")), \
+             mock.patch.object(installer, "_run_host_command", return_value=completed) as run:
+            result = installer.register_mcp({}, ["hermes"], dry_run=False)
+        self.assertEqual(result, 0)
+        run.assert_called_once_with(row["argv"])
+
+    def test_failed_registration_restores_original_host_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            original = b"[mcp_servers.my-llm-wiki]\nurl='http://127.0.0.1:8800/mcp'\n"
+            config_path.write_bytes(original)
+            row = {
+                "host": "codex",
+                "registered": False,
+                "transport": None,
+                "command": "codex mcp add",
+                "manual_config": None,
+                "config_path": str(config_path),
+                "note": "",
+                "bridge_available": True,
+                "bridge_script": "bridge.py",
+                "cli_available": True,
+                "cli": "codex",
+                "argv": ["codex", "mcp", "add"],
+                "unregister_argv": ["codex", "mcp", "remove"],
+            }
+            failed = mock.Mock(returncode=1, stderr="bad config")
+            with mock.patch.object(installer, "build_mcp_commands", return_value=[row]), \
+                 mock.patch.object(installer, "browser_install_state", return_value={"ok": True}), \
+                 mock.patch.object(
+                     installer, "_run_host_command", return_value=failed
+                 ):
+                result = installer.register_mcp({}, ["codex"])
+            self.assertEqual(result, 1)
+            self.assertEqual(config_path.read_bytes(), original)
+
+    def test_conflicting_registration_is_not_rewritten(self):
+        row = {
+            "host": "codex",
+            "registered": True,
+            "transport": "http-loopback",
+            "command": "codex mcp add",
+            "manual_config": None,
+            "config_path": "/tmp/config.toml",
+            "note": "",
+            "bridge_available": True,
+            "bridge_script": "bridge.py",
+            "cli_available": True,
+            "cli": "codex",
+            "argv": ["codex", "mcp", "add"],
+            "unregister_argv": ["codex", "mcp", "remove"],
+            "unregister_command": "codex mcp remove my-llm-wiki",
+        }
+        with mock.patch.object(installer, "build_mcp_commands", return_value=[row]), \
+             mock.patch.object(installer, "browser_install_state", return_value={"ok": True}), \
+             mock.patch.object(installer, "_run_host_command") as run:
+            result = installer.register_mcp({}, ["codex"])
+        self.assertEqual(result, 1)
         run.assert_not_called()
+
+    def test_registration_is_refused_without_verified_install_receipt(self):
+        with mock.patch.object(
+            installer,
+            "browser_install_state",
+            return_value={"ok": False, "detail": "Browser install receipt is missing"},
+        ), mock.patch.object(installer, "build_mcp_commands") as build:
+            result = installer.register_mcp({}, ["codex"])
+        self.assertEqual(result, 1)
+        build.assert_not_called()
 
 
 if __name__ == "__main__":
