@@ -37,7 +37,7 @@ use update::UpdateManager;
 const DEFAULT_PORT: u16 = 8800;
 const CONFIG_PATH: &str = "desktop/config";
 
-/// 本地服务端口，每进程解析一次：持久化配置 > `PORT` 环境变量 > 默认 8800。
+/// 本地服务端口，每进程解析一次：持久化配置 > `LLM_WIKI_PORT` > 默认 8800。
 fn server_port() -> u16 {
     static PORT: OnceLock<u16> = OnceLock::new();
     *PORT.get_or_init(resolve_port)
@@ -47,7 +47,7 @@ fn resolve_port() -> u16 {
     if let Some(port) = load_persisted_port() {
         return port;
     }
-    if let Ok(env) = std::env::var("PORT")
+    if let Ok(env) = std::env::var("LLM_WIKI_PORT")
         && let Ok(port) = env.trim().parse::<u16>()
         && port >= 1024
     {
@@ -501,7 +501,7 @@ const SUITE_SLUGS: &[&str] = &[
     "my-llm-wiki-maintainer",
     "my-llm-wiki-search",
 ];
-/// default_skill_targets 的 5 个 host 技能目录（相对 home）。
+/// agent_hosts 的发布态 host 技能目录快照（相对 home）。
 const SKILL_HOST_DIRS: &[&str] = &[
     ".codex/skills",
     ".claude/skills",

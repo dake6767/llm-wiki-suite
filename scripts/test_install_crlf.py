@@ -43,7 +43,7 @@ class InstallCrLfTests(unittest.TestCase):
             temp = Path(tmp)
             env = self.make_crlf_python(temp)
             result = subprocess.run(
-                ["bash", str(INSTALL), "--dry-run", "--target", str(temp / "skills"), "my-llm-wiki"],
+                ["bash", str(INSTALL), "--dry-run", "--custom-target", str(temp / "skills"), "my-llm-wiki"],
                 cwd=ROOT,
                 env=env,
                 text=True,
@@ -51,8 +51,8 @@ class InstallCrLfTests(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertNotIn("source missing", result.stdout)
-            self.assertIn("my-llm-wiki: linking", result.stdout)
+            self.assertNotIn("invalid skill source", result.stdout)
+            self.assertIn("my-llm-wiki [requested]: create", result.stdout)
 
     def test_install_requires_an_explicit_target(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -67,7 +67,7 @@ class InstallCrLfTests(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(result.returncode, 2)
-            self.assertIn("no skill target selected", result.stderr)
+            self.assertIn("select at least one --host or --custom-target", result.stderr)
             self.assertFalse((temp / "home" / ".claude").exists())
             self.assertFalse((temp / "home" / ".hermes").exists())
 
@@ -78,15 +78,15 @@ class InstallCrLfTests(unittest.TestCase):
             env["HOME"] = str(temp / "home")
             target = temp / "home" / ".workbuddy" / "skills"
             result = subprocess.run(
-                ["bash", str(BOOTSTRAP), "--repo", str(ROOT), "--target", str(target), "--dry-run"],
+                ["bash", str(BOOTSTRAP), "--repo", str(ROOT), "--custom-target", str(target), "--dry-run"],
                 cwd=ROOT,
                 env=env,
                 capture_output=True,
                 check=False,
             )
             self.assertEqual(result.returncode, 0, result.stderr.decode())
-            self.assertNotIn(b"\r", result.stdout)
-            self.assertNotIn(b"source missing", result.stdout)
+            self.assertNotIn(b"invalid skill source", result.stdout)
+            self.assertIn(str(target).encode(), result.stdout)
 
 
 if __name__ == "__main__":

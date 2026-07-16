@@ -1,92 +1,185 @@
 {
-  "version": 1,
+  "version": 2,
   "profiles": {
-    "capture.web": {
-      "label": "Web / WeChat / Xiaohongshu article capture",
-      "tools": ["opencli", "agent-reach"]
-    },
-    "capture.doc": {
-      "label": "Local document capture",
-      "tools": ["markitdown"]
-    },
-    "capture.note": {
-      "label": "First-party note capture",
-      "tools": []
-    },
-    "capture.x.single": {
-      "label": "Single X/Twitter post capture",
-      "tools": ["opencli", "agent-reach"]
-    },
-    "capture.x.bookmarks": {
-      "label": "X/Twitter bookmark sync",
-      "tools": ["opencli"]
-    },
+    "capture.web": {"label": "Web capture", "tools": ["opencli", "agent-reach"]},
+    "capture.doc": {"label": "Local document capture", "tools": ["markitdown"]},
+    "capture.note": {"label": "First-party note capture", "tools": []},
+    "capture.x.single": {"label": "Single X post capture", "tools": ["opencli", "agent-reach"]},
+    "capture.x.bookmarks": {"label": "X bookmark sync", "tools": ["opencli"]},
     "capture.video": {
       "label": "Online video transcript capture",
-      "tools": [
-        "opencli",
-        "yt-dlp",
-        "ffmpeg",
-        "sensevoice",
-        "faster-whisper",
-        "whisper"
-      ]
+      "tools": ["opencli", "yt-dlp", "ffmpeg", "sensevoice", "faster-whisper", "whisper"]
     }
   },
   "tools": {
     "opencli": {
-      "probe": "opencli",
-      "description": "web/social fetch through a real logged-in browser with image localization",
-      "install": "npm i -g @jackwener/opencli",
-      "install_cn": "npm i -g @jackwener/opencli --registry=https://registry.npmmirror.com",
-      "home": "https://www.npmjs.com/package/@jackwener/opencli"
+      "probe": {"kind": "command", "name": "opencli"},
+      "ecosystem": "npm",
+      "install_requires": ["npm"],
+      "description": "logged-in browser capture with image localization",
+      "home": "https://www.npmjs.com/package/@jackwener/opencli",
+      "step_timeout_seconds": 600,
+      "postcheck_timeout_seconds": 30,
+      "install": {
+        "darwin": {
+          "global": {"steps": [["npm", "install", "-g", "@jackwener/opencli", "--no-audit", "--no-fund"]]},
+          "cn": {"steps": [["npm", "install", "-g", "@jackwener/opencli", "--no-audit", "--no-fund", "--registry=https://registry.npmmirror.com"]]}
+        },
+        "linux": {
+          "global": {"steps": [["npm", "install", "-g", "@jackwener/opencli", "--no-audit", "--no-fund"]]},
+          "cn": {"steps": [["npm", "install", "-g", "@jackwener/opencli", "--no-audit", "--no-fund", "--registry=https://registry.npmmirror.com"]]}
+        },
+        "windows": {
+          "global": {"steps": [["npm", "install", "-g", "@jackwener/opencli", "--no-audit", "--no-fund"]]},
+          "cn": {"steps": [["npm", "install", "-g", "@jackwener/opencli", "--no-audit", "--no-fund", "--registry=https://registry.npmmirror.com"]]}
+        }
+      },
+      "postcheck": ["opencli", "--version"]
     },
     "agent-reach": {
-      "probe": "agent-reach",
-      "description": "multi-platform fetch routing; inspect its own doctor for per-platform availability",
+      "probe": {"kind": "command", "name": "agent-reach"},
+      "ecosystem": "github",
+      "description": "multi-platform capture routing",
       "home": "https://github.com/Panniantong/agent-reach"
     },
     "yt-dlp": {
-      "probe": "yt-dlp",
+      "probe": {"kind": "command", "name": "yt-dlp"},
+      "ecosystem": "pypi",
       "description": "video metadata, captions, and audio-only download",
-      "install": "brew install yt-dlp",
-      "install_cn": "python3 -m pip install -U yt-dlp -i https://pypi.tuna.tsinghua.edu.cn/simple",
-      "home": "https://github.com/yt-dlp/yt-dlp"
+      "home": "https://github.com/yt-dlp/yt-dlp",
+      "step_timeout_seconds": 600,
+      "postcheck_timeout_seconds": 30,
+      "install": {
+        "darwin": {
+          "global": {"steps": [["{python}", "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--user", "-U", "yt-dlp"]]},
+          "cn": {"steps": [["{python}", "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--user", "-U", "yt-dlp", "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"]]}
+        },
+        "linux": {
+          "global": {"steps": [["{python}", "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--user", "-U", "yt-dlp"]]},
+          "cn": {"steps": [["{python}", "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--user", "-U", "yt-dlp", "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"]]}
+        },
+        "windows": {
+          "global": {"steps": [["{python}", "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--user", "-U", "yt-dlp"]]},
+          "cn": {"steps": [["{python}", "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--user", "-U", "yt-dlp", "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"]]}
+        }
+      },
+      "postcheck": ["yt-dlp", "--version"]
     },
     "ffmpeg": {
-      "probe": "ffmpeg",
-      "description": "audio conversion and cover handling for video captures",
-      "install": "brew install ffmpeg",
-      "install_cn": "brew install ffmpeg with TUNA Homebrew bottle settings; on Windows use the gyan.dev build and add bin to PATH",
-      "home": "https://ffmpeg.org"
+      "probe": {"kind": "command", "name": "ffmpeg"},
+      "ecosystem": "system",
+      "description": "audio conversion and cover handling",
+      "home": "https://ffmpeg.org",
+      "step_timeout_seconds": 900,
+      "postcheck_timeout_seconds": 30,
+      "install": {
+        "darwin-brew": {
+          "global": {"steps": [["brew", "install", "ffmpeg"]], "env": {"HOMEBREW_NO_AUTO_UPDATE": "1"}}
+        },
+        "linux-apt": {
+          "global": {"steps": [["sudo", "-n", "apt-get", "update"], ["sudo", "-n", "apt-get", "install", "-y", "ffmpeg"]], "env": {"DEBIAN_FRONTEND": "noninteractive"}}
+        },
+        "linux-apt-root": {
+          "global": {"steps": [["apt-get", "update"], ["apt-get", "install", "-y", "ffmpeg"]], "env": {"DEBIAN_FRONTEND": "noninteractive"}}
+        },
+        "linux-dnf": {
+          "global": {"steps": [["sudo", "-n", "dnf", "install", "-y", "ffmpeg"]]}
+        },
+        "linux-dnf-root": {
+          "global": {"steps": [["dnf", "install", "-y", "ffmpeg"]]}
+        },
+        "linux-pacman": {
+          "global": {"steps": [["sudo", "-n", "pacman", "-S", "--noconfirm", "ffmpeg"]]}
+        },
+        "linux-pacman-root": {
+          "global": {"steps": [["pacman", "-S", "--noconfirm", "ffmpeg"]]}
+        },
+        "windows-winget": {
+          "global": {"steps": [["winget", "install", "--id", "Gyan.FFmpeg", "--exact", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"]]}
+        }
+      },
+      "postcheck": ["ffmpeg", "-version"]
     },
     "sensevoice": {
-      "probe": "python:funasr",
-      "description": "SenseVoice/FunASR local ASR for Chinese video",
-      "install": "python3 -m venv ~/.local/share/llm-wiki/asr-venv && ~/.local/share/llm-wiki/asr-venv/bin/pip install funasr torch",
-      "install_cn": "python3 -m venv ~/.local/share/llm-wiki/asr-venv && ~/.local/share/llm-wiki/asr-venv/bin/pip install funasr torch -i https://pypi.tuna.tsinghua.edu.cn/simple",
-      "home": "https://github.com/FunAudioLLM/SenseVoice"
+      "probe": {"kind": "python-module", "name": "funasr"},
+      "ecosystem": "pypi",
+      "description": "SenseVoice/FunASR for Chinese video",
+      "home": "https://github.com/FunAudioLLM/SenseVoice",
+      "step_timeout_seconds": 1800,
+      "postcheck_timeout_seconds": 30,
+      "install": {
+        "darwin": {
+          "global": {"steps": [["{python}", "-m", "venv", "{asr_venv}"], ["{asr_python}", "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "-U", "funasr", "torch"]]},
+          "cn": {"steps": [["{python}", "-m", "venv", "{asr_venv}"], ["{asr_python}", "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "-U", "funasr", "torch", "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"]]}
+        },
+        "linux": {
+          "global": {"steps": [["{python}", "-m", "venv", "{asr_venv}"], ["{asr_python}", "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "-U", "funasr", "torch"]]},
+          "cn": {"steps": [["{python}", "-m", "venv", "{asr_venv}"], ["{asr_python}", "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "-U", "funasr", "torch", "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"]]}
+        },
+        "windows": {
+          "global": {"steps": [["{python}", "-m", "venv", "{asr_venv}"], ["{asr_python}", "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "-U", "funasr", "torch"]]},
+          "cn": {"steps": [["{python}", "-m", "venv", "{asr_venv}"], ["{asr_python}", "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "-U", "funasr", "torch", "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"]]}
+        }
+      },
+      "postcheck": ["{asr_python}", "-c", "import funasr"]
     },
     "faster-whisper": {
-      "probe": "python:faster_whisper",
-      "description": "faster-whisper (CTranslate2) local ASR for non-Chinese video",
-      "install": "python3 -m venv ~/.local/share/llm-wiki/asr-venv && ~/.local/share/llm-wiki/asr-venv/bin/pip install -U faster-whisper",
-      "install_cn": "python3 -m venv ~/.local/share/llm-wiki/asr-venv && ~/.local/share/llm-wiki/asr-venv/bin/pip install -U faster-whisper -i https://pypi.tuna.tsinghua.edu.cn/simple; set HF_ENDPOINT=https://hf-mirror.com for model download",
-      "home": "https://github.com/SYSTRAN/faster-whisper"
+      "probe": {"kind": "python-module", "name": "faster_whisper"},
+      "ecosystem": "pypi",
+      "runtime_ecosystems": ["huggingface"],
+      "runtime_env": {
+        "huggingface": {
+          "cn": {"HF_ENDPOINT": "https://hf-mirror.com"},
+          "global": {}
+        }
+      },
+      "description": "local ASR for non-Chinese video",
+      "home": "https://github.com/SYSTRAN/faster-whisper",
+      "step_timeout_seconds": 1200,
+      "postcheck_timeout_seconds": 30,
+      "install": {
+        "darwin": {
+          "global": {"steps": [["{python}", "-m", "venv", "{asr_venv}"], ["{asr_python}", "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "-U", "faster-whisper"]]},
+          "cn": {"steps": [["{python}", "-m", "venv", "{asr_venv}"], ["{asr_python}", "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "-U", "faster-whisper", "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"]]}
+        },
+        "linux": {
+          "global": {"steps": [["{python}", "-m", "venv", "{asr_venv}"], ["{asr_python}", "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "-U", "faster-whisper"]]},
+          "cn": {"steps": [["{python}", "-m", "venv", "{asr_venv}"], ["{asr_python}", "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "-U", "faster-whisper", "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"]]}
+        },
+        "windows": {
+          "global": {"steps": [["{python}", "-m", "venv", "{asr_venv}"], ["{asr_python}", "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "-U", "faster-whisper"]]},
+          "cn": {"steps": [["{python}", "-m", "venv", "{asr_venv}"], ["{asr_python}", "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "-U", "faster-whisper", "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"]]}
+        }
+      },
+      "postcheck": ["{asr_python}", "-c", "import faster_whisper"]
     },
     "whisper": {
-      "probe": "whisper",
-      "description": "stock OpenAI Whisper local ASR fallback",
-      "install": "brew install openai-whisper",
-      "install_cn": "python3 -m pip install -U openai-whisper -i https://pypi.tuna.tsinghua.edu.cn/simple; set HF_ENDPOINT=https://hf-mirror.com for model download",
-      "home": "https://github.com/openai/whisper"
+      "probe": {"kind": "command", "name": "whisper"},
+      "ecosystem": "pypi",
+      "description": "stock Whisper fallback",
+      "home": "https://github.com/openai/whisper",
+      "step_timeout_seconds": 1800,
+      "postcheck_timeout_seconds": 30,
+      "install": {
+        "darwin": {"global": {"steps": [["{python}", "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--user", "-U", "openai-whisper"]]}, "cn": {"steps": [["{python}", "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--user", "-U", "openai-whisper", "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"]]}},
+        "linux": {"global": {"steps": [["{python}", "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--user", "-U", "openai-whisper"]]}, "cn": {"steps": [["{python}", "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--user", "-U", "openai-whisper", "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"]]}},
+        "windows": {"global": {"steps": [["{python}", "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--user", "-U", "openai-whisper"]]}, "cn": {"steps": [["{python}", "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--user", "-U", "openai-whisper", "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"]]}}
+      },
+      "postcheck": ["whisper", "--help"]
     },
     "markitdown": {
-      "probe": "markitdown",
-      "description": "local PDF/docx/pptx/xlsx/epub to Markdown conversion",
-      "install": "pipx install markitdown",
-      "install_cn": "pipx install markitdown --pip-args '-i https://pypi.tuna.tsinghua.edu.cn/simple'",
-      "home": "https://github.com/microsoft/markitdown"
+      "probe": {"kind": "command", "name": "markitdown"},
+      "ecosystem": "pypi",
+      "description": "local documents to Markdown",
+      "home": "https://github.com/microsoft/markitdown",
+      "step_timeout_seconds": 600,
+      "postcheck_timeout_seconds": 30,
+      "install": {
+        "darwin": {"global": {"steps": [["{python}", "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--user", "-U", "markitdown"]]}, "cn": {"steps": [["{python}", "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--user", "-U", "markitdown", "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"]]}},
+        "linux": {"global": {"steps": [["{python}", "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--user", "-U", "markitdown"]]}, "cn": {"steps": [["{python}", "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--user", "-U", "markitdown", "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"]]}},
+        "windows": {"global": {"steps": [["{python}", "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--user", "-U", "markitdown"]]}, "cn": {"steps": [["{python}", "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--user", "-U", "markitdown", "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"]]}}
+      },
+      "postcheck": ["markitdown", "--help"]
     }
   }
 }

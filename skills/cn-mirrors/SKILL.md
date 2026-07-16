@@ -14,7 +14,7 @@ description: >-
   that may sit behind such a network (probe first, pick commands second). Also
   carries the PROJECT-maintainer guide (references/project-side.md) for making
   your own agent-first project installable from mainland China: Gitee/CNB
-  auto-sync mirrors, release proxying, install_cn command variants. Prefers
+  auto-sync mirrors, release proxying, and structured per-ecosystem routes. Prefers
   session-scoped flags over global config rewrites; official public mirrors
   only — this is NOT a VPN / proxy / circumvention tool, and it never routes
   credentialed operations (git push, publish, login) through third parties.
@@ -97,7 +97,7 @@ control should never *default* to these — publish a proper mirror instead (§3
 ## 3. Making your OWN project installable from CN
 
 That's the maintainer side — repo auto-sync mirrors (Gitee/CNB), release
-proxying, the `install`/`install_cn` dual-command convention for install
+proxying, the structured `install.<os>.<route>.steps` convention for install
 manifests — and it lives in `references/project-side.md`. Read it when you're
 *publishing* an agent-first project, not when you're just trying to install
 something.

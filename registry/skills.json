@@ -1,13 +1,13 @@
 {
   "version": 3,
-  "pack_version": "1.0.6",
-  "pack_notes": "非中文视频 ASR 改用随包提供的 faster-whisper runner（替换 whisper-ctranslate2）；SenseVoice 中文路由在 doctor 与安装协议中可见。",
+  "pack_version": "2.0.0",
+  "pack_notes": "安装协议 v4：显式 host、原子安装与回滚、copy 内容验真、非交互 MCP、分生态网络路由和结构化跨平台工具安装方案；旧 CLI 参数不再接受。",
   "updated_at": "2026-07-16",
   "skills": [
     {
       "slug": "cn-mirrors",
       "title": "cn-mirrors — 网络环境自适应安装/下载",
-      "summary": "探测本机对 github.com / PyPI / npm / HuggingFace 等开发主机的真实可达性（scripts/net_probe.py，纯标准库跨平台），在受限网络（大陆典型）把失败的生态路由到官方国内镜像：pip→TUNA、npm→npmmirror、HF→hf-mirror、GitHub→项目镜像/加速前缀；会话级参数优先、绝不静默改全局配置、只用公开镜像不做隧道。附项目维护者篇：Gitee/CNB 自动同步镜像、release 代理、install/install_cn 双命令约定。",
+      "summary": "探测本机对 github.com / PyPI / npm / HuggingFace 等开发主机的真实可达性（scripts/net_probe.py，纯标准库跨平台），在受限网络（大陆典型）把失败的生态独立路由到官方国内镜像：pip→TUNA、npm→npmmirror、HF→hf-mirror、GitHub→项目镜像；会话级参数优先、绝不静默改全局配置。附项目维护者篇：Gitee/CNB 同步、release 代理、按 OS/route 划分的结构化 argv 安装清单。",
       "source_local_path": "~/.claude/skills/cn-mirrors",
       "collection_path": "skills/cn-mirrors",
       "lifecycle": "active",

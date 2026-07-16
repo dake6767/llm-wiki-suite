@@ -7,6 +7,7 @@ import json
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -71,18 +72,22 @@ class ToolchainTests(unittest.TestCase):
         profiles = ["capture.x.single", "capture.x.bookmarks"]
         names = preflight.profile_tool_names(self.catalog, profiles)
         self.assertEqual(names, ["opencli", "agent-reach"])
-        report = preflight.build_report(
-            profiles,
-            self.catalog_path,
-            tools={"opencli": "", "agent-reach": ""},
-            github_ok=False,
-        )
+        with mock.patch.object(preflight.shutil, "which", return_value="/bin/npm"):
+            report = preflight.build_report(
+                profiles,
+                self.catalog_path,
+                tools={"opencli": "", "agent-reach": ""},
+                routes={"npm": "cn", "github": "cn", "pypi": "cn", "huggingface": "cn"},
+            )
         self.assertEqual(report["capabilities"]["capture.x.single"]["status"], "ok")
         self.assertEqual(report["capabilities"]["capture.x.bookmarks"]["status"], "unavailable")
         self.assertEqual([r["tool"] for r in report["recommendations"]], ["opencli"])
         recommendation = report["recommendations"][0]
         self.assertEqual(recommendation["priority"], "required")
-        self.assertIn("npmmirror.com", recommendation["install"])
+        self.assertIn(
+            "registry.npmmirror.com",
+            json.dumps(recommendation["install"]),
+        )
 
     def test_caption_only_video_is_degraded_not_unavailable(self) -> None:
         report = preflight.build_report(
@@ -96,7 +101,7 @@ class ToolchainTests(unittest.TestCase):
                 "faster-whisper": "",
                 "whisper": "",
             },
-            github_ok=True,
+            routes={"npm": "global", "pypi": "global", "huggingface": "global"},
         )
         capability = report["capabilities"]["capture.video"]
         self.assertEqual(capability["status"], "degraded")
@@ -119,7 +124,7 @@ class ToolchainTests(unittest.TestCase):
                 "faster-whisper": "/bin/python",
                 "whisper": "",
             },
-            github_ok=True,
+            routes={"npm": "global", "pypi": "global", "huggingface": "global"},
         )
         capability = report["capabilities"]["capture.video"]
         self.assertEqual(capability["status"], "ok")
@@ -131,10 +136,14 @@ class ToolchainTests(unittest.TestCase):
 
         stub = lambda: {"status": "ok", "detail": "", "root": ""}  # noqa: E731
         report = {
+            "state": "ready",
             "overall": "ok",
             "components": {
                 "repo_home": stub(),
-                "skills": {"status": "ok", "skills": [], "existing_targets": []},
+                "skills": {
+                    "status": "ok", "skills": [], "existing_targets": [],
+                    "target_scope": "explicit",
+                },
                 "wiki_registry": stub(),
                 "browser": stub(),
                 "mcp": stub(),
@@ -160,16 +169,64 @@ class ToolchainTests(unittest.TestCase):
             ["capture.doc"],
             self.catalog_path,
             tools={"markitdown": ""},
-            github_ok=False,
+            routes={"pypi": "cn"},
         )
-        self.assertEqual(report["status"], "warn")
+        self.assertEqual(report["status"], "action-required")
         recommendation = report["recommendations"][0]
         self.assertEqual(recommendation["tool"], "markitdown")
-        self.assertIn("pypi.tuna.tsinghua.edu.cn", recommendation["install"])
+        self.assertIn(
+            "pypi.tuna.tsinghua.edu.cn",
+            json.dumps(recommendation["install"]),
+        )
 
     def test_unknown_profile_fails(self) -> None:
         with self.assertRaises(ValueError):
             preflight.normalize_profiles(self.catalog, ["capture.unknown"])
+
+    def test_linux_ffmpeg_recipe_matches_detected_package_manager(self) -> None:
+        ffmpeg = self.catalog["tools"]["ffmpeg"]
+
+        def which(name: str):
+            return f"/usr/bin/{name}" if name in {"apt-get", "sudo"} else None
+
+        with mock.patch.object(preflight.platform, "system", return_value="Linux"), \
+             mock.patch.object(preflight.shutil, "which", side_effect=which), \
+             mock.patch.object(preflight.os, "geteuid", return_value=1000, create=True):
+            recipe = preflight.install_recipe(ffmpeg, {"system": "global"})
+        self.assertEqual(recipe["platform"], "linux-apt")
+        self.assertEqual(recipe["steps"][0][:3], ["sudo", "-n", "apt-get"])
+        self.assertEqual(recipe["env"], {"DEBIAN_FRONTEND": "noninteractive"})
+        self.assertEqual(recipe["step_timeout_seconds"], 900)
+        self.assertEqual(recipe["postcheck_timeout_seconds"], 30)
+
+    def test_every_install_recipe_has_noninteractive_deadlines(self) -> None:
+        for name, spec in self.catalog["tools"].items():
+            if "install" not in spec:
+                continue
+            with self.subTest(tool=name):
+                self.assertGreater(spec["step_timeout_seconds"], 0)
+                self.assertGreater(spec["postcheck_timeout_seconds"], 0)
+                encoded = json.dumps(spec["install"])
+                if '"pip", "install"' in encoded:
+                    self.assertIn("--no-input", encoded)
+                if '"npm", "install"' in encoded:
+                    self.assertIn("--no-audit", encoded)
+                    self.assertIn("--no-fund", encoded)
+                if '"sudo"' in encoded:
+                    self.assertIn('"sudo", "-n"', encoded)
+                if '"winget"' in encoded:
+                    self.assertIn("--disable-interactivity", encoded)
+
+    def test_huggingface_route_is_reported_as_runtime_environment(self) -> None:
+        spec = self.catalog["tools"]["faster-whisper"]
+        recipe = preflight.install_recipe(
+            spec, {"pypi": "global", "huggingface": "cn"}
+        )
+        self.assertEqual(recipe["env"], {})
+        self.assertEqual(
+            recipe["runtime_env"], {"HF_ENDPOINT": "https://hf-mirror.com"}
+        )
+        self.assertEqual(recipe["step_timeout_seconds"], 1200)
 
 
 class XSinglePostSopTests(unittest.TestCase):

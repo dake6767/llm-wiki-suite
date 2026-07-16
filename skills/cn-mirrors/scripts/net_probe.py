@@ -47,6 +47,13 @@ CONTROL_ENDPOINTS = [
     ("www.baidu.com", "https://www.baidu.com/", "domestic control"),
 ]
 
+MIRROR_ENDPOINTS = [
+    ("gitee.com", "https://gitee.com/", "Git repository mirror"),
+    ("pypi.tuna.tsinghua.edu.cn", "https://pypi.tuna.tsinghua.edu.cn/simple/", "PyPI mirror"),
+    ("registry.npmmirror.com", "https://registry.npmmirror.com/", "npm mirror"),
+    ("hf-mirror.com", "https://hf-mirror.com/", "Hugging Face mirror"),
+]
+
 # Session-scoped mirror advice keyed by the endpoint(s) that being blocked
 # triggers it. Kept in sync with cn-mirrors SKILL.md §2 (the authority).
 MIRROR_ADVICE = [
@@ -72,7 +79,8 @@ def probe_one(host: str, url: str, timeout: float) -> dict:
         url, method="HEAD", headers={"User-Agent": "cn-mirrors-net-probe/1"})
     t0 = time.monotonic()
     try:
-        urllib.request.urlopen(req, timeout=timeout)
+        with urllib.request.urlopen(req, timeout=timeout):
+            pass
         status = "ok"
     except urllib.error.HTTPError:
         status = "ok"  # an HTTP error IS a response — the host is reachable
@@ -84,11 +92,32 @@ def probe_one(host: str, url: str, timeout: float) -> dict:
             "latency_ms": ms, "error": ""}
 
 
-def probe_all(timeout: float) -> tuple[list[dict], list[dict]]:
-    eps = DEV_ENDPOINTS + CONTROL_ENDPOINTS
+def probe_all(timeout: float) -> tuple[list[dict], list[dict], list[dict]]:
+    eps = DEV_ENDPOINTS + MIRROR_ENDPOINTS + CONTROL_ENDPOINTS
     with ThreadPoolExecutor(max_workers=len(eps)) as ex:
         results = list(ex.map(lambda e: probe_one(e[0], e[1], timeout), eps))
-    return results[:len(DEV_ENDPOINTS)], results[len(DEV_ENDPOINTS):]
+    dev_end = len(DEV_ENDPOINTS)
+    mirror_end = dev_end + len(MIRROR_ENDPOINTS)
+    return results[:dev_end], results[dev_end:mirror_end], results[mirror_end:]
+
+
+def ecosystem_routes(dev: list[dict], mirrors: list[dict]) -> dict[str, str]:
+    statuses = {row["host"]: row["status"] for row in dev + mirrors}
+
+    def choose(global_hosts: tuple[str, ...], mirror_host: str) -> str:
+        if all(statuses.get(host) == "ok" for host in global_hosts):
+            return "global"
+        if statuses.get(mirror_host) == "ok":
+            return "cn"
+        return "unavailable"
+
+    return {
+        "github": choose(("github.com", "api.github.com", "objects.githubusercontent.com"), "gitee.com"),
+        "pypi": choose(("pypi.org", "files.pythonhosted.org"), "pypi.tuna.tsinghua.edu.cn"),
+        "npm": choose(("registry.npmjs.org",), "registry.npmmirror.com"),
+        "huggingface": choose(("huggingface.co",), "hf-mirror.com"),
+        "system": "global",
+    }
 
 
 def verdict_of(dev: list[dict], control: list[dict]) -> str:
@@ -114,22 +143,27 @@ def main() -> None:
     ap.add_argument("--timeout", type=float, default=4.0, help="per-endpoint timeout, seconds (default 4)")
     args = ap.parse_args()
 
-    dev, control = probe_all(args.timeout)
+    dev, mirrors, control = probe_all(args.timeout)
     verdict = verdict_of(dev, control)
     tips = advice_for(dev) if verdict in ("restricted", "mixed") else []
+    ecosystems = ecosystem_routes(dev, mirrors)
 
     if args.json:
-        print(json.dumps({"verdict": verdict, "dev": dev, "control": control,
-                          "mirrors": tips}, ensure_ascii=False, indent=2))
+        print(json.dumps({"verdict": verdict, "dev": dev, "mirror_endpoints": mirrors,
+                          "control": control, "ecosystems": ecosystems,
+                          "advice": tips}, ensure_ascii=False, indent=2))
         return
 
-    roles = {h: role for h, _, role in DEV_ENDPOINTS + CONTROL_ENDPOINTS}
+    roles = {h: role for h, _, role in DEV_ENDPOINTS + MIRROR_ENDPOINTS + CONTROL_ENDPOINTS}
     print(f"verdict: {verdict}")
     print("endpoints:")
-    for r in dev + control:
+    for r in dev + mirrors + control:
         lat = f"{r['latency_ms']} ms" if r["latency_ms"] is not None else r["error"]
         print(f"  {r['host']}: {r['status']} ({lat})  # {roles[r['host']]}")
-    print("mirrors:  # session-scoped — put on the failing command, don't rewrite global config")
+    print("ecosystems:")
+    for name, route in ecosystems.items():
+        print(f"  {name}: {route}")
+    print("advice:  # session-scoped — put on the failing command, don't rewrite global config")
     if tips:
         for t in tips:
             print(f"  - {t}")

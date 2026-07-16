@@ -171,7 +171,7 @@ agent：
 先问我要安装到哪些 agent，再创建或修改任何 skills 目录。
 ```
 
-agent 会复用已有 checkout，或安装到稳定目录 `~/.my-llm-wiki/suite`；随后同步 skills、
+agent 会显式复用你指定的 checkout，或安装到稳定目录 `~/.my-llm-wiki/suite`；随后同步 skills、
 检查所选抓取工具链、初始化 Wiki，并优先从 `wiki.htmlgo.to` 安装 Browser（GitHub 仅作回退）。
 两条发布路径均不可达时才记录 Browser optional skip。完成后另发一条真实 URL 或自己的 note，
 即可开始首次 `capture → RAW → Wiki`。
@@ -181,42 +181,43 @@ agent 会复用已有 checkout，或安装到稳定目录 `~/.my-llm-wiki/suite`
 先下载并审阅独立 bootstrap 脚本，不使用 `curl | bash`。全球入口：
 
 ```bash
-curl -fsSLo bootstrap.sh \
+curl -fsSLo bootstrap.sh --connect-timeout 5 --max-time 30 --retry 1 \
   https://raw.githubusercontent.com/dake6767/llm-wiki-suite/main/bootstrap.sh
-less bootstrap.sh
-# 将 WorkBuddy 替换为你明确选择的 agent skills 目录
-bash bootstrap.sh --target ~/.workbuddy/skills
+sed -n '1,260p' bootstrap.sh
+bash bootstrap.sh --host workbuddy
 ```
 
 中国大陆入口：
 
 ```bash
-curl -fsSLo bootstrap.sh \
+curl -fsSLo bootstrap.sh --connect-timeout 5 --max-time 30 --retry 1 \
   https://gitee.com/dake6767/llm-wiki-suite/raw/main/bootstrap.sh
-less bootstrap.sh
+sed -n '1,260p' bootstrap.sh
 bash bootstrap.sh \
   --repo-url https://gitee.com/dake6767/llm-wiki-suite.git \
-  --target ~/.workbuddy/skills
+  --host workbuddy
 ```
 
 默认安装使用软链，checkout 是长期 source of truth，不应放在临时目录。脚本只同步到用户
-明确传入的 `--target`，不会根据预先存在的 Codex、Claude、Hermes、Agents 或 WorkBuddy
-目录擅自创建或修改 skills。未显式指定 `--repo-url` 时，fresh install 会短时探测 GitHub；
+明确传入的 `--host`（`codex` / `claude` / `hermes` / `agents` / `workbuddy`），不会根据
+预先存在的目录擅自创建或修改 skills。已在开发 checkout 中运行时直接使用该 checkout；从
+独立下载的 bootstrap 安装时，如需复用开发 checkout，必须明确传 `--repo DIR`。未显式指定
+`--repo-url` 时，fresh install 会短时探测 GitHub；
 不可达时优先 Gitee，clone 失败时再尝试另一入口。已有 checkout 始终沿其 `origin` 更新。
 
 常用选项：
 
 ```bash
-bash bootstrap.sh --target ~/.workbuddy/skills my-llm-wiki-video  # 只选视频能力及其依赖
-bash bootstrap.sh --target ~/.workbuddy/skills my-llm-wiki-x      # 只选 X 能力及其依赖
-bash bootstrap.sh --target ~/.workbuddy/skills --dry-run          # 预览，不修改
-bash bootstrap.sh --target ~/.workbuddy/skills --update           # clean checkout 上执行 ff-only 更新
+bash bootstrap.sh --host workbuddy my-llm-wiki-video  # 只选视频能力及其依赖
+bash bootstrap.sh --host workbuddy my-llm-wiki-x      # 只选 X 能力及其依赖
+bash bootstrap.sh --host workbuddy --dry-run          # 预览，不修改
+bash bootstrap.sh --host workbuddy --update           # clean checkout 上执行 ff-only 更新
 ```
 
 ### 安装 Browser
 
-Browser 默认优先下载项目自有 htmlgo Release；它不可达时才回退到与当前操作系统匹配的
-GitHub Release，没有匹配资产时才使用源码构建：
+Browser 默认优先下载项目自有 htmlgo Release；元数据或资产下载失败时会继续回退到与当前
+操作系统/架构精确匹配的 GitHub Release。源码构建只在显式传入 `--fallback-source` 时运行：
 
 ```bash
 python3 scripts/install-browser.py --open
@@ -229,21 +230,33 @@ python3 scripts/install-browser.py --open
 
 release 提供 macOS Apple Silicon / Intel、Windows 安装包与 portable zip，以及 Linux
 AppImage / deb / rpm。当前产物尚未完成 Apple 公证和 Windows 代码签名，浏览器下载后
-首次运行可能需要在系统安全提示中手动放行。Windows 下传入 `--open` 会直接启动下载的
-`setup.exe` / MSI；不传时脚本会打印安装程序路径，保留由用户手动启动的选择。
+首次运行可能需要在系统安全提示中手动放行。Windows 的 `setup.exe` / MSI 会由脚本直接
+启动并等待（最长 15 分钟）；只有安装器成功退出、卸载注册表项存在、且
+`llm-wiki-desktop.exe` 已落盘，才算安装完成。用户取消、超时或校验失败都不会写安装回执，
+也不会换一个下载源再次弹安装器。portable zip 则在安全解压并找到唯一主程序后完成安装。
 
-安装后可按明确授权注册本地 MCP：
+安装成功后会原子写入 `~/.my-llm-wiki/browser/install.json`。`--open` 的含义是校验成功后
+启动已安装的 Browser，不再用于打开安装包。macOS 必须真正安装 `.app`，Linux 必须得到
+可执行 AppImage；单纯下载 DMG/deb/rpm 不会被报告为安装成功。
+
+安装 Browser 不会顺带修改 MCP。按明确 host 授权注册本地 MCP：
 
 ```bash
-python3 scripts/install-browser.py --register-mcp
+python3 scripts/install-browser.py --register-mcp --host workbuddy
 ```
+
+注册前会先验证安装回执和其中的目标程序；回执缺失或过期时直接拒绝，不读取或修改 agent
+配置。connector 的 token/port 文件以及端口可访问都不再被当作“Browser 已安装”的证据。
+
+WorkBuddy 没有注册 CLI，因此该命令只打印待合并 JSON 并以 `3` 表示需要手动操作；Codex、
+Claude、Hermes 则调用各自 CLI，关闭 stdin 并在 30 秒超时。
 
 ### 检查安装
 
 ```bash
-python3 scripts/doctor.py --target ~/.workbuddy/skills
-python3 scripts/doctor.py --target ~/.workbuddy/skills --json
-python3 scripts/doctor.py --target ~/.workbuddy/skills --skills my-llm-wiki-video
+python3 scripts/doctor.py --host workbuddy
+python3 scripts/doctor.py --host workbuddy --json
+python3 scripts/doctor.py --host workbuddy --skills my-llm-wiki-video
 ```
 
 `doctor` 一次检查 skill 链接、运行时依赖、Wiki 注册表、Browser 可达性、MCP 注册和所选
@@ -295,16 +308,17 @@ Browser 是可选组件：没有 Browser 时，采集、编译、维护和本地
 已经进入仓库开发时，可以用底层安装命令精细控制目标：
 
 ```bash
-scripts/install.sh --target ~/.workbuddy/skills --dry-run
-scripts/install.sh --target ~/.workbuddy/skills
-scripts/install.sh --target ~/.workbuddy/skills my-llm-wiki-video
-scripts/install.sh --target ~/.codex/skills --target ~/.agents/skills
+scripts/install.sh --host workbuddy --dry-run
+scripts/install.sh --host workbuddy
+scripts/install.sh --host workbuddy my-llm-wiki-video
+scripts/install.sh --host codex --host agents
 ```
 
 提交前至少运行：
 
 ```bash
-python3 scripts/doctor.py --target ~/.workbuddy/skills --json
+python3 scripts/doctor.py --host workbuddy --json
+python3 -m unittest discover -s scripts -p 'test_*.py'
 python3 scripts/check_approval_safety.py
 python3 -m unittest scripts.test_approval_safe -v
 ```
