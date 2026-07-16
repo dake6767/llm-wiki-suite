@@ -186,7 +186,11 @@ class CacheFilesFileTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             saved = json.loads(output.getvalue())
             self.assertEqual(saved["filesWritten"], pages)
-            cache = json.loads((root / ".llm-wiki" / "agent" / "ingest-cache.json").read_text())
+            cache = json.loads(
+                (root / ".llm-wiki" / "agent" / "ingest-cache.json").read_text(
+                    encoding="utf-8"
+                )
+            )
             self.assertIn("raw/sources/video/中文来源.md", cache["entries"])
 
 
