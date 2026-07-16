@@ -127,18 +127,19 @@ def find_tool(name: str) -> str | None:
 
 
 _ASR_VENV = Path.home() / ".local" / "share" / "llm-wiki" / "asr-venv"
-SENSEVOICE_VENV_PYTHON = _ASR_VENV / (
+ASR_VENV_PYTHON = _ASR_VENV / (
     "Scripts/python.exe" if os.name == "nt" else "bin/python"
 )
 
 
-@functools.lru_cache(maxsize=1)
-def _funasr_python() -> str:
+@functools.lru_cache(maxsize=None)
+def _module_python(module: str) -> str:
+    """Return an interpreter that can import ``module``, or ""."""
     candidates = [
         os.environ.get("LLM_WIKI_ASR_PYTHON", ""),
         sys.executable,
         "python3",
-        str(SENSEVOICE_VENV_PYTHON),
+        str(ASR_VENV_PYTHON),
     ]
     seen = set()
     for candidate in candidates:
@@ -148,7 +149,7 @@ def _funasr_python() -> str:
         try:
             result = subprocess.run(
                 [candidate, "-c", "import importlib.util as u,sys; "
-                 "sys.exit(0 if u.find_spec('funasr') else 1)"],
+                 f"sys.exit(0 if u.find_spec('{module}') else 1)"],
                 capture_output=True,
                 timeout=30,
             )
@@ -199,9 +200,10 @@ def probe(catalog: dict, profiles: list[str]) -> dict:
     for name in profile_tool_names(catalog, profiles):
         spec = catalog["tools"][name]
         probe_name = spec.get("probe", name)
-        if probe_name == "python:funasr":
-            tools[name] = _funasr_python()
-            tools["_sensevoice_torch"] = _torch_version(tools[name])
+        if probe_name.startswith("python:"):
+            tools[name] = _module_python(probe_name.split(":", 1)[1])
+            if name == "sensevoice":
+                tools["_sensevoice_torch"] = _torch_version(tools[name])
         else:
             tools[name] = find_tool(probe_name) or ""
     return tools
@@ -332,7 +334,7 @@ def assess_profiles(
 
         elif profile == "capture.video":
             asr = (
-                "faster-whisper" if have("whisper-ctranslate2")
+                "faster-whisper" if have("faster-whisper")
                 else "whisper" if have("whisper") else ""
             )
             asr_any = bool(asr) or have("sensevoice")
@@ -340,8 +342,10 @@ def assess_profiles(
                 asr_desc = f"zh→SenseVoice, else {asr}"
             elif have("sensevoice"):
                 asr_desc = "SenseVoice (Chinese only; add Whisper for other languages)"
+            elif asr:
+                asr_desc = f"{asr} (Chinese routes to SenseVoice — not installed)"
             else:
-                asr_desc = asr or "none"
+                asr_desc = "none"
 
             caption_path = have("opencli") or have("yt-dlp")
             audio_fallback = have("yt-dlp") and have("ffmpeg") and asr_any
@@ -403,9 +407,9 @@ def assess_profiles(
                     "preferred local ASR for Chinese videos without captions",
                     "recommended", github_ok,
                 )
-            if not have("whisper-ctranslate2"):
+            if not have("faster-whisper"):
                 _add_recommendation(
-                    recommendations, catalog, "whisper-ctranslate2", profile,
+                    recommendations, catalog, "faster-whisper", profile,
                     "preferred local ASR for non-Chinese videos without captions",
                     "recommended", github_ok,
                 )

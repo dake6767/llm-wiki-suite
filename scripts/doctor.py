@@ -493,6 +493,8 @@ def render_human(report: dict) -> str:
             detail = info.get("via") or info.get("note") or ""
             lines.append(f"     {cap_icon} {profile}: {info.get('status')}"
                          + (f" via {detail}" if detail else ""))
+            if info.get("asr"):
+                lines.append(f"        asr routing: {info['asr']}")
         for rec in tc.get("recommendations", []):
             reasons = "; ".join(rec.get("reasons", []))
             lines.append(f"     → {rec['tool']} [{rec['priority']}]: {reasons}")

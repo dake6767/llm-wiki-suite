@@ -116,6 +116,11 @@ no viable path; `degraded` means a fallback works with the stated limitation;
 selected capability improves or breaks, give the reported install command and
 project home URL, and get the user's go-ahead. Never install silently.
 
+For `capture.video`, always relay the `asr routing:` line as well — Chinese
+routes to SenseVoice (FunASR) and everything else to faster-whisper, and the
+capture SOP treats that routing as a gate, so a machine with only one backend
+still needs the user to know the other exists (or to knowingly skip it).
+
 The single machine-readable catalog is
 `skills/my-llm-wiki/references/toolchain.json`; skills declare only capability
 ids in `registry/skills.json`, while `registry/bootstrap.json` points to the
