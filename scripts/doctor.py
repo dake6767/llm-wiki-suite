@@ -426,6 +426,7 @@ def build_report(
     hosts: list[str] | None = None,
     custom_targets: list[str] | None = None,
     all_hosts: bool = False,
+    check_mcp_state: bool = False,
 ) -> dict:
     bootstrap = load_json(BOOTSTRAP)
     skills_registry = load_json(SKILLS_REGISTRY)
@@ -462,9 +463,10 @@ def build_report(
             ),
             "wiki_registry": check_wiki(bootstrap),
             "browser": browser,
-            "mcp": check_mcp(bootstrap, browser, selected_hosts),
-            "toolchain": check_toolchain(bootstrap, selection),
         }
+        if check_mcp_state:
+            components["mcp"] = check_mcp(bootstrap, browser, selected_hosts)
+        components["toolchain"] = check_toolchain(bootstrap, selection)
     except (OSError, ValueError, TypeError, KeyError) as exc:
         return {"fatal": f"doctor check failed: {exc}"}
     overall = "ok"
@@ -515,8 +517,9 @@ def render_human(report: dict) -> str:
     br = c["browser"]
     lines.append(f"{_ICON[br['status']]} browser      {br['detail']}")
 
-    mc = c["mcp"]
-    lines.append(f"{_ICON[mc['status']]} mcp          {mc['detail']}")
+    if "mcp" in c:
+        mc = c["mcp"]
+        lines.append(f"{_ICON[mc['status']]} mcp          {mc['detail']}")
 
     tc = c["toolchain"]
     if tc["status"] == "skip":
@@ -600,11 +603,22 @@ def main() -> int:
         help="explicit non-registry skills directory; repeatable",
     )
     ap.add_argument("--all-hosts", action="store_true", help="inspect every configured host")
+    ap.add_argument(
+        "--check-mcp",
+        action="store_true",
+        help="inspect MCP registration as an explicit post-install diagnostic",
+    )
     args = ap.parse_args()
 
     if args.host and args.all_hosts:
         ap.error("--host and --all-hosts cannot be used together")
-    report = build_report(args.skills, args.host, args.custom_target, args.all_hosts)
+    report = build_report(
+        args.skills,
+        args.host,
+        args.custom_target,
+        args.all_hosts,
+        check_mcp_state=args.check_mcp,
+    )
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:

@@ -1401,7 +1401,7 @@ def perform_browser_install(config: dict, args: argparse.Namespace) -> int:
         print(f"release install unavailable: {err}", file=sys.stderr)
         if isinstance(err, InstallerCompletionError):
             print(
-                "No installation receipt was written and MCP registration remains disabled.",
+                "No installation receipt was written.",
                 file=sys.stderr,
             )
             return 1
@@ -1424,7 +1424,7 @@ def perform_browser_install(config: dict, args: argparse.Namespace) -> int:
             return 1
         print(
             "development build completed, but it is not an installed release; "
-            "no installation receipt was written and MCP registration remains disabled",
+            "no installation receipt was written",
             file=sys.stderr,
         )
         return 3

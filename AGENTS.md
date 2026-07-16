@@ -198,9 +198,8 @@ socket timeout, a 5-minute total deadline, a 2 GiB limit, `.part` files, and an
 atomic rename. `GITHUB_TOKEN` is sent only to the GitHub host allowlist and is
 stripped on redirects to other hosts.
 
-Browser download/source-build and MCP mutations share a non-waiting advisory
-lock. A concurrent agent exits immediately with an active-operation error;
-never retry it in a tight loop.
+Browser operations use a non-waiting advisory lock. A concurrent agent exits
+immediately with an active-operation error; never retry it in a tight loop.
 
 Unsupported OS/architecture combinations fail rather than selecting an x64
 asset. A Windows setup.exe/MSI is always executed synchronously, with closed
@@ -230,22 +229,43 @@ OS/architecture, or the user explicitly asks for a development build:
 python3 scripts/install-browser.py --fallback-source
 ```
 
-## 8. MCP Setup
+## 8. Final Verification And First Capture
 
-Browser MCP is optional and is never proposed or registered as a side effect of
-Browser installation. Local hosts default to the suite-owned stdio bridge; do
-not register direct loopback HTTP or reintroduce `npx mcp-remote`.
+Doctor verifies exact skill provenance, dependency closure, wiki registry,
+Browser health, and the scoped capture toolchain. The default doctor deliberately
+does not inspect, propose, or mention MCP. A missing explicit target, foreign
+link, stale/mutated copy, missing required skill, or invalid registry reference
+is an error. Browser absence is only a warning when skills-only use was selected.
 
-Registration requires an explicit host id, which is the consent boundary:
+For an installation-only request, stop after doctor and offer:
+
+> Send me one article, webpage, video, or note you want to preserve. I will save
+> it to RAW, compile it into your wiki, and show where to view it.
+
+Only perform the first capture when the user supplies a real source and asks for
+it. The loop is `capture → RAW → maintain/ingest → browse/search`; never create
+a demonstration capture on the user's behalf.
+
+The initial installation ends here. Do not discuss or configure MCP unless the
+user makes a separate, explicit request for MCP after installation.
+
+## 9. MCP Maintenance (Outside Initial Installation)
+
+Enter this section only when the user explicitly asks to configure, inspect, or
+remove MCP. An install request, Browser request, first capture, or default doctor
+run is not consent. Local hosts default to the suite-owned stdio bridge; do not
+register direct loopback HTTP or reintroduce `npx mcp-remote`.
+
+Registration and inspection require an explicit host id:
 
 ```bash
 python3 scripts/install-browser.py --register-mcp --host codex
 python3 scripts/install-browser.py --unregister-mcp --host codex
+python3 scripts/doctor.py --check-mcp --host codex
 ```
 
 Registration first validates the Browser install receipt and its target. If the
 receipt is missing/stale, it exits without reading or changing any host config.
-Connector token/port files and a listening process are not installation proof.
 Unregistration remains available so stale host entries can always be removed.
 
 There is no prompt/TTY branch and no `--yes`. Host CLI commands run with closed
@@ -259,20 +279,3 @@ The bridge resolves `~/.my-llm-wiki/connector/server-port`, then
 `$LLM_WIKI_PORT`, then 8800, and reads the token file on every request. It
 disables proxies. Remote relay access remains native HTTPS with an Authorization
 header; do not put long-lived tokens in URLs.
-
-## 9. Final Verification And First Capture
-
-Doctor verifies exact skill provenance, dependency closure, wiki registry,
-Browser health, selected-host MCP state, and the scoped capture toolchain. A
-missing explicit target, foreign link, stale/mutated copy, missing required
-skill, or invalid registry reference is an error. Browser absence is only a
-warning when skills-only use was selected.
-
-For an installation-only request, stop after doctor and offer:
-
-> Send me one article, webpage, video, or note you want to preserve. I will save
-> it to RAW, compile it into your wiki, and show where to view it.
-
-Only perform the first capture when the user supplies a real source and asks for
-it. The loop is `capture → RAW → maintain/ingest → browse/search`; never create
-a demonstration capture on the user's behalf.

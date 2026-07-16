@@ -1,7 +1,7 @@
 {
   "version": 3,
-  "pack_version": "2.0.0",
-  "pack_notes": "安装协议 v4：显式 host、原子安装与回滚、copy 内容验真、非交互 MCP、分生态网络路由和结构化跨平台工具安装方案；旧 CLI 参数不再接受。",
+  "pack_version": "1.0.8",
+  "pack_notes": "初始安装不再检查、提议或配置 MCP；默认 doctor 只验证 skills、Wiki、Browser 和工具链，MCP 仅保留为用户明确请求后的独立维护操作。",
   "updated_at": "2026-07-16",
   "skills": [
     {

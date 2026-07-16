@@ -47,7 +47,7 @@
     "catalog": "skills/my-llm-wiki/references/toolchain.json"
   },
   "mcp": {
-    "_note": "Single source of truth for Browser MCP registration across named hosts. Local access uses the suite stdio bridge; remote access uses streamable HTTP. Explicit --host selection is the consent boundary. Registration is non-interactive and argv-based; manual hosts receive exact JSON and action-required status.",
+    "_note": "Post-install MCP maintenance only; never part of bootstrap, Browser installation, or default doctor. Local access uses the suite stdio bridge; remote access uses streamable HTTP. Explicit --host selection is the consent boundary. Registration is non-interactive and argv-based; manual hosts receive exact JSON and action-required status.",
     "server_name": "my-llm-wiki",
     "endpoint": "http://127.0.0.1:{port}/mcp",
     "local_default_transport": "stdio",

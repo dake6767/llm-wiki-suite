@@ -239,17 +239,7 @@ AppImage / deb / rpm。当前产物尚未完成 Apple 公证和 Windows 代码�
 启动已安装的 Browser，不再用于打开安装包。macOS 必须真正安装 `.app`，Linux 必须得到
 可执行 AppImage；单纯下载 DMG/deb/rpm 不会被报告为安装成功。
 
-安装 Browser 不会顺带修改 MCP。按明确 host 授权注册本地 MCP：
-
-```bash
-python3 scripts/install-browser.py --register-mcp --host workbuddy
-```
-
-注册前会先验证安装回执和其中的目标程序；回执缺失或过期时直接拒绝，不读取或修改 agent
-配置。connector 的 token/port 文件以及端口可访问都不再被当作“Browser 已安装”的证据。
-
-WorkBuddy 没有注册 CLI，因此该命令只打印待合并 JSON 并以 `3` 表示需要手动操作；Codex、
-Claude、Hermes 则调用各自 CLI，关闭 stdin 并在 30 秒超时。
+初始安装到 Browser 验证为止，不提议或配置 MCP，也不会修改任何 agent 的 MCP 配置。
 
 ### 检查安装
 
@@ -259,14 +249,26 @@ python3 scripts/doctor.py --host workbuddy --json
 python3 scripts/doctor.py --host workbuddy --skills my-llm-wiki-video
 ```
 
-`doctor` 一次检查 skill 链接、运行时依赖、Wiki 注册表、Browser 可达性、MCP 注册和所选
-采集工具链。缺失的外部 fetcher / ASR 工具只会被报告，不会自动安装。
+`doctor` 默认一次检查 skill 链接、运行时依赖、Wiki 注册表、Browser 可达性和所选采集
+工具链，不检查或提示 MCP。缺失的外部 fetcher / ASR 工具只会被报告，不会自动安装。
 
 完成安装后，可以从一句话开始：
 
 ```text
 把这个视频保存到我的 Wiki，保留完整转写和可跳转时间戳，然后整理成知识页面：<URL>
 ```
+
+### 按需维护 MCP（不属于初始安装）
+
+只有用户在安装完成后另行明确提出 MCP 配置需求时，才执行独立命令：
+
+```bash
+python3 scripts/install-browser.py --register-mcp --host codex
+python3 scripts/install-browser.py --unregister-mcp --host codex
+python3 scripts/doctor.py --check-mcp --host codex
+```
+
+默认安装、Browser 安装和默认 `doctor` 都不会进入这条路径。
 
 ## 组件与状态
 
@@ -293,10 +295,10 @@ llm-wiki-suite/
 │   └── my-llm-wiki-browser/  # Tauri / Rust / React / MCP / relay connector
 ├── registry/
 │   ├── skills.json           # skills、依赖、bundles、capabilities 的事实源
-│   └── bootstrap.json        # 安装目标、Browser release、MCP 注册的事实源
+│   └── bootstrap.json        # 安装目标、Browser release、独立 MCP 维护的事实源
 ├── scripts/
 │   ├── install.sh            # 精细控制 skills 安装
-│   ├── install-browser.py    # release-first Browser 安装与 MCP 注册
+│   ├── install-browser.py    # release-first Browser 安装与独立 MCP 维护
 │   └── doctor.py             # suite 级健康检查
 └── skills/<slug>/            # SKILL.md + scripts / references / assets
 ```
