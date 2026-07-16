@@ -429,16 +429,15 @@ class McpRegistrationTests(unittest.TestCase):
 class ExpandShellPathTests(unittest.TestCase):
     """CLI path args may arrive shell-expanded as MSYS /c/... from Git Bash."""
 
-    def test_msys_drive_path_normalized_on_windows(self):
-        with mock.patch("os.name", "nt"):
-            self.assertEqual(
-                installer.expand("/c/Users/x/.my-llm-wiki/browser"),
-                Path("C:/Users/x/.my-llm-wiki/browser"),
-            )
-
-    def test_msys_like_path_untouched_on_posix(self):
-        with mock.patch("os.name", "posix"):
-            self.assertEqual(installer.expand("/c/Users/x/y"), Path("/c/Users/x/y"))
+    def test_msys_path_follows_the_actual_runner_platform(self):
+        expected = (
+            Path("C:/Users/x/.my-llm-wiki/browser")
+            if os.name == "nt"
+            else Path("/c/Users/x/.my-llm-wiki/browser")
+        )
+        self.assertEqual(
+            installer.expand("/c/Users/x/.my-llm-wiki/browser"), expected
+        )
 
 
 class McpNonInteractiveTests(unittest.TestCase):

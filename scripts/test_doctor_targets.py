@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -59,19 +60,13 @@ class DoctorTargetScopeTests(unittest.TestCase):
 class DoctorExpandTests(unittest.TestCase):
     """--custom-target may arrive shell-expanded as an MSYS path from Git Bash."""
 
-    def test_msys_target_normalized_on_windows(self):
-        with mock.patch("os.name", "nt"):
-            self.assertEqual(
-                doctor.expand("/c/Users/x/.workbuddy/skills"),
-                Path("C:/Users/x/.workbuddy/skills"),
-            )
-
-    def test_msys_like_target_untouched_on_posix(self):
-        with mock.patch("os.name", "posix"):
-            self.assertEqual(
-                doctor.expand("/c/Users/x/.workbuddy/skills"),
-                Path("/c/Users/x/.workbuddy/skills"),
-            )
+    def test_msys_target_follows_the_actual_runner_platform(self):
+        expected = (
+            Path("C:/Users/x/.workbuddy/skills")
+            if os.name == "nt"
+            else Path("/c/Users/x/.workbuddy/skills")
+        )
+        self.assertEqual(doctor.expand("/c/Users/x/.workbuddy/skills"), expected)
 
 
 if __name__ == "__main__":

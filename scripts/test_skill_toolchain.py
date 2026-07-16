@@ -21,7 +21,9 @@ import preflight  # noqa: E402
 class SkillGraphTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.registry = json.loads((ROOT / "registry" / "skills.json").read_text())
+        cls.registry = json.loads(
+            (ROOT / "registry" / "skills.json").read_text(encoding="utf-8")
+        )
 
     def test_x_leaf_enables_only_x_profiles(self) -> None:
         result = resolve_selection(self.registry, ["my-llm-wiki-x"])

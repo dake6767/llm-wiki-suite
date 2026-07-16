@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -16,19 +17,31 @@ INSTALL = ROOT / "scripts" / "install.sh"
 BOOTSTRAP = ROOT / "bootstrap.sh"
 
 
+def bash_path(path: Path) -> str:
+    return path.resolve().as_posix()
+
+
 class InstallCrLfTests(unittest.TestCase):
     def make_crlf_python(self, temp: Path) -> dict[str, str]:
         fake_bin = temp / "bin"
         fake_bin.mkdir()
-        wrapper = fake_bin / "python3"
-        wrapper.write_text(
-            "#!" + sys.executable + "\n"
+        driver = fake_bin / "crlf_driver.py"
+        driver.write_text(
             "import os, subprocess, sys\n"
             "p = subprocess.run([os.environ['LLM_WIKI_REAL_PY'], *sys.argv[1:]], "
             "stdout=subprocess.PIPE, stderr=subprocess.PIPE)\n"
             "sys.stdout.buffer.write(p.stdout.replace(b'\\n', b'\\r\\n'))\n"
             "sys.stderr.buffer.write(p.stderr)\n"
             "raise SystemExit(p.returncode)\n",
+            encoding="utf-8",
+        )
+        wrapper = fake_bin / "python3"
+        wrapper.write_text(
+            "#!/bin/sh\nexec "
+            + shlex.quote(Path(sys.executable).resolve().as_posix())
+            + " "
+            + shlex.quote(driver.resolve().as_posix())
+            + ' "$@"\n',
             encoding="utf-8",
         )
         wrapper.chmod(0o755)
@@ -43,7 +56,8 @@ class InstallCrLfTests(unittest.TestCase):
             temp = Path(tmp)
             env = self.make_crlf_python(temp)
             result = subprocess.run(
-                ["bash", str(INSTALL), "--dry-run", "--custom-target", str(temp / "skills"), "my-llm-wiki"],
+                ["bash", bash_path(INSTALL), "--dry-run", "--custom-target",
+                 bash_path(temp / "skills"), "my-llm-wiki"],
                 cwd=ROOT,
                 env=env,
                 text=True,
@@ -57,9 +71,9 @@ class InstallCrLfTests(unittest.TestCase):
     def test_install_requires_an_explicit_target(self):
         with tempfile.TemporaryDirectory() as tmp:
             temp = Path(tmp)
-            env = {**os.environ, "HOME": str(temp / "home")}
+            env = {**os.environ, "HOME": bash_path(temp / "home")}
             result = subprocess.run(
-                ["bash", str(INSTALL), "--dry-run"],
+                ["bash", bash_path(INSTALL), "--dry-run"],
                 cwd=ROOT,
                 env=env,
                 text=True,
@@ -75,10 +89,11 @@ class InstallCrLfTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             temp = Path(tmp)
             env = self.make_crlf_python(temp)
-            env["HOME"] = str(temp / "home")
+            env["HOME"] = bash_path(temp / "home")
             target = temp / "home" / ".workbuddy" / "skills"
             result = subprocess.run(
-                ["bash", str(BOOTSTRAP), "--repo", str(ROOT), "--custom-target", str(target), "--dry-run"],
+                ["bash", bash_path(BOOTSTRAP), "--repo", bash_path(ROOT),
+                 "--custom-target", bash_path(target), "--dry-run"],
                 cwd=ROOT,
                 env=env,
                 capture_output=True,
@@ -86,7 +101,7 @@ class InstallCrLfTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr.decode())
             self.assertNotIn(b"invalid skill source", result.stdout)
-            self.assertIn(str(target).encode(), result.stdout)
+            self.assertIn(bash_path(target).encode(), result.stdout)
 
 
 if __name__ == "__main__":

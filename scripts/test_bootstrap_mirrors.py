@@ -20,14 +20,19 @@ GITEE_REPO = "https://gitee.com/dake6767/llm-wiki-suite.git"
 GITEE_BOOTSTRAP = "https://gitee.com/dake6767/llm-wiki-suite/raw/main/bootstrap.sh"
 
 
+def bash_path(path: Path) -> str:
+    """Pass native paths to Git Bash without Windows backslash ambiguity."""
+    return path.resolve().as_posix()
+
+
 class BootstrapMirrorTests(unittest.TestCase):
     def test_requires_user_selected_target_before_reusing_or_cloning(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
             env = os.environ.copy()
-            env["HOME"] = str(home)
+            env["HOME"] = bash_path(home)
             completed = subprocess.run(
-                ["bash", str(BOOTSTRAP), "--repo", str(ROOT), "--dry-run"],
+                ["bash", bash_path(BOOTSTRAP), "--repo", bash_path(ROOT), "--dry-run"],
                 cwd=ROOT,
                 env=env,
                 check=False,
@@ -58,12 +63,12 @@ class BootstrapMirrorTests(unittest.TestCase):
             shutil.copy2(BOOTSTRAP, script)
             home = root / "home"
             env = os.environ.copy()
-            env["HOME"] = str(home)
-            env["LLM_WIKI_REPO_HOME"] = str(home / ".my-llm-wiki" / "suite")
+            env["HOME"] = bash_path(home)
+            env["LLM_WIKI_REPO_HOME"] = bash_path(home / ".my-llm-wiki" / "suite")
             completed = subprocess.run(
                 [
                     "bash",
-                    str(script),
+                    bash_path(script),
                     "--repo-url",
                     GITEE_REPO,
                     "--host",
@@ -96,12 +101,12 @@ class BootstrapMirrorTests(unittest.TestCase):
             )
             curl.chmod(0o755)
             env = os.environ.copy()
-            env["HOME"] = str(home)
+            env["HOME"] = bash_path(home)
             env["PATH"] = f"{shims}{os.pathsep}{env['PATH']}"
-            env["CURL_MARKER"] = str(marker)
-            env["LLM_WIKI_REPO_HOME"] = str(home / ".my-llm-wiki" / "suite")
+            env["CURL_MARKER"] = bash_path(marker)
+            env["LLM_WIKI_REPO_HOME"] = bash_path(home / ".my-llm-wiki" / "suite")
             completed = subprocess.run(
-                ["bash", str(script), "--host", "codex", "--dry-run"],
+                ["bash", bash_path(script), "--host", "codex", "--dry-run"],
                 cwd=root,
                 env=env,
                 check=True,
@@ -135,7 +140,7 @@ class BootstrapMirrorTests(unittest.TestCase):
             env["PATH"] = f"{shims}{os.pathsep}{env['PATH']}"
             completed = subprocess.run(
                 [
-                    "bash", str(BOOTSTRAP), "--repo", str(ROOT),
+                    "bash", bash_path(BOOTSTRAP), "--repo", bash_path(ROOT),
                     "--host", "codex", "--update", "--dry-run",
                 ],
                 cwd=ROOT,
@@ -178,13 +183,13 @@ class BootstrapMirrorTests(unittest.TestCase):
                 (shims / shim).chmod(0o755)
 
             env = os.environ.copy()
-            env["HOME"] = str(home)
+            env["HOME"] = bash_path(home)
             env["PATH"] = f"{shims}{os.pathsep}{env['PATH']}"
             env["LLM_WIKI_REPO_HOME"] = "/c/Users/tester/.my-llm-wiki/suite"
             completed = subprocess.run(
                 [
                     "bash",
-                    str(script),
+                    bash_path(script),
                     "--repo-url",
                     GITEE_REPO,
                     "--custom-target",

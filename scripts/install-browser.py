@@ -1119,7 +1119,9 @@ def build_mcp_commands(
     token = read_mcp_token(mcp)
     bridge_rel = mcp.get("stdio_bridge_script", "scripts/mcp-stdio-bridge.py")
     bridge_script = (root / bridge_rel).resolve()
-    python_path = os.path.abspath(python_executable or preferred_python_executable(system))
+    # An explicit executable is already an exact host recipe value. Preserve it
+    # byte-for-byte; only auto-discovered executables need normalization.
+    python_path = python_executable or preferred_python_executable(system)
     replacements = {
         "endpoint": endpoint,
         "token": token or "<Browser token>",

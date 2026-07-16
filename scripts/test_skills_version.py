@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -27,7 +29,12 @@ class GenTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as d:
             reg = self._registry(Path(d), pack_version="1.2.3")
-            out = gen.build(reg, source_commit=None, released_at="2026-07-13T00:00:00Z")
+            with mock.patch.dict(os.environ, {"GITHUB_SHA": ""}):
+                out = gen.build(
+                    reg,
+                    source_commit=None,
+                    released_at="2026-07-13T00:00:00Z",
+                )
         self.assertEqual(out["schema"], 1)
         self.assertEqual(out["pack_version"], "1.2.3")
         self.assertEqual(out["released_at"], "2026-07-13T00:00:00Z")
