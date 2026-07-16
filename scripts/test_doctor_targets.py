@@ -69,5 +69,47 @@ class DoctorExpandTests(unittest.TestCase):
         self.assertEqual(doctor.expand("/c/Users/x/.workbuddy/skills"), expected)
 
 
+class DoctorMcpScopeTests(unittest.TestCase):
+    def test_default_report_does_not_check_or_include_mcp(self):
+        ok = {"status": "ok", "detail": "ok"}
+        skills = {
+            "status": "ok",
+            "skills": [],
+            "existing_targets": [],
+            "target_scope": "explicit",
+        }
+        toolchain = {"status": "skip", "capabilities": {}, "detail": "not selected"}
+        with mock.patch.object(doctor, "check_repo_home", return_value=ok), \
+             mock.patch.object(doctor, "check_skills", return_value=skills), \
+             mock.patch.object(doctor, "check_wiki", return_value=ok), \
+             mock.patch.object(doctor, "check_browser", return_value=ok), \
+             mock.patch.object(doctor, "check_toolchain", return_value=toolchain), \
+             mock.patch.object(doctor, "check_mcp", return_value=ok) as check_mcp:
+            report = doctor.build_report(hosts=["codex"])
+
+        self.assertNotIn("mcp", report["components"])
+        check_mcp.assert_not_called()
+
+    def test_explicit_mcp_report_includes_check(self):
+        ok = {"status": "ok", "detail": "ok"}
+        skills = {
+            "status": "ok",
+            "skills": [],
+            "existing_targets": [],
+            "target_scope": "explicit",
+        }
+        toolchain = {"status": "skip", "capabilities": {}, "detail": "not selected"}
+        with mock.patch.object(doctor, "check_repo_home", return_value=ok), \
+             mock.patch.object(doctor, "check_skills", return_value=skills), \
+             mock.patch.object(doctor, "check_wiki", return_value=ok), \
+             mock.patch.object(doctor, "check_browser", return_value=ok), \
+             mock.patch.object(doctor, "check_toolchain", return_value=toolchain), \
+             mock.patch.object(doctor, "check_mcp", return_value=ok) as check_mcp:
+            report = doctor.build_report(hosts=["codex"], check_mcp_state=True)
+
+        self.assertEqual(report["components"]["mcp"], ok)
+        check_mcp.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()
