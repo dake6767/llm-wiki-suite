@@ -83,6 +83,59 @@ class BootstrapMirrorTests(unittest.TestCase):
         self.assertNotIn(GITHUB_REPO, completed.stdout)
         self.assertIn("requested skills: all active skills", completed.stdout)
 
+    def test_windows_gitbash_normalizes_msys_paths_for_native_tools(self) -> None:
+        """Simulated Git Bash: /c/... args must become C:/... before git/python."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            script = root / "bootstrap.sh"
+            shutil.copy2(BOOTSTRAP, script)
+            home = root / "home"
+            home.mkdir()
+
+            shims = root / "shims"
+            shims.mkdir()
+            (shims / "uname").write_text("#!/bin/sh\necho MINGW64_NT-10.0\n", encoding="utf-8")
+            (shims / "cygpath").write_text(
+                "#!/bin/sh\n"
+                '# minimal cygpath -m: /c/foo -> C:/foo, pass anything else through\n'
+                'p="$2"\n'
+                'case "$p" in\n'
+                "  /[a-zA-Z]/*)\n"
+                '    d=$(printf %s "$p" | cut -c2 | tr "[:lower:]" "[:upper:]")\n'
+                '    printf "%s:%s\\n" "$d" "$(printf %s "$p" | cut -c3-)"\n'
+                "    ;;\n"
+                '  *) printf "%s\\n" "$p" ;;\n'
+                "esac\n",
+                encoding="utf-8",
+            )
+            for shim in ("uname", "cygpath"):
+                (shims / shim).chmod(0o755)
+
+            env = os.environ.copy()
+            env["HOME"] = str(home)
+            env["PATH"] = f"{shims}{os.pathsep}{env['PATH']}"
+            env["LLM_WIKI_REPO_HOME"] = "/c/Users/tester/.my-llm-wiki/suite"
+            completed = subprocess.run(
+                [
+                    "bash",
+                    str(script),
+                    "--repo-url",
+                    GITEE_REPO,
+                    "--target",
+                    "/c/Users/tester/.workbuddy/skills",
+                    "--dry-run",
+                ],
+                cwd=root,
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertIn("destination: C:/Users/tester/.my-llm-wiki/suite", completed.stdout)
+        self.assertIn("target: C:/Users/tester/.workbuddy/skills", completed.stdout)
+        self.assertNotIn("/c/Users/tester", completed.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

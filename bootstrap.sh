@@ -29,6 +29,20 @@
 #   bash bootstrap.sh --repo ~/projects/llm-wiki-suite --target ~/.workbuddy/skills --update
 set -euo pipefail
 
+# Some Windows Git Bash environments hand MSYS /c/... paths untranslated to
+# native executables (git, python), which then silently misplace files under
+# C:\c\.... Mirror install.sh: normalize every path passed to a native tool.
+IS_WINDOWS=0
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) IS_WINDOWS=1 ;; esac
+
+native_path() {
+  if [ "$IS_WINDOWS" -eq 1 ] && command -v cygpath >/dev/null 2>&1; then
+    cygpath -m "$1"
+  else
+    printf '%s\n' "$1"
+  fi
+}
+
 # These bootstrap constants intentionally mirror registry/bootstrap.json.
 # GitHub remains canonical; Gitee is the mainland-China Pull mirror. Explicit
 # environment/CLI overrides keep private forks and non-standard homes possible
@@ -43,6 +57,7 @@ fi
 DEFAULT_REPO_URL="${LLM_WIKI_REPO_URL:-$CANONICAL_REPO_URL}"
 DEFAULT_REPO_HOME="${LLM_WIKI_REPO_HOME:-$HOME/.my-llm-wiki/suite}"
 DEFAULT_REPO_HOME="${DEFAULT_REPO_HOME/#\~/$HOME}"
+DEFAULT_REPO_HOME="$(native_path "$DEFAULT_REPO_HOME")"
 
 REPO_ARG=""
 REPO_URL="$DEFAULT_REPO_URL"
@@ -72,7 +87,7 @@ while [ $# -gt 0 ]; do
       need_value "$@"; REPO_URL="$2"; REPO_URL_EXPLICIT=1; shift
       ;;
     --target)
-      need_value "$@"; TARGETS+=("${2/#\~/$HOME}"); shift
+      need_value "$@"; TARGETS+=("$(native_path "${2/#\~/$HOME}")"); shift
       ;;
     --copy) COPY=1 ;;
     --force) FORCE=1 ;;
@@ -163,7 +178,7 @@ REPO_ROOT=""
 REPO_SOURCE=""
 
 if [ -n "$REPO_ARG" ]; then
-  REPO_ARG="${REPO_ARG/#\~/$HOME}"
+  REPO_ARG="$(native_path "${REPO_ARG/#\~/$HOME}")"
   is_repo "$REPO_ARG" || die "not an llm-wiki-suite checkout: $REPO_ARG"
   REPO_ROOT="$(absolute_dir "$REPO_ARG")"
   REPO_SOURCE="--repo"
@@ -254,6 +269,10 @@ if [ -z "$REPO_ROOT" ]; then
 else
   echo "Reusing checkout ($REPO_SOURCE): $REPO_ROOT"
 fi
+
+# absolute_dir / find_linked_checkout return MSYS-form paths on Git Bash;
+# everything below hands REPO_ROOT to native git and python.
+REPO_ROOT="$(native_path "$REPO_ROOT")"
 
 if [ "$UPDATE" -eq 1 ]; then
   command -v git >/dev/null 2>&1 || die "git is required for --update"

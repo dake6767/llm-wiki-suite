@@ -89,10 +89,13 @@ scripts/install.sh \
 Never create an empty agent home or skills directory merely because it appears
 in `default_skill_targets`. The user may select multiple `--target` values.
 
-The script works on Windows under Git Bash: it normalizes MSYS paths before
-native Windows Python resolves them, and creates links as PowerShell directory
+Both `bootstrap.sh` and `scripts/install.sh` work on Windows under Git Bash:
+they normalize MSYS `/c/...` paths before native git/Python resolve them (some
+Git Bash environments skip that translation and native tools would misplace
+files under `C:\c\...`), and `install.sh` creates links as PowerShell directory
 junctions (no admin / Developer Mode needed) because Git Bash's `ln -s` silently
-degrades to a copy. Run it as-is — no manual links or path rewriting.
+degrades to a copy. Run them as-is — no manual links, `cygpath` calls, or path
+rewriting needed.
 
 ## 3. Detect And Offer The Selected Capture Toolchain
 
