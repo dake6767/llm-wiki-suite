@@ -33,6 +33,10 @@ sensevoice = load_module(
     "sensevoice_to_srt",
     ROOT / "skills" / "my-llm-wiki-video" / "scripts" / "sensevoice_to_srt.py",
 )
+faster_whisper_runner = load_module(
+    "faster_whisper_to_srt",
+    ROOT / "skills" / "my-llm-wiki-video" / "scripts" / "faster_whisper_to_srt.py",
+)
 douyin_probe = load_module(
     "douyin_probe", ROOT / "skills" / "my-llm-wiki-video" / "scripts" / "douyin_probe.py"
 )
@@ -60,6 +64,7 @@ class HelperTests(unittest.TestCase):
 
     def test_srt_timestamp_and_rich_marker_cleanup(self) -> None:
         self.assertEqual(sensevoice.srt_timestamp(61.234), "00:01:01,234")
+        self.assertEqual(faster_whisper_runner.srt_timestamp(61.234), "00:01:01,234")
         self.assertEqual(sensevoice.RICH_MARKERS.sub("", "你好😊\ufe0f"), "你好")
 
     def test_html_extraction_drops_active_markup(self) -> None:

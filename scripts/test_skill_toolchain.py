@@ -93,7 +93,7 @@ class ToolchainTests(unittest.TestCase):
                 "yt-dlp": "",
                 "ffmpeg": "",
                 "sensevoice": "",
-                "whisper-ctranslate2": "",
+                "faster-whisper": "",
                 "whisper": "",
             },
             github_ok=True,
@@ -105,7 +105,7 @@ class ToolchainTests(unittest.TestCase):
         tools = {r["tool"] for r in report["recommendations"]}
         self.assertNotIn("markitdown", tools)
         self.assertNotIn("opencli", tools)
-        self.assertTrue({"yt-dlp", "ffmpeg", "sensevoice", "whisper-ctranslate2"} <= tools)
+        self.assertTrue({"yt-dlp", "ffmpeg", "sensevoice", "faster-whisper"} <= tools)
 
     def test_doc_profile_uses_cn_variant_when_network_is_restricted(self) -> None:
         report = preflight.build_report(

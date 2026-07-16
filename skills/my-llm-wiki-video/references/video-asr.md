@@ -3,8 +3,9 @@
 Read this file only when the capture SOP's §2 probe found **no usable caption
 track** (`caption_fetch.py` exited 2), or the platform file says the host never
 has one (抖音, 小红书). It owns everything specific to the ASR path: the
-audio-only download, the language→backend routing gate, the shipped VAD-first
-SenseVoice runner, the background+poll discipline for the minutes-long run, and
+audio-only download, the language→backend routing gate, the shipped ASR
+runners (VAD-first SenseVoice for Chinese, faster-whisper for the rest), the
+background+poll discipline for the minutes-long run, and
 the audio-specific verification and pitfalls. The acceptance contract (§1),
 cue→anchor assembly (§3), and content verification (§4) stay in
 `video-capture-sop.md` — this file's output is a standard SRT that feeds
@@ -14,7 +15,7 @@ cue→anchor assembly (§3), and content verification (§4) stay in
 
 - [1. Audio-only download](#1-audio-only-download)
 - [2. Route the ASR backend by language](#2-route-the-asr-backend-by-language-before-transcribing)
-- [3. SenseVoice → timestamped SRT: the shipped VAD-first runner](#3-sensevoice--timestamped-srt-the-shipped-vad-first-runner)
+- [3. ASR → timestamped SRT: the shipped runners](#3-asr--timestamped-srt-the-shipped-runners)
 - [4. Long-run discipline: background + poll one status file](#4-long-run-discipline-background--poll-one-status-file)
 - [5. Audio-specific verification and pitfalls](#5-audio-specific-verification-and-pitfalls)
 
@@ -61,14 +62,22 @@ Guess from the title/author (a title with ≥4 CJK chars and more CJK than latin
   `merge_vad` / `merge_length_s` are set (a Windows capture burned three
   full attempts on those knobs). Timestamps come from a **VAD-first**
   pass — VAD run as its *own* model — the shipped runner in §3.
-- **Everything else → faster-whisper** (`pip install whisper-ctranslate2`,
-  [github.com/Softcatala/whisper-ctranslate2](https://github.com/Softcatala/whisper-ctranslate2);
-  same models ~3-5× faster, makes `large-v3` affordable on CPU) →
-  stock `whisper` (`brew install openai-whisper`,
-  [github.com/openai/whisper](https://github.com/openai/whisper)) as last
-  resort. faster-whisper pulls its models from Hugging Face — on networks
-  where that's blocked (mainland China) prefix the first run with
-  `HF_ENDPOINT=https://hf-mirror.com`.
+- **Everything else → faster-whisper**
+  ([github.com/SYSTRAN/faster-whisper](https://github.com/SYSTRAN/faster-whisper);
+  the CTranslate2 reimplementation — same models ~3-5× faster, makes
+  `large-v3` affordable on CPU). It is a Python **library with no CLI**:
+  install it into the same dedicated ASR venv
+  (`python3 -m venv ~/.local/share/llm-wiki/asr-venv &&
+  ~/.local/share/llm-wiki/asr-venv/bin/pip install faster-whisper`; the venv
+  caveats above — Windows `Scripts\python.exe`, TUNA index on mainland
+  networks — apply) and run the shipped runner in §3, never an ad-hoc
+  inline snippet. Stock `whisper` (`brew install openai-whisper`,
+  [github.com/openai/whisper](https://github.com/openai/whisper)) is the
+  last resort. faster-whisper pulls its models from Hugging Face — on
+  networks where that's blocked (mainland China) prefix the first run with
+  `HF_ENDPOINT=https://hf-mirror.com`. Unlike the SenseVoice path it decodes
+  m4a/mp3 itself (PyAV) — no wav conversion needed — and its segments carry
+  native timestamps, so there is no VAD-first trick to apply.
 - **Cloud fallback** — `agent-reach transcribe <url>` (Groq/OpenAI Whisper
   API) is fast and zero-install, **but returns plain text without
   timestamps**, so it breaks the anchor contract. Use it only when no local
@@ -89,26 +98,33 @@ capture.
 
 Backend chosen, three rules that apply to every backend:
 
-1. **Emit SRT, not plain text**: `--output_format srt` (whisper-family CLIs
-   support it directly). Per-cue timestamps are the deep-link index — a plain
-   `.txt` loses the entire anchor layer.
+1. **Emit SRT, not plain text**: the shipped runners (§3) write SRT natively;
+   the stock `whisper` CLI needs `--output_format srt`. Per-cue timestamps are
+   the deep-link index — a plain `.txt` loses the entire anchor layer.
 2. **Prime the decoder with the video's own vocabulary.** Whisper mangles
    code-switching and domain terms on smaller models ("token" → "偷肯",
-   "GPT" → "吉皮提"). Pass `--initial_prompt` built from the video's **title +
+   "GPT" → "吉皮提"). Pass `--initial-prompt` (stock whisper CLI:
+   `--initial_prompt`) built from the video's **title +
    keywords/tags + first description line** (≤ ~600 chars) — free, and it
    travels with every video. Model size is the other big lever: `medium` is the
    floor, `turbo`/`large-v3` for term-dense content.
 3. **Delete the audio when done.** Transcription is local and free; the media
    is never kept.
 
-## 3. SenseVoice → timestamped SRT: the shipped VAD-first runner
+## 3. ASR → timestamped SRT: the shipped runners
+
+Both local backends run through a reviewed script shipped with this skill —
+run it directly with the dedicated ASR interpreter, ask the runtime to
+background the command rather than generating another wrapper script, and do
+not reproduce either script's source in a heredoc, inline interpreter flag, or
+arbitrary-code tool.
+
+### 3a. SenseVoice (Chinese) — VAD-first
 
 The order is the whole trick: **run VAD first, then recognise each speech
 segment separately — the cue time is the VAD segment's bounds.** Never hand
 SenseVoice the full audio and hope for cue times; it is non-autoregressive and
-will return a single untimed blob (see the bullet above). Run the reviewed
-script directly with the dedicated ASR interpreter; ask the runtime to
-background this command rather than generating another wrapper script:
+will return a single untimed blob (see the bullet above):
 
 ```bash
 "$ASR_PYTHON" "$VIDEO_SKILL/scripts/sensevoice_to_srt.py" \
@@ -119,8 +135,7 @@ background this command rather than generating another wrapper script:
 
 The script runs VAD first, recognises one bounded segment at a time, atomically
 writes SRT, strips SenseVoice rich markers with escaped Unicode ranges, and
-writes `status.yaml` as its last act. Do not reproduce its source in a heredoc,
-inline interpreter flag, or arbitrary-code tool.
+writes `status.yaml` as its last act.
 
 Notes that earn their keep:
 
@@ -136,6 +151,31 @@ Notes that earn their keep:
   unchanged.
 - ~28× realtime on CPU: a 40-min video ≈ 2 min VAD+ASR. If it's taking tens of
   minutes, something is wrong — check you didn't feed the full file per cue.
+
+### 3b. faster-whisper (everything else)
+
+No VAD-first choreography here — Whisper is autoregressive and its segments
+carry native timestamps; the runner just adds Silero VAD filtering (suppresses
+hallucinated cues in silence), SRT assembly, and the atomic status contract:
+
+```bash
+"$ASR_PYTHON" "$VIDEO_SKILL/scripts/faster_whisper_to_srt.py" \
+  "$TMPDIR/audio.m4a" "$TMPDIR/transcript.srt" \
+  --status "$TMPDIR/status.yaml" --model medium \
+  --initial-prompt "<title + keywords + first description line>" \
+  --source-url "$URL" --original-id "$VIDEO_ID"
+```
+
+- The audio can be the original m4a/mp3 — faster-whisper decodes via PyAV, no
+  wav conversion needed.
+- `--language` is optional (auto-detect by default); pass it when known — it
+  skips detection and removes one misrouting risk.
+- `--model medium` is the floor (§2 rule 2); use `large-v3` or `turbo` for
+  term-dense content. Models download from Hugging Face on first use —
+  mainland networks need `HF_ENDPOINT=https://hf-mirror.com` on that first
+  run.
+- The output is the same standard SRT + `status.yaml` shape as §3a, so SOP
+  §3's `srt_to_anchors.py` and the §4 polling discipline apply unchanged.
 
 ## 4. Long-run discipline: background + poll one status file
 

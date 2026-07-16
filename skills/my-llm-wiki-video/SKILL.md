@@ -60,9 +60,9 @@ automatically.
    payload and a normalized `subs.srt` land in the temp dir; only its compact
    JSON summary enters the conversation. Never dump or pipe the fetched
    captions into context to inspect them.
-   For Chinese local ASR, invoke the shipped
-   `scripts/sensevoice_to_srt.py`; never copy its implementation into a temporary
-   script or an arbitrary-code tool. Write semantic transcript repairs as data
+   For local ASR, invoke the shipped runners (`scripts/sensevoice_to_srt.py`
+   for Chinese, `scripts/faster_whisper_to_srt.py` for everything else); never
+   copy their implementation into a temporary script or an arbitrary-code tool. Write semantic transcript repairs as data
    with the runtime's normal file-write tool.
    Convert subtitle cues with
    `python3 "$VIDEO_SKILL/scripts/srt_to_anchors.py" ...`. Never normalize the

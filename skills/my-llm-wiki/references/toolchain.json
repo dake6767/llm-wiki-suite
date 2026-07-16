@@ -28,7 +28,7 @@
         "yt-dlp",
         "ffmpeg",
         "sensevoice",
-        "whisper-ctranslate2",
+        "faster-whisper",
         "whisper"
       ]
     }
@@ -67,12 +67,12 @@
       "install_cn": "python3 -m venv ~/.local/share/llm-wiki/asr-venv && ~/.local/share/llm-wiki/asr-venv/bin/pip install funasr torch -i https://pypi.tuna.tsinghua.edu.cn/simple",
       "home": "https://github.com/FunAudioLLM/SenseVoice"
     },
-    "whisper-ctranslate2": {
-      "probe": "whisper-ctranslate2",
-      "description": "faster Whisper-family local ASR for non-Chinese video",
-      "install": "python3 -m pip install -U whisper-ctranslate2",
-      "install_cn": "python3 -m pip install -U whisper-ctranslate2 -i https://pypi.tuna.tsinghua.edu.cn/simple; set HF_ENDPOINT=https://hf-mirror.com for model download",
-      "home": "https://github.com/Softcatala/whisper-ctranslate2"
+    "faster-whisper": {
+      "probe": "python:faster_whisper",
+      "description": "faster-whisper (CTranslate2) local ASR for non-Chinese video",
+      "install": "python3 -m venv ~/.local/share/llm-wiki/asr-venv && ~/.local/share/llm-wiki/asr-venv/bin/pip install -U faster-whisper",
+      "install_cn": "python3 -m venv ~/.local/share/llm-wiki/asr-venv && ~/.local/share/llm-wiki/asr-venv/bin/pip install -U faster-whisper -i https://pypi.tuna.tsinghua.edu.cn/simple; set HF_ENDPOINT=https://hf-mirror.com for model download",
+      "home": "https://github.com/SYSTRAN/faster-whisper"
     },
     "whisper": {
       "probe": "whisper",
