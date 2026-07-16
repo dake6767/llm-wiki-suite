@@ -82,10 +82,12 @@ checkouts stop without replacement. Do not overwrite local changes.
 
 ## 4. Skill Installation Contract
 
-`scripts/install.py` owns target resolution, dependency/bundle closure,
-conflicts, provenance, locking, rollback, and the exact doctor command.
-`scripts/install.sh` is only its launcher. Run them as-is on macOS, Linux, and
-Windows Git Bash; do not create links manually or rewrite MSYS paths yourself.
+`scripts/install.py` owns the low-level target resolution, dependency/bundle
+closure, conflicts, provenance, locking, rollback, and exact doctor command.
+`bootstrap.sh` owns the complete install sequence, and `scripts/install.sh` is
+its local-checkout launcher. Do not treat a direct `scripts/install.py` run as a
+completed installation. Run the launchers as-is on macOS, Linux, and Windows
+Git Bash; do not create links manually or rewrite MSYS paths yourself.
 
 Default link mode creates POSIX directory symlinks or Windows PowerShell
 junctions. A destination is current only when it resolves to this exact skill
@@ -116,10 +118,30 @@ changes host configuration. Exit codes are:
 - `2`: bad invocation/protocol/configuration;
 - `3`: installation succeeded but a selected capability needs user action.
 
-## 5. Toolchain Detection And Network Routing
+## 5. Required Wiki Initialization
 
-After skill installation, bootstrap runs the scoped doctor automatically. For
-manual runs, use the host ids and the same selected skills:
+Immediately after installing skills, bootstrap runs
+`scripts/initialize_wiki.py` before doctor. This is a required base-install
+step, not an optional feature and not a follow-up question:
+
+- when a registered usable Wiki already exists, reuse it and create nothing;
+- otherwise initialize and register the first Wiki at
+  `registry/bootstrap.json` → `default_wiki_root` (`~/wikis/my-llm-wiki`);
+- if the registry is unreadable or initialization cannot be verified, fail the
+  installation instead of reporting `status: installed`;
+- `--no-doctor` skips only doctor; it never skips Wiki initialization.
+
+The initializer is idempotent, uses the suite registry, and runs under the
+install lock. Do not ask whether to initialize, defer it until after doctor,
+invent a second registry, or write a synthetic RAW item. Seeing
+`wiki-init: ready` or `wiki-init: existing` is the gate for continuing to
+doctor.
+
+## 6. Toolchain Detection And Network Routing
+
+After skill installation and required Wiki initialization, bootstrap runs the
+scoped doctor automatically. For manual runs, use the host ids and the same
+selected skills:
 
 ```bash
 python3 scripts/doctor.py --host codex --skills my-llm-wiki-x
@@ -176,16 +198,21 @@ If Hermes is selected, offer `approvals.mode: smart` and
 approval, or edit an existing Hermes config without consent. Repository
 examples must pass `python3 scripts/check_approval_safety.py`.
 
-## 6. Wiki Initialization
-
-If `~/.my-llm-wiki/wikis.json` does not exist, initialize the first wiki at
-`registry/bootstrap.json` → `default_wiki_root` (`~/wikis/my-llm-wiki`) using
-the installed `my-llm-wiki` / `my-llm-wiki-maintainer` scripts. Do not invent a
-second registry or write a synthetic RAW item.
-
 ## 7. Browser Installation
 
-Browser is optional and release-first:
+Browser is optional and is offered only after the required Wiki initialization
+and doctor have completed. Present a host-native single-select control, using
+the same structured interaction style as agent-host selection, with exactly
+these choices:
+
+- **Continue and install Browser** — run the release-first installer below.
+- **Skip Browser** — finish the skills-only installation.
+
+Do not ask the user to type `yes`, `no`, or any other confirmation text. The
+bootstrap remains non-interactive and does not contain this choice. If the host
+cannot render a native selection control, leave Browser skipped and explain
+that the optional choice was unavailable; do not replace it with a free-text
+prompt. Run the installer only after the user selects the install choice:
 
 ```bash
 python3 scripts/install-browser.py --open
@@ -202,20 +229,22 @@ Browser operations use a non-waiting advisory lock. A concurrent agent exits
 immediately with an active-operation error; never retry it in a tight loop.
 
 Unsupported OS/architecture combinations fail rather than selecting an x64
-asset. A Windows setup.exe/MSI is always executed synchronously, with closed
-stdin and a 15-minute deadline; success additionally requires the exact
-uninstall registration and `llm-wiki-desktop.exe` to exist. User cancellation,
-timeout, or failed verification writes no receipt and must not try a second
-installer source. Portable ZIP extraction rejects path traversal and requires
-the exact executable. macOS requires an installed `.app`, and Linux requires an
-executable AppImage; downloading a DMG/deb/rpm alone is never reported as an
-install.
+asset. A Windows setup.exe/MSI is launched normally and the command immediately
+returns `status: installer-launched` with exit code 0. Do not wait for the
+installer process, poll its exit code, inspect the registry, search for an
+executable, rerun doctor automatically, or otherwise monitor completion. The
+Windows installer UI owns the remaining user flow. Portable ZIP extraction is
+synchronous, rejects path traversal, and requires the exact executable. macOS
+requires an installed `.app`, and Linux requires an executable AppImage;
+downloading a DMG/deb/rpm alone is never reported as an install.
 
-Only a verified install atomically writes
-`~/.my-llm-wiki/browser/install.json`. `--open` launches that installed target
-after receipt creation; it never opens an installer. A source build is a
-development artifact, returns action-required, and does not create an install
-receipt.
+Only an installation completed by this process atomically writes
+`~/.my-llm-wiki/browser/install.json`. Starting a Windows setup.exe/MSI does not
+write an install receipt or claim that Browser is installed. `--open` launches
+the installed target after a synchronous install; for setup.exe/MSI, the native
+installer is the only process launched and the command does not wait to open
+Browser afterward. A source build is a development artifact, returns
+action-required, and does not create an install receipt.
 
 If htmlgo and GitHub both fail, stop retrying, explain that Browser is optional,
 and finish the skills-only installation. `wiki_ops.py local-search` remains the
@@ -237,7 +266,7 @@ does not inspect, propose, or mention MCP. A missing explicit target, foreign
 link, stale/mutated copy, missing required skill, or invalid registry reference
 is an error. Browser absence is only a warning when skills-only use was selected.
 
-For an installation-only request, stop after doctor and offer:
+For an installation-only request, complete the Browser choice above, then offer:
 
 > Send me one article, webpage, video, or note you want to preserve. I will save
 > it to RAW, compile it into your wiki, and show where to view it.

@@ -69,6 +69,38 @@ class DoctorExpandTests(unittest.TestCase):
         self.assertEqual(doctor.expand("/c/Users/x/.workbuddy/skills"), expected)
 
 
+class DoctorWikiRegistryTests(unittest.TestCase):
+    def test_environment_registry_override_matches_initializer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = Path(tmp) / "wikis.json"
+            registry.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "wikis": [
+                            {
+                                "path": str(Path(tmp) / "wiki"),
+                                "name": "default",
+                                "description": "",
+                                "default": True,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch.dict(
+                os.environ, {"LLM_WIKI_REGISTRY": str(registry)}, clear=False
+            ):
+                result = doctor.check_wiki(
+                    {"wiki_registry_path": str(Path(tmp) / "wrong.json")}
+                )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["default"], "default")
+
+
 class DoctorMcpScopeTests(unittest.TestCase):
     def test_default_report_does_not_check_or_include_mcp(self):
         ok = {"status": "ok", "detail": "ok"}
