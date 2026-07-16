@@ -18,6 +18,13 @@ BOOTSTRAP = ROOT / "bootstrap.sh"
 
 
 def bash_path(path: Path) -> str:
+    value = path.resolve().as_posix()
+    if os.name == "nt" and len(value) >= 3 and value[1:3] == ":/":
+        return f"/{value[0].lower()}{value[2:]}"
+    return value
+
+
+def native_forward_path(path: Path) -> str:
     return path.resolve().as_posix()
 
 
@@ -38,9 +45,9 @@ class InstallCrLfTests(unittest.TestCase):
         wrapper = fake_bin / "python3"
         wrapper.write_text(
             "#!/bin/sh\nexec "
-            + shlex.quote(Path(sys.executable).resolve().as_posix())
+            + shlex.quote(bash_path(Path(sys.executable)))
             + " "
-            + shlex.quote(driver.resolve().as_posix())
+            + shlex.quote(bash_path(driver))
             + ' "$@"\n',
             encoding="utf-8",
         )
@@ -101,7 +108,7 @@ class InstallCrLfTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr.decode())
             self.assertNotIn(b"invalid skill source", result.stdout)
-            self.assertIn(bash_path(target).encode(), result.stdout)
+            self.assertIn(native_forward_path(target).encode(), result.stdout)
 
 
 if __name__ == "__main__":

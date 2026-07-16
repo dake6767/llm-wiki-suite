@@ -21,8 +21,11 @@ GITEE_BOOTSTRAP = "https://gitee.com/dake6767/llm-wiki-suite/raw/main/bootstrap.
 
 
 def bash_path(path: Path) -> str:
-    """Pass native paths to Git Bash without Windows backslash ambiguity."""
-    return path.resolve().as_posix()
+    """Render a filesystem path for Bash itself, including MSYS drive form."""
+    value = path.resolve().as_posix()
+    if os.name == "nt" and len(value) >= 3 and value[1:3] == ":/":
+        return f"/{value[0].lower()}{value[2:]}"
+    return value
 
 
 class BootstrapMirrorTests(unittest.TestCase):
