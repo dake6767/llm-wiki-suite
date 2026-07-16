@@ -226,7 +226,7 @@ def check_skills(
 
 
 def check_wiki(bootstrap: dict) -> dict:
-    reg_path = bootstrap.get("wiki_registry_path")
+    reg_path = os.environ.get("LLM_WIKI_REGISTRY") or bootstrap.get("wiki_registry_path")
     if not reg_path:
         return {"status": "warn", "detail": "bootstrap.json has no wiki_registry_path"}
     path = expand(reg_path)

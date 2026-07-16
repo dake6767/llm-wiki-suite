@@ -13,7 +13,7 @@
 #   --replace          Back up and replace every conflicting destination.
 #   --update           Fast-forward a clean selected checkout before install.
 #   --dry-run          Print a plan and make no changes.
-#   --no-doctor        Skip the post-install health check.
+#   --no-doctor        Skip only doctor; required Wiki initialization still runs.
 #
 # Named hosts: codex, claude, hermes, agents, workbuddy.
 set -euo pipefail
@@ -98,6 +98,7 @@ is_repo() {
     [ -f "$1/registry/bootstrap.json" ] &&
     [ -f "$1/registry/skills.json" ] &&
     [ -f "$1/scripts/install.py" ] &&
+    [ -f "$1/scripts/initialize_wiki.py" ] &&
     [ -f "$1/scripts/doctor.py" ]
 }
 
@@ -238,6 +239,12 @@ fi
 RUN_INSTALL=("$PY_BIN" "$REPO_ROOT/scripts/install.py" "${INSTALL_ARGS[@]}")
 if [ ${#SLUGS[@]} -gt 0 ]; then RUN_INSTALL+=("${SLUGS[@]}"); fi
 "${RUN_INSTALL[@]}"
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  "$PY_BIN" "$REPO_ROOT/scripts/initialize_wiki.py" --dry-run
+else
+  "$PY_BIN" "$REPO_ROOT/scripts/initialize_wiki.py"
+fi
 
 if [ "$DRY_RUN" -eq 1 ]; then
   exit 0

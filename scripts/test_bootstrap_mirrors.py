@@ -14,6 +14,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 BOOTSTRAP = ROOT / "bootstrap.sh"
+INSTALL = ROOT / "scripts" / "install.sh"
 REGISTRY = ROOT / "registry" / "bootstrap.json"
 GITHUB_REPO = "https://github.com/dake6767/llm-wiki-suite.git"
 GITEE_REPO = "https://gitee.com/dake6767/llm-wiki-suite.git"
@@ -212,6 +213,75 @@ class BootstrapMirrorTests(unittest.TestCase):
         self.assertIn("repo: C:/Users/tester/.my-llm-wiki/suite", completed.stdout)
         self.assertIn("custom-target: C:/Users/tester/.workbuddy/skills", completed.stdout)
         self.assertNotIn("/c/Users/tester", completed.stdout)
+
+    def test_bootstrap_initializes_wiki_before_doctor_and_reports_installed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            target = root / "skills"
+            env = os.environ.copy()
+            env["HOME"] = bash_path(home)
+            env["USERPROFILE"] = str(home.resolve())
+            completed = subprocess.run(
+                [
+                    BASH,
+                    bash_path(BOOTSTRAP),
+                    "--repo",
+                    bash_path(ROOT),
+                    "--custom-target",
+                    bash_path(target),
+                    "cn-mirrors",
+                ],
+                cwd=ROOT,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            registry = home / ".my-llm-wiki" / "wikis.json"
+            wiki = home / "wikis" / "my-llm-wiki"
+            stdout = completed.stdout
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertTrue(registry.is_file())
+            self.assertTrue((wiki / "schema.md").is_file())
+            self.assertTrue((wiki / "wiki").is_dir())
+
+        self.assertLess(stdout.index("wiki-init: ready"), stdout.index("✓ wiki"))
+        self.assertIn("status: installed", stdout)
+
+    def test_local_installer_initializes_wiki_even_when_doctor_is_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            target = root / "skills"
+            env = os.environ.copy()
+            env["HOME"] = bash_path(home)
+            env["USERPROFILE"] = str(home.resolve())
+            completed = subprocess.run(
+                [
+                    BASH,
+                    bash_path(INSTALL),
+                    "--custom-target",
+                    bash_path(target),
+                    "--copy",
+                    "--no-doctor",
+                    "cn-mirrors",
+                ],
+                cwd=ROOT,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            wiki = home / "wikis" / "my-llm-wiki"
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertTrue((wiki / "schema.md").is_file())
+            self.assertIn("wiki-init: ready", completed.stdout)
+            self.assertIn("status: installed-unverified", completed.stdout)
+            self.assertNotIn("✓ wiki", completed.stdout)
 
 
 if __name__ == "__main__":

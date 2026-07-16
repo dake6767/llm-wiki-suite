@@ -171,9 +171,10 @@ agent：
 先问我要安装到哪些 agent，再创建或修改任何 skills 目录。
 ```
 
-agent 会显式复用你指定的 checkout，或安装到稳定目录 `~/.my-llm-wiki/suite`；随后同步 skills、
-检查所选抓取工具链、初始化 Wiki，并优先从 `wiki.htmlgo.to` 安装 Browser（GitHub 仅作回退）。
-两条发布路径均不可达时才记录 Browser optional skip。完成后另发一条真实 URL 或自己的 note，
+agent 会显式复用你指定的 checkout，或安装到稳定目录 `~/.my-llm-wiki/suite`；随后按固定顺序
+同步 skills、初始化或复用首个 Wiki、再运行 doctor。Wiki 初始化是基础安装的必做步骤，不会停在
+doctor 后留给用户处理。抓取工具和 Browser 都不会静默安装；只有你确认后，Browser 才优先从
+`wiki.htmlgo.to` 获取 Release（GitHub 仅作回退）。完成后另发一条真实 URL 或自己的 note，
 即可开始首次 `capture → RAW → Wiki`。
 
 ### 手动安装 skills
@@ -204,6 +205,8 @@ bash bootstrap.sh \
 独立下载的 bootstrap 安装时，如需复用开发 checkout，必须明确传 `--repo DIR`。未显式指定
 `--repo-url` 时，fresh install 会短时探测 GitHub；
 不可达时优先 Gitee，clone 失败时再尝试另一入口。已有 checkout 始终沿其 `origin` 更新。
+`bootstrap.sh` 和本地入口 `scripts/install.sh` 都会在 Skill 安装后立即执行幂等 Wiki 初始化，
+确认注册表中已有可用 Wiki 后才运行 doctor；`--no-doctor` 也不会跳过初始化。
 
 常用选项：
 

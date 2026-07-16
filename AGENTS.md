@@ -82,10 +82,12 @@ checkouts stop without replacement. Do not overwrite local changes.
 
 ## 4. Skill Installation Contract
 
-`scripts/install.py` owns target resolution, dependency/bundle closure,
-conflicts, provenance, locking, rollback, and the exact doctor command.
-`scripts/install.sh` is only its launcher. Run them as-is on macOS, Linux, and
-Windows Git Bash; do not create links manually or rewrite MSYS paths yourself.
+`scripts/install.py` owns the low-level target resolution, dependency/bundle
+closure, conflicts, provenance, locking, rollback, and exact doctor command.
+`bootstrap.sh` owns the complete install sequence, and `scripts/install.sh` is
+its local-checkout launcher. Do not treat a direct `scripts/install.py` run as a
+completed installation. Run the launchers as-is on macOS, Linux, and Windows
+Git Bash; do not create links manually or rewrite MSYS paths yourself.
 
 Default link mode creates POSIX directory symlinks or Windows PowerShell
 junctions. A destination is current only when it resolves to this exact skill
@@ -116,10 +118,30 @@ changes host configuration. Exit codes are:
 - `2`: bad invocation/protocol/configuration;
 - `3`: installation succeeded but a selected capability needs user action.
 
-## 5. Toolchain Detection And Network Routing
+## 5. Required Wiki Initialization
 
-After skill installation, bootstrap runs the scoped doctor automatically. For
-manual runs, use the host ids and the same selected skills:
+Immediately after installing skills, bootstrap runs
+`scripts/initialize_wiki.py` before doctor. This is a required base-install
+step, not an optional feature and not a follow-up question:
+
+- when a registered usable Wiki already exists, reuse it and create nothing;
+- otherwise initialize and register the first Wiki at
+  `registry/bootstrap.json` → `default_wiki_root` (`~/wikis/my-llm-wiki`);
+- if the registry is unreadable or initialization cannot be verified, fail the
+  installation instead of reporting `status: installed`;
+- `--no-doctor` skips only doctor; it never skips Wiki initialization.
+
+The initializer is idempotent, uses the suite registry, and runs under the
+install lock. Do not ask whether to initialize, defer it until after doctor,
+invent a second registry, or write a synthetic RAW item. Seeing
+`wiki-init: ready` or `wiki-init: existing` is the gate for continuing to
+doctor.
+
+## 6. Toolchain Detection And Network Routing
+
+After skill installation and required Wiki initialization, bootstrap runs the
+scoped doctor automatically. For manual runs, use the host ids and the same
+selected skills:
 
 ```bash
 python3 scripts/doctor.py --host codex --skills my-llm-wiki-x
@@ -176,16 +198,9 @@ If Hermes is selected, offer `approvals.mode: smart` and
 approval, or edit an existing Hermes config without consent. Repository
 examples must pass `python3 scripts/check_approval_safety.py`.
 
-## 6. Wiki Initialization
-
-If `~/.my-llm-wiki/wikis.json` does not exist, initialize the first wiki at
-`registry/bootstrap.json` → `default_wiki_root` (`~/wikis/my-llm-wiki`) using
-the installed `my-llm-wiki` / `my-llm-wiki-maintainer` scripts. Do not invent a
-second registry or write a synthetic RAW item.
-
 ## 7. Browser Installation
 
-Browser is optional and release-first:
+Browser is optional, requires separate user consent, and is release-first:
 
 ```bash
 python3 scripts/install-browser.py --open
@@ -237,7 +252,8 @@ does not inspect, propose, or mention MCP. A missing explicit target, foreign
 link, stale/mutated copy, missing required skill, or invalid registry reference
 is an error. Browser absence is only a warning when skills-only use was selected.
 
-For an installation-only request, stop after doctor and offer:
+For an installation-only request, stop after the Wiki has been initialized and
+doctor has completed, then offer:
 
 > Send me one article, webpage, video, or note you want to preserve. I will save
 > it to RAW, compile it into your wiki, and show where to view it.
