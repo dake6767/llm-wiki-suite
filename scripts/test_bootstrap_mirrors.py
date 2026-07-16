@@ -236,7 +236,7 @@ class BootstrapMirrorTests(unittest.TestCase):
                 env=env,
                 check=False,
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
             )
 
             registry = home / ".my-llm-wiki" / "wikis.json"
