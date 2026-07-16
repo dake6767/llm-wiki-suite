@@ -13,8 +13,7 @@
 # Options:
 #   --repo DIR       Reuse this checkout (highest priority).
 #   --repo-url URL   Clone from URL when no checkout is found.
-#   --target DIR     Agent skills directory (repeatable). Defaults come from
-#                    registry/bootstrap.json.
+#   --target DIR     User-selected agent skills directory (repeatable, required).
 #   --copy           Copy skills instead of linking to the checkout.
 #   --force          Back up and replace conflicting target paths.
 #   --update         Run `git pull --ff-only` on a clean existing checkout.
@@ -23,11 +22,11 @@
 #   -h, --help       Show this help.
 #
 # Examples:
-#   bash bootstrap.sh
-#   bash bootstrap.sh my-llm-wiki-x
+#   bash bootstrap.sh --target ~/.workbuddy/skills
+#   bash bootstrap.sh --target ~/.workbuddy/skills my-llm-wiki-x
 #   bash bootstrap.sh --target ~/.codex/skills my-llm-wiki-video
-#   bash bootstrap.sh --repo-url https://gitee.com/dake6767/llm-wiki-suite.git
-#   bash bootstrap.sh --repo ~/projects/llm-wiki-suite --update
+#   bash bootstrap.sh --repo-url https://gitee.com/dake6767/llm-wiki-suite.git --target ~/.workbuddy/skills
+#   bash bootstrap.sh --repo ~/projects/llm-wiki-suite --target ~/.workbuddy/skills --update
 set -euo pipefail
 
 # These bootstrap constants intentionally mirror registry/bootstrap.json.
@@ -95,6 +94,8 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+
+[ ${#TARGETS[@]} -gt 0 ] || die "no agent target selected; ask the user which agent(s) to install into, then re-run with --target <agent-skills-dir> (for example: --target ~/.workbuddy/skills)"
 
 PY_BIN="$(command -v python3 || command -v python || true)"
 [ -n "$PY_BIN" ] || die "python3/python is required"
@@ -266,31 +267,6 @@ if [ "$UPDATE" -eq 1 ]; then
     echo "Updating checkout with git pull --ff-only..."
     git -C "$REPO_ROOT" pull --ff-only
   fi
-fi
-
-# With no explicit --target, honor the repo's machine-readable agent list.
-if [ ${#TARGETS[@]} -eq 0 ]; then
-  TARGET_OUTPUT="$(
-    cd "$REPO_ROOT"
-    "$PY_BIN" -c '
-import json
-from pathlib import Path
-data = json.loads(Path("registry/bootstrap.json").read_text(encoding="utf-8"))
-targets = data.get("default_skill_targets", [])
-if not isinstance(targets, list) or not targets:
-    raise SystemExit("registry/bootstrap.json has no default_skill_targets")
-for target in targets:
-    if not isinstance(target, str) or not target:
-        raise SystemExit("invalid default_skill_targets entry")
-    print(target)
-'
-  )"
-  while IFS= read -r target; do
-    # Native Windows Python writes CRLF; Bash command substitution removes only
-    # the LF, so strip the remaining CR before using a target path.
-    target="${target%$'\r'}"
-    [ -n "$target" ] && TARGETS+=("${target/#\~/$HOME}")
-  done <<< "$TARGET_OUTPUT"
 fi
 
 INSTALL_ARGS=()

@@ -105,6 +105,7 @@ def check_skills(
     skills_registry: dict,
     selected_slugs: set[str] | None = None,
     target_dirs: list[str] | None = None,
+    target_scope: str | None = None,
 ) -> dict:
     """Check active skill linkage plus declared runtime dependencies."""
     def target_has_skill(path: Path) -> bool:
@@ -121,10 +122,31 @@ def check_skills(
     active_slugs = {s["slug"] for s in all_active}
     active = [s for s in all_active
               if selected_slugs is None or s["slug"] in selected_slugs]
-    configured_targets = (target_dirs if target_dirs is not None
-                          else bootstrap.get("default_skill_targets", []))
-    targets = [expand(t) for t in configured_targets]
-    existing_targets = [t for t in targets if t.is_dir()]
+    configured_targets = bootstrap.get("default_skill_targets", [])
+    configured_paths = [expand(t) for t in configured_targets]
+    if target_dirs is not None:
+        targets = [expand(t) for t in target_dirs]
+        existing_targets = [t for t in targets if t.is_dir()]
+        scope = target_scope or "explicit"
+    else:
+        # Do not turn unrelated pre-existing agent directories into a verdict
+        # about this checkout. Prefer hosts that already link to this repo;
+        # inspect every configured target only for fresh-install diagnostics.
+        candidates = [t for t in configured_paths if t.is_dir()]
+        linked_targets = []
+        for t in candidates:
+            for s in active:
+                dest = t / s["slug"]
+                if not is_linklike(dest):
+                    continue
+                try:
+                    if dest.resolve(strict=True) == (REPO_ROOT / s["collection_path"]).resolve():
+                        linked_targets.append(t)
+                        break
+                except OSError:
+                    continue
+        existing_targets = linked_targets or candidates
+        scope = "auto-linked" if linked_targets else "auto-all-existing"
 
     skills_out = []
     worst = "ok"
@@ -189,7 +211,8 @@ def check_skills(
                            "targets": states})
 
     return {"status": worst, "skills": skills_out,
-            "existing_targets": [str(t) for t in existing_targets]}
+            "existing_targets": [str(t) for t in existing_targets],
+            "target_scope": scope}
 
 
 def check_wiki(bootstrap: dict) -> dict:
@@ -388,6 +411,7 @@ def _worse(a: str, b: str) -> str:
 def build_report(
     requested_skills: list[str] | None = None,
     target_dirs: list[str] | None = None,
+    all_targets: bool = False,
 ) -> dict:
     bootstrap = load_json(BOOTSTRAP)
     skills_registry = load_json(SKILLS_REGISTRY)
@@ -401,12 +425,18 @@ def build_report(
     except SkillGraphError as exc:
         return {"fatal": f"skill graph invalid: {exc}"}
     selected_slugs = {s["slug"] for s in selection["skills"]}
+    if all_targets and target_dirs is None:
+        target_dirs = list(bootstrap.get("default_skill_targets", []))
+        target_scope = "all-configured"
+    else:
+        target_scope = "explicit" if target_dirs is not None else None
 
     browser = check_browser(bootstrap)
     components = {
         "repo_home": check_repo_home(bootstrap),
         "skills": check_skills(
-            bootstrap, skills_registry, selected_slugs, target_dirs=target_dirs
+            bootstrap, skills_registry, selected_slugs, target_dirs=target_dirs,
+            target_scope=target_scope,
         ),
         "wiki_registry": check_wiki(bootstrap),
         "browser": browser,
@@ -434,7 +464,7 @@ def render_human(report: dict) -> str:
 
     sk = c["skills"]
     lines.append(f"{_ICON[sk['status']]} skills       "
-                 f"{len(sk['skills'])} selected · targets: "
+                 f"{len(sk['skills'])} selected · scope: {sk.get('target_scope', 'unknown')} · targets: "
                  f"{', '.join(os.path.basename(os.path.dirname(t)) for t in sk['existing_targets']) or 'none'}")
     for s in sk["skills"]:
         lines.append(f"     {_ICON[s['status']]} {s['slug']}: {s['note']}")
@@ -488,11 +518,18 @@ def main() -> int:
         "--target",
         action="append",
         metavar="DIR",
-        help="check this agent skills directory instead of registry defaults (repeatable)",
+        help="check this user-selected agent skills directory (repeatable)",
+    )
+    ap.add_argument(
+        "--all-targets",
+        action="store_true",
+        help="inspect every configured agent target, including old copies and unrelated hosts",
     )
     args = ap.parse_args()
 
-    report = build_report(args.skills, target_dirs=args.target)
+    if args.target and args.all_targets:
+        ap.error("--target and --all-targets cannot be used together")
+    report = build_report(args.skills, target_dirs=args.target, all_targets=args.all_targets)
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:

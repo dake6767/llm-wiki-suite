@@ -54,13 +54,31 @@ class InstallCrLfTests(unittest.TestCase):
             self.assertNotIn("source missing", result.stdout)
             self.assertIn("my-llm-wiki: linking", result.stdout)
 
-    def test_bootstrap_strips_crlf_from_default_target_list(self):
+    def test_install_requires_an_explicit_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            temp = Path(tmp)
+            env = {**os.environ, "HOME": str(temp / "home")}
+            result = subprocess.run(
+                ["bash", str(INSTALL), "--dry-run"],
+                cwd=ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("no skill target selected", result.stderr)
+            self.assertFalse((temp / "home" / ".claude").exists())
+            self.assertFalse((temp / "home" / ".hermes").exists())
+
+    def test_bootstrap_handles_crlf_graph_output_with_selected_target(self):
         with tempfile.TemporaryDirectory() as tmp:
             temp = Path(tmp)
             env = self.make_crlf_python(temp)
             env["HOME"] = str(temp / "home")
+            target = temp / "home" / ".workbuddy" / "skills"
             result = subprocess.run(
-                ["bash", str(BOOTSTRAP), "--repo", str(ROOT), "--dry-run"],
+                ["bash", str(BOOTSTRAP), "--repo", str(ROOT), "--target", str(target), "--dry-run"],
                 cwd=ROOT,
                 env=env,
                 capture_output=True,

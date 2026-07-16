@@ -162,17 +162,19 @@ read_pages      read_raw         list_wiki_tree
 agent：
 
 ```text
-安装 https://github.com/dake6767/llm-wiki-suite 。只完成 checkout、skills、首个 Wiki 初始化和
-doctor；不要创建示例 RAW 或 ingest。Browser 优先使用 wiki.htmlgo.to release；HTMLgo 失败后才
-按 cn-mirrors 探测 GitHub 回退。
+安装 https://github.com/dake6767/llm-wiki-suite 。先问我需要安装到哪些 agent；只安装我明确
+选择的 skills 目录，不能因为目录存在就创建或修改其它 agent。然后完成 checkout、skills、首个
+Wiki 初始化和 doctor；不要创建示例 RAW 或 ingest。Browser 优先使用 wiki.htmlgo.to release；
+HTMLgo 失败后才按 cn-mirrors 探测 GitHub 回退。
 仅在两条 Release 路径都不可达时记录为 optional skip，不要重试或改走源码构建。
 ```
 
 ```text
-安装 https://gitee.com/dake6767/llm-wiki-suite 。只完成 checkout、skills、首个 Wiki 初始化和
-doctor；不要创建示例 RAW 或 ingest。Browser 优先使用 wiki.htmlgo.to release；HTMLgo 失败后才
-按 cn-mirrors 探测 GitHub 回退。仅在两条 Release 路径都不可达时记录为 optional skip，
-不要重试或改走源码构建。
+安装 https://gitee.com/dake6767/llm-wiki-suite 。先问我需要安装到哪些 agent；只安装我明确
+选择的 skills 目录，不能因为目录存在就创建或修改其它 agent。然后完成 checkout、skills、首个
+Wiki 初始化和 doctor；不要创建示例 RAW 或 ingest。Browser 优先使用 wiki.htmlgo.to release；
+HTMLgo 失败后才按 cn-mirrors 探测 GitHub 回退。仅在两条 Release 路径都不可达时记录为
+optional skip，不要重试或改走源码构建。
 ```
 
 agent 会复用已有 checkout，或安装到稳定目录 `~/.my-llm-wiki/suite`；随后同步 skills、
@@ -188,7 +190,8 @@ agent 会复用已有 checkout，或安装到稳定目录 `~/.my-llm-wiki/suite`
 curl -fsSLo bootstrap.sh \
   https://raw.githubusercontent.com/dake6767/llm-wiki-suite/main/bootstrap.sh
 less bootstrap.sh
-bash bootstrap.sh
+# 将 WorkBuddy 替换为你明确选择的 agent skills 目录
+bash bootstrap.sh --target ~/.workbuddy/skills
 ```
 
 中国大陆入口：
@@ -198,21 +201,22 @@ curl -fsSLo bootstrap.sh \
   https://gitee.com/dake6767/llm-wiki-suite/raw/main/bootstrap.sh
 less bootstrap.sh
 bash bootstrap.sh \
-  --repo-url https://gitee.com/dake6767/llm-wiki-suite.git
+  --repo-url https://gitee.com/dake6767/llm-wiki-suite.git \
+  --target ~/.workbuddy/skills
 ```
 
-默认安装使用软链，checkout 是长期 source of truth，不应放在临时目录。脚本会将 active
-skills 同步到已存在的 Codex、Claude、Hermes、Agents 和 WorkBuddy skill 目录。未显式
-指定 `--repo-url` 时，fresh install 会短时探测 GitHub；不可达时优先 Gitee，clone 失败时
-再尝试另一入口。已有 checkout 始终沿其 `origin` 更新。
+默认安装使用软链，checkout 是长期 source of truth，不应放在临时目录。脚本只同步到用户
+明确传入的 `--target`，不会根据预先存在的 Codex、Claude、Hermes、Agents 或 WorkBuddy
+目录擅自创建或修改 skills。未显式指定 `--repo-url` 时，fresh install 会短时探测 GitHub；
+不可达时优先 Gitee，clone 失败时再尝试另一入口。已有 checkout 始终沿其 `origin` 更新。
 
 常用选项：
 
 ```bash
-bash bootstrap.sh my-llm-wiki-video   # 只选视频能力及其依赖
-bash bootstrap.sh my-llm-wiki-x       # 只选 X 能力及其依赖
-bash bootstrap.sh --dry-run           # 预览，不修改
-bash bootstrap.sh --update            # clean checkout 上执行 ff-only 更新
+bash bootstrap.sh --target ~/.workbuddy/skills my-llm-wiki-video  # 只选视频能力及其依赖
+bash bootstrap.sh --target ~/.workbuddy/skills my-llm-wiki-x      # 只选 X 能力及其依赖
+bash bootstrap.sh --target ~/.workbuddy/skills --dry-run          # 预览，不修改
+bash bootstrap.sh --target ~/.workbuddy/skills --update           # clean checkout 上执行 ff-only 更新
 ```
 
 ### 安装 Browser
@@ -231,7 +235,8 @@ python3 scripts/install-browser.py --open
 
 release 提供 macOS Apple Silicon / Intel、Windows 安装包与 portable zip，以及 Linux
 AppImage / deb / rpm。当前产物尚未完成 Apple 公证和 Windows 代码签名，浏览器下载后
-首次运行可能需要在系统安全提示中手动放行。
+首次运行可能需要在系统安全提示中手动放行。Windows 下传入 `--open` 会直接启动下载的
+`setup.exe` / MSI；不传时脚本会打印安装程序路径，保留由用户手动启动的选择。
 
 安装后可按明确授权注册本地 MCP：
 
@@ -242,9 +247,9 @@ python3 scripts/install-browser.py --register-mcp
 ### 检查安装
 
 ```bash
-python3 scripts/doctor.py
-python3 scripts/doctor.py --json
-python3 scripts/doctor.py --skills my-llm-wiki-video
+python3 scripts/doctor.py --target ~/.workbuddy/skills
+python3 scripts/doctor.py --target ~/.workbuddy/skills --json
+python3 scripts/doctor.py --target ~/.workbuddy/skills --skills my-llm-wiki-video
 ```
 
 `doctor` 一次检查 skill 链接、运行时依赖、Wiki 注册表、Browser 可达性、MCP 注册和所选
@@ -296,16 +301,16 @@ Browser 是可选组件：没有 Browser 时，采集、编译、维护和本地
 已经进入仓库开发时，可以用底层安装命令精细控制目标：
 
 ```bash
-scripts/install.sh --dry-run
-scripts/install.sh
-scripts/install.sh my-llm-wiki-video
+scripts/install.sh --target ~/.workbuddy/skills --dry-run
+scripts/install.sh --target ~/.workbuddy/skills
+scripts/install.sh --target ~/.workbuddy/skills my-llm-wiki-video
 scripts/install.sh --target ~/.codex/skills --target ~/.agents/skills
 ```
 
 提交前至少运行：
 
 ```bash
-python3 scripts/doctor.py --json
+python3 scripts/doctor.py --target ~/.workbuddy/skills --json
 python3 scripts/check_approval_safety.py
 python3 -m unittest scripts.test_approval_safe -v
 ```

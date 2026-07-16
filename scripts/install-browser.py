@@ -7,7 +7,7 @@ Default behavior:
 3. Download the best matching Browser asset for this OS/arch. On Windows the
    portable zip is preferred over setup.exe and auto-extracted next to the
    download — extraction is the whole install.
-4. Optionally open the downloaded installer on macOS.
+4. Optionally open the downloaded installer on macOS or Windows.
 
 If no release or matching asset exists, the script exits with a clear message.
 Use --fallback-source to build the Tauri app from source as a developer fallback.
@@ -290,14 +290,38 @@ def maybe_extract_zip(path: Path, dry_run: bool) -> Path | None:
 
 
 def maybe_open(path: Path, dry_run: bool) -> None:
-    if platform.system().lower() != "darwin":
+    """Open a release artifact when the platform has a native installer UI."""
+    system = platform.system().lower()
+    if system == "darwin":
+        if path.suffix.lower() != ".dmg":
+            return
+        if dry_run:
+            print(f"[dry-run] open {path}")
+            return
+        subprocess.run(["open", str(path)], check=False)
         return
-    if not path.name.lower().endswith(".dmg"):
+
+    if system != "windows":
+        return
+
+    # A GitHub fallback portable zip has already been extracted by this point.
+    # Start the app inside it; release-first htmlgo downloads are setup.exe/MSI.
+    target = path
+    if path.is_dir():
+        target = next(iter(sorted(path.rglob("*.exe"))), None)
+        if target is None:
+            print(f"no Windows executable found in extracted archive: {path}", file=sys.stderr)
+            return
+    if target.suffix.lower() not in {".exe", ".msi"}:
         return
     if dry_run:
-        print(f"[dry-run] open {path}")
+        print(f"[dry-run] open {target}")
         return
-    subprocess.run(["open", str(path)], check=False)
+    startfile = getattr(os, "startfile", None)
+    if startfile is None:
+        print(f"run this to start the installer: {target}", file=sys.stderr)
+        return
+    startfile(str(target))
 
 
 def expand(path: str) -> Path:
@@ -578,7 +602,11 @@ def main() -> int:
         default="~/Downloads",
         help="Where to save the release asset. Default: ~/Downloads.",
     )
-    parser.add_argument("--open", action="store_true", help="Open the downloaded macOS DMG.")
+    parser.add_argument(
+        "--open",
+        action="store_true",
+        help="Open the downloaded installer (macOS DMG or Windows EXE/MSI).",
+    )
     parser.add_argument(
         "--fallback-source",
         action="store_true",
@@ -639,9 +667,11 @@ def main() -> int:
         print(f"release source: {source}")
 
         dest = download_asset(asset, Path(args.download_dir).expanduser(), args.dry_run)
-        maybe_extract_zip(dest, args.dry_run)
+        open_target = maybe_extract_zip(dest, args.dry_run) or dest
         if args.open:
-            maybe_open(dest, args.dry_run)
+            maybe_open(open_target, args.dry_run)
+        elif platform.system().lower() == "windows" and dest.suffix.lower() in {".exe", ".msi"}:
+            print(f"run this to start the installer: {dest}")
         if not args.skip_mcp:
             propose_mcp_registration(config, dry_run=args.dry_run)
         return 0

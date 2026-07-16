@@ -21,6 +21,24 @@ GITEE_BOOTSTRAP = "https://gitee.com/dake6767/llm-wiki-suite/raw/main/bootstrap.
 
 
 class BootstrapMirrorTests(unittest.TestCase):
+    def test_requires_user_selected_target_before_reusing_or_cloning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            env = os.environ.copy()
+            env["HOME"] = str(home)
+            completed = subprocess.run(
+                ["bash", str(BOOTSTRAP), "--repo", str(ROOT), "--dry-run"],
+                cwd=ROOT,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("no agent target selected", completed.stderr)
+        self.assertNotIn("Syncing skills", completed.stdout)
+
     def test_registry_declares_canonical_and_gitee_mirror(self) -> None:
         config = json.loads(REGISTRY.read_text(encoding="utf-8"))
         self.assertEqual(config["repo_url"], GITHUB_REPO)

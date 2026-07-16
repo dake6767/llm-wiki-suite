@@ -17,6 +17,13 @@ SPEC.loader.exec_module(installer)
 
 
 class McpRegistrationTests(unittest.TestCase):
+    def test_open_windows_setup_with_native_installer_ui(self):
+        setup = Path("C:/Users/Test/Downloads/browser-setup.exe")
+        with mock.patch.object(installer.platform, "system", return_value="Windows"), \
+             mock.patch.object(installer.os, "startfile", create=True) as startfile:
+            installer.maybe_open(setup, dry_run=False)
+        startfile.assert_called_once_with(str(setup))
+
     def test_infers_github_fallback_repo_from_gitee_origin(self):
         with mock.patch.object(
             installer, "run", return_value="https://gitee.com/dake6767/llm-wiki-suite.git"

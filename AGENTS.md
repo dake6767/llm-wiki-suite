@@ -16,7 +16,8 @@ Canonical/global:
 curl -fsSLo bootstrap.sh \
   https://raw.githubusercontent.com/dake6767/llm-wiki-suite/main/bootstrap.sh
 less bootstrap.sh
-bash bootstrap.sh
+# after the user explicitly selects WorkBuddy (example)
+bash bootstrap.sh --target ~/.workbuddy/skills
 ```
 
 Mainland China:
@@ -26,7 +27,8 @@ curl -fsSLo bootstrap.sh \
   https://gitee.com/dake6767/llm-wiki-suite/raw/main/bootstrap.sh
 less bootstrap.sh
 bash bootstrap.sh \
-  --repo-url https://gitee.com/dake6767/llm-wiki-suite.git
+  --repo-url https://gitee.com/dake6767/llm-wiki-suite.git \
+  --target ~/.workbuddy/skills
 ```
 
 It implements steps 1–3 below: reuse/clone the permanent checkout, sync active
@@ -69,18 +71,19 @@ clean.
 
 ## 2. Install Skills
 
-Install active skills into the user's agent skill directories:
+Before creating or modifying any skills directory, ask the user which installed
+agent host(s) they want to use. Do not infer consent from the presence of
+`~/.codex`, `~/.claude`, `~/.hermes`, `~/.agents`, or `~/.workbuddy`; those
+directories may be stale configuration for a host the user no longer uses.
+Install only the explicitly selected targets, for example:
 
 ```bash
 scripts/install.sh \
-  --target ~/.codex/skills \
-  --target ~/.claude/skills \
-  --target ~/.hermes/skills \
-  --target ~/.agents/skills \
   --target ~/.workbuddy/skills
 ```
 
-Skip targets that do not exist only if the user clearly does not use that agent.
+Never create an empty agent home or skills directory merely because it appears
+in `default_skill_targets`. The user may select multiple `--target` values.
 
 The script works on Windows under Git Bash: it normalizes MSYS paths before
 native Windows Python resolves them, and creates links as PowerShell directory
@@ -95,9 +98,9 @@ requested plus their `bundles`; runtime-only `requires` are installed but do not
 contribute unrelated capability profiles. Examples:
 
 ```bash
-python3 scripts/doctor.py --skills my-llm-wiki-x
-python3 scripts/doctor.py --skills my-llm-wiki-video
-python3 scripts/doctor.py                       # default full-suite check
+python3 scripts/doctor.py --target ~/.workbuddy/skills --skills my-llm-wiki-x
+python3 scripts/doctor.py --target ~/.workbuddy/skills --skills my-llm-wiki-video
+python3 scripts/doctor.py --target ~/.workbuddy/skills
 ```
 
 Read the `toolchain` component. `unavailable` means the selected capability has
@@ -176,7 +179,7 @@ not Browser assets. A third-party GitHub relay is a public-asset, user-approved
 last resort with the `cn-mirrors` trust caveat — never make it the default route.
 
 On Windows the htmlgo manifest supplies the release `*-setup.exe` / MSI, with
-`*-setup.exe` preferred; run the downloaded installer normally. GitHub fallback
+`*-setup.exe` preferred; `--open` launches the downloaded installer normally. GitHub fallback
 prefers the portable zip and auto-extracts it — extraction IS the install; just
 run the exe inside. It needs the WebView2 runtime, which Windows 10/11 ships by
 default; only fall back to setup.exe on machines without WebView2 (the installer
@@ -200,9 +203,13 @@ Run the suite-level health check — one shot covering skills linkage, the wiki
 registry, Browser reachability, and capture adapters:
 
 ```bash
-python3 scripts/doctor.py          # human summary
-python3 scripts/doctor.py --json   # machine-readable (for scripting / watch)
+python3 scripts/doctor.py --target ~/.workbuddy/skills
+python3 scripts/doctor.py --target ~/.workbuddy/skills --json
 ```
+
+Without `--target`, doctor inspects only hosts that already have canonical links
+to this checkout; use `--all-targets` only to audit old copies and every
+configured host.
 
 Each component reports `ok` / `warn` / `error` / `skip`; the process exits
 non-zero only on `error` (skills not linked into any agent dir, a declared skill

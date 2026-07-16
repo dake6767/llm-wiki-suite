@@ -15,16 +15,13 @@
 #   --copy          Copy files instead of symlinking (isolated per-agent copy).
 #   --force         Replace an existing real dir/symlink at the target
 #                   (the old one is moved to <dest>.bak-YYYYmmddHHMMSS).
-#   --target DIR    Install target dir (repeatable). Overrides the defaults.
+#   --target DIR    User-selected install target dir (repeatable, required).
 #   --dry-run       Print the plan; change nothing.
 #   -h, --help      Show this help.
 #
-# Defaults (when no --target given):
-#   ~/.claude/skills  ~/.hermes/skills
-#
 # Examples:
-#   scripts/install.sh                      # symlink all active skills to defaults
-#   scripts/install.sh --dry-run            # preview
+#   scripts/install.sh --target ~/.workbuddy/skills  # symlink all active skills
+#   scripts/install.sh --target ~/.workbuddy/skills --dry-run  # preview
 #   scripts/install.sh my-llm-wiki          # facade + bundled video/X leaf skills
 #   scripts/install.sh my-llm-wiki-video    # leaf + required my-llm-wiki core
 #   scripts/install.sh --target ~/.codex/skills --target ~/.agents/skills
@@ -61,9 +58,10 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-if [ ${#TARGETS[@]} -eq 0 ]; then
-  TARGETS=("$HOME/.claude/skills" "$HOME/.hermes/skills")
-fi
+[ ${#TARGETS[@]} -gt 0 ] || {
+  echo "no skill target selected; pass --target <agent-skills-dir> for each agent the user chose" >&2
+  exit 2
+}
 
 [ -f "$REGISTRY" ] || { echo "registry not found: $REGISTRY" >&2; exit 1; }
 
