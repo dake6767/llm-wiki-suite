@@ -268,12 +268,17 @@ fn is_link_or_junction(meta: &std::fs::Metadata) -> bool {
 }
 
 fn git_output(dir: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .ok()?;
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(dir).args(args);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        // GUI 进程（无控制台）spawn 控制台子进程时，Windows 会为其新开 conhost
+        // 窗口——托盘轮询 git 时黑窗反复闪现。CREATE_NO_WINDOW 抑制之。
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let out = cmd.output().ok()?;
     if !out.status.success() {
         return None;
     }
