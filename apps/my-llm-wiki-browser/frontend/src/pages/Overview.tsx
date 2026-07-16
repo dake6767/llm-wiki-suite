@@ -7,6 +7,7 @@ import {
   type Page,
 } from "../api/client";
 import Markdown from "../lib/Markdown";
+import FirstCaptureGuide from "../components/FirstCaptureGuide";
 
 // 阅读区落地页：本卷报头 + overview 概览。类目浏览已由中栏 PageList 承担。
 export default function Overview() {
@@ -63,6 +64,9 @@ export default function Overview() {
           </p>
         )}
       </header>
+
+      {/* 空库首次引导：只在编译层无内容页时出现，纯前端叠加，不写 wiki 文件 */}
+      <FirstCaptureGuide wiki={wiki} />
 
       {overview ? (
         <article>
