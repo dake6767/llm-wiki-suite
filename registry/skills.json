@@ -1,8 +1,8 @@
 {
   "version": 3,
-  "pack_version": "1.0.5",
-  "pack_notes": "RAW 按 source bucket 全局 original_id 去重；X 单帖抓取前查重，并强制使用独立、固定的临时输出目录。",
-  "updated_at": "2026-07-14",
+  "pack_version": "1.0.6",
+  "pack_notes": "非中文视频 ASR 改用随包提供的 faster-whisper runner（替换 whisper-ctranslate2）；SenseVoice 中文路由在 doctor 与安装协议中可见。",
+  "updated_at": "2026-07-16",
   "skills": [
     {
       "slug": "cn-mirrors",
