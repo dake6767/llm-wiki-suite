@@ -342,8 +342,10 @@ def assess_profiles(
                 asr_desc = f"zh→SenseVoice, else {asr}"
             elif have("sensevoice"):
                 asr_desc = "SenseVoice (Chinese only; add Whisper for other languages)"
+            elif asr:
+                asr_desc = f"{asr} (Chinese routes to SenseVoice — not installed)"
             else:
-                asr_desc = asr or "none"
+                asr_desc = "none"
 
             caption_path = have("opencli") or have("yt-dlp")
             audio_fallback = have("yt-dlp") and have("ffmpeg") and asr_any

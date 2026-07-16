@@ -107,6 +107,54 @@ class ToolchainTests(unittest.TestCase):
         self.assertNotIn("opencli", tools)
         self.assertTrue({"yt-dlp", "ffmpeg", "sensevoice", "faster-whisper"} <= tools)
 
+    def test_missing_sensevoice_is_always_surfaced(self) -> None:
+        report = preflight.build_report(
+            ["capture.video"],
+            self.catalog_path,
+            tools={
+                "opencli": "/bin/opencli",
+                "yt-dlp": "/bin/yt-dlp",
+                "ffmpeg": "/bin/ffmpeg",
+                "sensevoice": "",
+                "faster-whisper": "/bin/python",
+                "whisper": "",
+            },
+            github_ok=True,
+        )
+        capability = report["capabilities"]["capture.video"]
+        self.assertEqual(capability["status"], "ok")
+        self.assertIn("SenseVoice", capability["asr"])
+        self.assertIn("sensevoice", {r["tool"] for r in report["recommendations"]})
+
+    def test_doctor_render_shows_asr_routing(self) -> None:
+        import doctor
+
+        stub = lambda: {"status": "ok", "detail": "", "root": ""}  # noqa: E731
+        report = {
+            "overall": "ok",
+            "components": {
+                "repo_home": stub(),
+                "skills": {"status": "ok", "skills": [], "existing_targets": []},
+                "wiki_registry": stub(),
+                "browser": stub(),
+                "mcp": stub(),
+                "toolchain": {
+                    "status": "ok",
+                    "profiles": ["capture.video"],
+                    "capabilities": {
+                        "capture.video": {
+                            "status": "ok",
+                            "via": "captions first, audio/ASR fallback",
+                            "asr": "zh→SenseVoice, else faster-whisper",
+                        },
+                    },
+                    "recommendations": [],
+                },
+            },
+        }
+        rendered = doctor.render_human(report)
+        self.assertIn("asr routing: zh→SenseVoice, else faster-whisper", rendered)
+
     def test_doc_profile_uses_cn_variant_when_network_is_restricted(self) -> None:
         report = preflight.build_report(
             ["capture.doc"],
