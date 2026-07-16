@@ -8,6 +8,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -52,6 +53,24 @@ class DoctorTargetScopeTests(unittest.TestCase):
         self.assertEqual(audited["target_scope"], "all-configured")
         self.assertEqual(audited["status"], "warn")
         self.assertEqual(audited["skills"][0]["targets"][str(copied_target)], "copy")
+
+
+class DoctorExpandTests(unittest.TestCase):
+    """--target may arrive shell-expanded as an MSYS path from Git Bash."""
+
+    def test_msys_target_normalized_on_windows(self):
+        with mock.patch("os.name", "nt"):
+            self.assertEqual(
+                doctor.expand("/c/Users/x/.workbuddy/skills"),
+                Path("C:/Users/x/.workbuddy/skills"),
+            )
+
+    def test_msys_like_target_untouched_on_posix(self):
+        with mock.patch("os.name", "posix"):
+            self.assertEqual(
+                doctor.expand("/c/Users/x/.workbuddy/skills"),
+                Path("/c/Users/x/.workbuddy/skills"),
+            )
 
 
 if __name__ == "__main__":

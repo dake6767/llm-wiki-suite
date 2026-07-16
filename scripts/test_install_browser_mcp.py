@@ -201,5 +201,46 @@ class McpRegistrationTests(unittest.TestCase):
             self.assertNotIn("npx", encoded)
 
 
+class ExpandShellPathTests(unittest.TestCase):
+    """CLI path args may arrive shell-expanded as MSYS /c/... from Git Bash."""
+
+    def test_msys_drive_path_normalized_on_windows(self):
+        with mock.patch("os.name", "nt"):
+            self.assertEqual(
+                installer.expand("/c/Users/x/.my-llm-wiki/browser"),
+                Path("C:/Users/x/.my-llm-wiki/browser"),
+            )
+
+    def test_msys_like_path_untouched_on_posix(self):
+        with mock.patch("os.name", "posix"):
+            self.assertEqual(installer.expand("/c/Users/x/y"), Path("/c/Users/x/y"))
+
+
+class McpPromptNonInteractiveTests(unittest.TestCase):
+    def test_eof_at_prompt_is_decline_not_crash(self):
+        row = {
+            "host": "hermes",
+            "registered": False,
+            "transport": "",
+            "command": "hermes mcp add my-llm-wiki",
+            "manual_config": None,
+            "config_path": "",
+            "note": "",
+            "bridge_available": True,
+            "bridge_script": "bridge.py",
+            "cli_available": True,
+            "cli": "hermes",
+            "argv": ["hermes", "mcp", "add"],
+            "unregister_argv": [],
+        }
+        with mock.patch.object(installer, "build_mcp_commands", return_value=[row]), \
+             mock.patch.object(installer.sys.stdin, "isatty", return_value=True), \
+             mock.patch.object(installer.sys.stdout, "isatty", return_value=True), \
+             mock.patch("builtins.input", side_effect=EOFError), \
+             mock.patch.object(installer.subprocess, "run") as run:
+            installer.propose_mcp_registration({}, assume_yes=False, dry_run=False)
+        run.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -57,7 +57,9 @@ _spec.loader.exec_module(install_browser)
 
 
 def expand(p: str) -> Path:
-    return Path(os.path.expanduser(p))
+    # Reuse the installer's expand: it normalizes Git Bash /c/... paths on
+    # Windows so a shell-expanded --target is found by native Python.
+    return install_browser.expand(p)
 
 
 def load_json(path: Path):

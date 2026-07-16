@@ -7,11 +7,11 @@ import re
 from pathlib import Path
 
 
-_MSYS_DRIVE_PATH = re.compile(r"^/([A-Za-z])(?:/(.*))?$")
+_MSYS_DRIVE_PATH = re.compile(r"^(?:/cygdrive)?/([A-Za-z])(?:/(.*))?$")
 
 
 def native_path_text(value: str | os.PathLike[str], *, os_name: str | None = None) -> str:
-    """Translate Git-Bash ``/c/...`` paths for native Windows Python.
+    """Translate Git-Bash ``/c/...`` / ``/cygdrive/c/...`` paths for native Windows Python.
 
     Git Bash expands ``~`` to an MSYS path before invoking a native executable.
     ``pathlib`` otherwise interprets ``/c/Users/...`` as ``C:\\c\\Users\\...``.

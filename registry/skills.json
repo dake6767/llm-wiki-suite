@@ -1,6 +1,6 @@
 {
   "version": 3,
-  "pack_version": "1.0.3",
+  "pack_version": "1.0.4",
   "pack_notes": "RAW 按 source bucket 全局 original_id 去重；X 单帖抓取前查重，并强制使用独立、固定的临时输出目录。",
   "updated_at": "2026-07-14",
   "skills": [

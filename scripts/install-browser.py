@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import importlib.util
 import json
 import os
 import platform
@@ -33,6 +34,14 @@ from urllib.parse import unquote, urlparse, urlunparse
 ROOT = Path(__file__).resolve().parent.parent
 BOOTSTRAP = ROOT / "registry" / "bootstrap.json"
 NETWORK_PROBE = ROOT / "skills" / "cn-mirrors" / "scripts" / "net_probe.py"
+
+# Shared shell-path normalizer (Git Bash /c/... -> C:/... on Windows only;
+# POSIX systems keep such paths untouched). Same module init_wiki.py uses.
+_PC_SPEC = importlib.util.spec_from_file_location(
+    "path_compat", ROOT / "skills" / "my-llm-wiki" / "scripts" / "path_compat.py"
+)
+path_compat = importlib.util.module_from_spec(_PC_SPEC)
+_PC_SPEC.loader.exec_module(path_compat)
 
 
 class ReleaseSourcesUnavailable(RuntimeError):
@@ -325,7 +334,9 @@ def maybe_open(path: Path, dry_run: bool) -> None:
 
 
 def expand(path: str) -> Path:
-    return Path(os.path.expandvars(os.path.expanduser(path)))
+    # Git Bash pre-expands ~ into an MSYS /c/... path that native Windows
+    # Python would resolve as C:\c\...; normalize before touching the filesystem.
+    return Path(path_compat.native_path_text(os.path.expandvars(os.path.expanduser(path))))
 
 
 def resolve_mcp_port(mcp: dict) -> int:
@@ -501,7 +512,7 @@ def propose_mcp_registration(config: dict, assume_yes: bool = False, dry_run: bo
     if not rows:
         return
     print("\nMCP registration (optional — skills work without it via the CLI fallback):")
-    interactive = sys.stdin.isatty() and not assume_yes
+    interactive = sys.stdin.isatty() and sys.stdout.isatty() and not assume_yes
     for row in rows:
         label = f"  [{row['host']}]"
         migrating = row["registered"] and row["transport"] in {"http-loopback", "stdio-external"}
@@ -538,7 +549,12 @@ def propose_mcp_registration(config: dict, assume_yes: bool = False, dry_run: bo
             print("          [dry-run] not executed")
             continue
         if interactive:
-            answer = input(f"          register {row['host']} now? [y/N] ").strip().lower()
+            # isatty() can lie in pseudo-TTY/background environments; a dead
+            # stdin must read as "decline", never crash a finished install.
+            try:
+                answer = input(f"          register {row['host']} now? [y/N] ").strip().lower()
+            except (EOFError, OSError):
+                answer = ""
             if answer not in {"y", "yes"}:
                 print("          skipped")
                 continue
@@ -666,7 +682,7 @@ def main() -> int:
         )
         print(f"release source: {source}")
 
-        dest = download_asset(asset, Path(args.download_dir).expanduser(), args.dry_run)
+        dest = download_asset(asset, expand(args.download_dir), args.dry_run)
         open_target = maybe_extract_zip(dest, args.dry_run) or dest
         if args.open:
             maybe_open(open_target, args.dry_run)

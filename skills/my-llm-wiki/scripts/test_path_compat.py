@@ -13,6 +13,12 @@ class NativePathTextTests(unittest.TestCase):
             "C:/Users/simplelife67/wikis/demo",
         )
 
+    def test_translates_cygdrive_path_on_windows(self):
+        self.assertEqual(
+            native_path_text("/cygdrive/c/Users/simplelife67/wikis/demo", os_name="nt"),
+            "C:/Users/simplelife67/wikis/demo",
+        )
+
     def test_preserves_native_windows_path(self):
         value = "C:/Users/simplelife67/wikis/demo"
         self.assertEqual(native_path_text(value, os_name="nt"), value)
