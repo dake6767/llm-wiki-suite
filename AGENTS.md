@@ -193,15 +193,22 @@ consent, then rerun doctor. `opencli` logins are per-platform and one-time;
 surface `opencli <platform> login` only when the first real capture needs it.
 
 `opencli` browser adapters additionally require the OpenCLI Browser Bridge
-Chrome extension. After the CLI postcheck passes, offer to stage it with
+Chrome extension. The moment the CLI postcheck passes, present the staging
+offer in the same reply that reports the install result — do not defer it to
+a later question or a separate turn; an install summary that omits this offer
+is incomplete. Doctor mirrors the obligation as the `opencli_extension`
+component: while it reports `warn`, the offer is unmet and must be
+re-presented, never skipped. Staging runs
 `python3 scripts/opencli_extension.py` — a consented
 network download of the official `opencli-extension-v*.zip` release asset
 into `~/.my-llm-wiki/opencli-extension/`. Pass `--mirror-prefix` only when
 github.com is unreachable, choosing the accelerator at runtime per
 `cn-mirrors`; never hardcode one. Then relay the script's printed
 `chrome://extensions` steps verbatim: loading the unpacked folder is always
-the user's manual browser action, and `opencli doctor` verifies the bridge
-afterwards. On macOS and Windows, also mention the official OpenCLIApp
+the user's manual browser action, and `opencli doctor` remains the sole
+authority on the live bridge (a Chrome Web Store install satisfies the
+requirement without any staged folder). On macOS and Windows, also mention
+the official OpenCLIApp
 desktop bundle (https://opencli.info/download): it ships the CLI with a
 menu-bar manager and login keep-alive, but it is a manual GUI install, still
 requires the same extension, and the automated install route in this
