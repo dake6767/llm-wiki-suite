@@ -569,6 +569,15 @@ def render_human(report: dict) -> str:
     else:
         profiles = ", ".join(tc.get("profiles", [])) or "none"
         lines.append(f"{_ICON[tc['status']]} toolchain    profiles: {profiles}")
+        # Full tool inventory, present or not: consent lists are transcribed
+        # from this report, and a tool that never appears cannot be missed
+        # silently (a live agent run dropped required-but-missing markitdown).
+        if tc.get("tools"):
+            inventory = " · ".join(
+                f"{name} {'✓' if info.get('status') == 'ok' else '✗ missing'}"
+                for name, info in tc["tools"].items()
+            )
+            lines.append(f"     tools: {inventory}")
         for profile, info in tc.get("capabilities", {}).items():
             cap_icon = _ICON["ok"] if info.get("status") == "ok" else _ICON["warn"]
             detail = info.get("via") or info.get("note") or ""
