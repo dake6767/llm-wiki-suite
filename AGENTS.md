@@ -172,7 +172,17 @@ Interpret capability states exactly:
 - doctor `action-required` / exit 3: show the structured recipe and project
   home, explain the affected capability, and ask for consent.
 
-Never install a recommended tool silently. After consent, execute each reported
+Never install a recommended tool silently. The consent list you present is a
+verbatim transcription of the report's `recommendations` array: every
+reported row with its stated priority, no filtering, no re-ranking, and no
+dropping rows that look unrelated to the capture the user happens to be
+asking about (`markitdown` guards `capture.doc` even when the first capture
+is a web page). Count your rows against the report before presenting — a
+consent list that omits any reported row is invalid. Relay the doctor
+`tools:` inventory line alongside it, so tools that are already installed
+are visibly satisfied rather than silently absent, and append the Browser
+Bridge extension row described below to this same list. After consent,
+execute each reported
 argv array directly with an argv-capable runner, apply only its reported `env`,
 enforce its exact `step_timeout_seconds`, and run its `postcheck` with
 `postcheck_timeout_seconds`. All reported commands are non-interactive; do not

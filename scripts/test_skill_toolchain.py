@@ -166,6 +166,36 @@ class ToolchainTests(unittest.TestCase):
         rendered = doctor.render_human(report)
         self.assertIn("asr routing: zh→SenseVoice, else faster-whisper", rendered)
 
+    def test_doctor_render_lists_every_tool_present_or_missing(self) -> None:
+        import doctor
+
+        stub = lambda: {"status": "ok", "detail": "", "root": ""}  # noqa: E731
+        report = {
+            "state": "ready",
+            "overall": "ok",
+            "components": {
+                "repo_home": stub(),
+                "skills": {
+                    "status": "ok", "skills": [], "existing_targets": [],
+                    "target_scope": "explicit",
+                },
+                "wiki_registry": stub(),
+                "browser": stub(),
+                "toolchain": {
+                    "status": "warn",
+                    "profiles": ["capture.web", "capture.doc"],
+                    "tools": {
+                        "opencli": {"status": "ok", "path": "/bin/opencli"},
+                        "markitdown": {"status": "missing", "path": ""},
+                    },
+                    "capabilities": {},
+                    "recommendations": [],
+                },
+            },
+        }
+        rendered = doctor.render_human(report)
+        self.assertIn("tools: opencli ✓ · markitdown ✗ missing", rendered)
+
     def test_doc_profile_uses_cn_variant_when_network_is_restricted(self) -> None:
         report = preflight.build_report(
             ["capture.doc"],
