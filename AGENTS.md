@@ -206,9 +206,12 @@ github.com is unreachable, choosing the accelerator at runtime per
 `cn-mirrors`; never hardcode one. Then relay the script's printed
 `chrome://extensions` steps verbatim: loading the unpacked folder is always
 the user's manual browser action, and `opencli doctor` remains the sole
-authority on the live bridge (a Chrome Web Store install satisfies the
-requirement without any staged folder). On macOS and Windows, also mention
-the official OpenCLIApp
+authority on the live bridge. Staging plus manual load is the default path
+for every user — do not steer users to the Chrome Web Store, which
+mainland-China networks generally cannot reach. (An overseas user who did
+install from the store leaves no staged folder; that edge case is why the
+doctor signal is a `warn` rather than `action-required`.) On macOS and
+Windows, also mention the official OpenCLIApp
 desktop bundle (https://opencli.info/download): it ships the CLI with a
 menu-bar manager and login keep-alive, but it is a manual GUI install, still
 requires the same extension, and the automated install route in this

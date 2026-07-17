@@ -299,7 +299,8 @@ def emit_human(report: dict) -> None:
         print(f"  {index}. {step}")
     print()
     print("Keep the staged folder in place; Chrome loads the extension from it.")
-    print("If the Chrome Web Store is reachable, installing from it is equivalent:")
+    print("Chrome Web Store alternative (usually NOT reachable from mainland-China")
+    print("networks; the staged folder above is the default path):")
     print(f"  {report['web_store']}")
 
 
