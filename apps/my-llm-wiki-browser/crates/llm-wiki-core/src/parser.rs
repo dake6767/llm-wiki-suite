@@ -27,14 +27,18 @@ pub fn parse_file(path: &Path) -> Result<ParsedMarkdown> {
 }
 
 pub fn parse_markdown(text: &str) -> Result<ParsedMarkdown> {
-    if !text.starts_with("---\n") {
+    // Windows-side agents write CRLF markdown; Obsidian and the Python suite
+    // tooling both tolerate it, so the fences must accept \r\n as well as \n.
+    let Some(rest) = text
+        .strip_prefix("---\n")
+        .or_else(|| text.strip_prefix("---\r\n"))
+    else {
         return Ok(ParsedMarkdown {
             frontmatter: BTreeMap::new(),
             body: text.to_string(),
         });
-    }
+    };
 
-    let rest = &text[4..];
     let Some(end) = rest.find("\n---") else {
         return Ok(ParsedMarkdown {
             frontmatter: BTreeMap::new(),
@@ -42,7 +46,7 @@ pub fn parse_markdown(text: &str) -> Result<ParsedMarkdown> {
         });
     };
 
-    let yaml = &rest[..end];
+    let yaml = rest[..end].trim_end_matches('\r');
     let after_marker = &rest[end + "\n---".len()..];
     let body = after_marker
         .strip_prefix("\r\n")
@@ -183,6 +187,18 @@ mod tests {
         let parsed = parse_markdown("---\ntitle: Claude\ntags: [ai, agent]\n---\nbody").unwrap();
         assert_eq!(parsed.body, "body");
         assert_eq!(parsed.frontmatter["title"], "Claude");
+    }
+
+    #[test]
+    fn parse_crlf_frontmatter() {
+        let parsed = parse_markdown(
+            "---\r\ntype: entity\r\ntitle: 长征十号乙\r\ntags: [中国航天, 可重复使用火箭]\r\n---\r\n\r\n# 长征十号乙\r\nbody",
+        )
+        .unwrap();
+        assert_eq!(parsed.frontmatter["title"], "长征十号乙");
+        assert_eq!(parsed.frontmatter["type"], "entity");
+        assert_eq!(parsed.frontmatter["tags"][0], "中国航天");
+        assert!(parsed.body.starts_with("\r\n# 长征十号乙"));
     }
 
     #[test]
