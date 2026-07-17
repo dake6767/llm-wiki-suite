@@ -17,9 +17,14 @@ itself; run it from the suite checkout (`~/.my-llm-wiki/suite`):
     python3 scripts/opencli_extension.py --status --json
     python3 scripts/opencli_extension.py --mirror-prefix <accelerator>
 
-A mirror prefix is opt-in and never defaulted. Choose one at runtime per the
-cn-mirrors skill only when github.com is unreachable, and treat it as
-untrusted transport: after loading, `opencli doctor` must confirm the bridge.
+When GitHub (API or download) is unreachable — the default situation on
+mainland-China networks — the script automatically falls back to the
+project's own mirror on the wiki relay Worker (`wiki.htmlgo.to`), which
+resolves and proxies exactly this one release asset. A generic accelerator
+prefix (`--mirror-prefix`) stays opt-in and never defaulted; choose one at
+runtime per the cn-mirrors skill only when both GitHub and the project
+mirror fail, and treat it as untrusted transport: after loading,
+`opencli doctor` must confirm the bridge.
 """
 
 from __future__ import annotations
@@ -45,6 +50,10 @@ WEB_STORE_URL = (
     "ildkmabpimmkaediidaifkhjpohdnifk"
 )
 ASSET_PATTERN = re.compile(r"^opencli-extension-v(\d+(?:\.\d+)*)\.zip$")
+# Project-owned mirror (wiki relay Worker): resolves and proxies exactly this
+# one release asset. Default fallback when GitHub is unreachable (the normal
+# case on mainland-China networks); not a third-party accelerator.
+PROJECT_MIRROR_LATEST = "https://wiki.htmlgo.to/_mirror/opencli-extension/latest.json"
 DEFAULT_DEST = "~/.my-llm-wiki/opencli-extension"
 POINTER = "current.json"
 MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024
@@ -213,6 +222,25 @@ def status_report(dest: Path) -> dict:
     }
 
 
+def resolve_via_github(timeout: float, mirror_prefix: str = "") -> tuple[dict, str]:
+    release = http_json(RELEASES_LATEST_API, timeout)
+    asset = select_asset(release)
+    source_url = (
+        apply_mirror(asset["url"], mirror_prefix) if mirror_prefix else asset["url"]
+    )
+    return asset, source_url
+
+
+def resolve_via_project_mirror(timeout: float) -> tuple[dict, str]:
+    info = http_json(PROJECT_MIRROR_LATEST, timeout)
+    name = str(info.get("asset", ""))
+    version = parse_asset_name(name)
+    url = str(info.get("url", ""))
+    if not url.startswith("https://"):
+        raise ExtensionError("project mirror returned a non-https download url")
+    return {"name": name, "version": version, "url": url}, url
+
+
 def stage(
     dest: Path,
     *,
@@ -224,14 +252,33 @@ def stage(
     if asset_url:
         name = Path(urllib.parse.urlsplit(asset_url).path).name
         asset = {"name": name, "version": parse_asset_name(name), "url": asset_url}
-        source_url = asset_url
-    else:
-        release = http_json(RELEASES_LATEST_API, timeout)
-        asset = select_asset(release)
-        source_url = (
-            apply_mirror(asset["url"], mirror_prefix) if mirror_prefix else asset["url"]
-        )
+        return _stage_resolved(dest, asset, asset_url, "explicit", force, timeout)
 
+    failures: list[str] = []
+    channels = (
+        ("github", lambda: resolve_via_github(timeout, mirror_prefix)),
+        ("project-mirror", lambda: resolve_via_project_mirror(timeout)),
+    )
+    for channel, resolve in channels:
+        try:
+            asset, source_url = resolve()
+            return _stage_resolved(dest, asset, source_url, channel, force, timeout)
+        except ExtensionError as exc:
+            failures.append(f"{channel}: {exc}")
+    raise ExtensionError(
+        "every channel failed — " + "; ".join(failures)
+        + " (as a last resort pass --mirror-prefix per the cn-mirrors skill)"
+    )
+
+
+def _stage_resolved(
+    dest: Path,
+    asset: dict,
+    source_url: str,
+    channel: str,
+    force: bool,
+    timeout: float,
+) -> dict:
     dest.mkdir(parents=True, exist_ok=True)
     final = dest / f"opencli-extension-v{asset['version']}"
     pointer = read_pointer(dest)
@@ -247,6 +294,7 @@ def stage(
             "version": asset["version"],
             "path": str(final),
             "asset": asset["name"],
+            "channel": channel,
             "load_steps": load_steps(final),
             "web_store": WEB_STORE_URL,
         }
@@ -279,6 +327,7 @@ def stage(
         "path": str(final),
         "asset": asset["name"],
         "source_url": source_url,
+        "channel": channel,
         "load_steps": load_steps(final),
         "web_store": WEB_STORE_URL,
     }
