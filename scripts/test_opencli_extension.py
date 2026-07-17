@@ -9,6 +9,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -160,6 +161,61 @@ class StagingTests(unittest.TestCase):
         self.assertEqual(ext.main(["--status", "--json", "--dest", str(self.dest)]), 3)
         ext.stage(self.dest, asset_url=self.local_asset())
         self.assertEqual(ext.main(["--status", "--dest", str(self.dest)]), 0)
+
+
+class DoctorComponentTests(unittest.TestCase):
+    """The doctor component that keeps the staging offer visible to agents."""
+
+    def setUp(self) -> None:
+        import doctor
+
+        self.doctor = doctor
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name)
+        self.dest = self.base / "opencli-extension"
+
+    def test_skip_when_opencli_is_not_installed(self) -> None:
+        with mock.patch.object(self.doctor.shutil, "which", return_value=None):
+            result = self.doctor.check_opencli_extension(self.dest)
+        self.assertEqual(result["status"], "skip")
+
+    def test_warn_with_offer_when_installed_but_not_staged(self) -> None:
+        with mock.patch.object(self.doctor.shutil, "which", return_value="/bin/opencli"):
+            result = self.doctor.check_opencli_extension(self.dest)
+        self.assertEqual(result["status"], "warn")
+        self.assertIn("scripts/opencli_extension.py", result["detail"])
+        self.assertIn("opencli doctor", result["detail"])
+
+    def test_ok_when_staged(self) -> None:
+        archive = self.base / "opencli-extension-v1.0.22.zip"
+        make_extension_zip(archive)
+        ext.stage(self.dest, asset_url=archive.resolve().as_uri())
+        with mock.patch.object(self.doctor.shutil, "which", return_value="/bin/opencli"):
+            result = self.doctor.check_opencli_extension(self.dest)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["version"], "1.0.22")
+
+    def test_component_is_part_of_the_doctor_report(self) -> None:
+        ok = {"status": "ok", "detail": "ok", "root": "/tmp/suite", "count": 1}
+        skills = {
+            "status": "ok",
+            "skills": [],
+            "existing_targets": [],
+            "target_scope": "explicit",
+        }
+        toolchain = {"status": "skip", "capabilities": {}, "detail": "not selected"}
+        warn = {"status": "warn", "detail": "offer pending"}
+        with mock.patch.object(self.doctor, "check_repo_home", return_value=ok), \
+                mock.patch.object(self.doctor, "check_skills", return_value=skills), \
+                mock.patch.object(self.doctor, "check_wiki", return_value=ok), \
+                mock.patch.object(self.doctor, "check_browser", return_value=ok), \
+                mock.patch.object(self.doctor, "check_toolchain", return_value=toolchain), \
+                mock.patch.object(self.doctor, "check_opencli_extension", return_value=warn):
+            report = self.doctor.build_report(hosts=["codex"])
+        self.assertEqual(report["components"]["opencli_extension"], warn)
+        self.assertEqual(report["state"], "degraded")
+        self.assertIn("opencli-ext", self.doctor.render_human(report))
 
 
 if __name__ == "__main__":

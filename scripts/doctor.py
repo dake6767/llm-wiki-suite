@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import urllib.error
@@ -37,6 +38,7 @@ SKILLS_REGISTRY = REPO_ROOT / "registry" / "skills.json"
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 from skill_graph import SkillGraphError, resolve_selection  # noqa: E402
 from install_state import content_digest, is_linklike, verified_copy  # noqa: E402
+import opencli_extension as extension_stager  # noqa: E402
 
 sys.path.insert(0, str(REPO_ROOT / "skills" / "my-llm-wiki" / "scripts"))
 import preflight as capture_preflight  # noqa: E402
@@ -414,6 +416,43 @@ def check_toolchain(bootstrap: dict, selection: dict) -> dict:
     return report
 
 
+def check_opencli_extension(dest: Path | None = None) -> dict:
+    """Browser Bridge staging state for opencli.
+
+    Staging presence is all this can see: a Chrome Web Store install leaves no
+    staged folder, and only `opencli doctor` can confirm the live bridge — so
+    a missing staging is a warn (an unmet offer), never action-required.
+    """
+    if not shutil.which("opencli"):
+        return {
+            "status": "skip",
+            "detail": "opencli not installed; Browser Bridge extension not applicable",
+        }
+    staged = extension_stager.status_report(
+        dest if dest is not None else Path(extension_stager.DEFAULT_DEST).expanduser()
+    )
+    if staged["status"] == "staged":
+        return {
+            "status": "ok",
+            "detail": (
+                f"Browser Bridge staged v{staged['version']};"
+                " `opencli doctor` verifies the live bridge"
+            ),
+            "version": staged["version"],
+            "path": staged["path"],
+        }
+    return {
+        "status": "warn",
+        "detail": (
+            "opencli is installed but its Browser Bridge extension is not staged;"
+            " offer `python3 scripts/opencli_extension.py` in the same reply as"
+            " this report (a Chrome Web Store install also satisfies it;"
+            " `opencli doctor` is the authority)"
+        ),
+        "web_store": extension_stager.WEB_STORE_URL,
+    }
+
+
 _ORDER = {"ok": 0, "skip": 0, "warn": 1, "action-required": 1, "error": 2}
 
 
@@ -467,6 +506,7 @@ def build_report(
         if check_mcp_state:
             components["mcp"] = check_mcp(bootstrap, browser, selected_hosts)
         components["toolchain"] = check_toolchain(bootstrap, selection)
+        components["opencli_extension"] = check_opencli_extension()
     except (OSError, ValueError, TypeError, KeyError) as exc:
         return {"fatal": f"doctor check failed: {exc}"}
     overall = "ok"
@@ -576,6 +616,12 @@ def render_human(report: dict) -> str:
                     )
                 if rec.get("home"):
                     lines.append(f"       home: {rec['home']}")
+
+    oe = c.get("opencli_extension")
+    if oe:
+        lines.append(f"{_ICON[oe['status']]} opencli-ext  {oe['detail']}")
+        if oe.get("path"):
+            lines.append(f"                {oe['path']}")
 
     lines.append("")
     verdict = {
