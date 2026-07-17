@@ -193,32 +193,44 @@ consent, then rerun doctor. `opencli` logins are per-platform and one-time;
 surface `opencli <platform> login` only when the first real capture needs it.
 
 `opencli` browser adapters additionally require the OpenCLI Browser Bridge
-Chrome extension. The moment the CLI postcheck passes, present the staging
-offer in the same reply that reports the install result — do not defer it to
-a later question or a separate turn; an install summary that omits this offer
-is incomplete. Doctor mirrors the obligation as the `opencli_extension`
-component: while it reports `warn`, the offer is unmet and must be
-re-presented, never skipped. Staging runs
-`python3 scripts/opencli_extension.py` — a consented
-network download of the official `opencli-extension-v*.zip` release asset
-into `~/.my-llm-wiki/opencli-extension/`. When GitHub is unreachable the
-script automatically falls back to the project's own relay mirror
-(`wiki.htmlgo.to/_mirror/opencli-extension`), so mainland networks need no
-extra flags; pass `--mirror-prefix` only when both channels fail, choosing
-the accelerator at runtime per
-`cn-mirrors`; never hardcode one. Then relay the script's printed
-`chrome://extensions` steps verbatim: loading the unpacked folder is always
-the user's manual browser action, and `opencli doctor` remains the sole
-authority on the live bridge. Staging plus manual load is the default path
-for every user — do not steer users to the Chrome Web Store, which
-mainland-China networks generally cannot reach. (An overseas user who did
-install from the store leaves no staged folder; that edge case is why the
-doctor signal is a `warn` rather than `action-required`.) On macOS and
-Windows, also mention the official OpenCLIApp
-desktop bundle (https://opencli.info/download): it ships the CLI with a
-menu-bar manager and login keep-alive, but it is a manual GUI install, still
-requires the same extension, and the automated install route in this
-repository remains npm.
+Chrome extension. It is a **required** item of this section's consent list,
+not an optional extra: whenever `opencli` is installed or part of the
+consented plan, append a `browser-bridge-extension [required]` row
+immediately after `opencli` when presenting the tool recommendations. Its
+staging is a network download, so it obeys the same never-install-silently
+rule — and like every row in the list, it is individually skippable. After
+consent, follow this sequence:
+
+1. Install the consented CLI tools first (`opencli`, `yt-dlp`, …) and run
+   their postchecks.
+2. Stage the extension: `python3 scripts/opencli_extension.py` downloads the
+   official `opencli-extension-v*.zip` release asset and unzips it into
+   `~/.my-llm-wiki/opencli-extension/`. When GitHub is unreachable the
+   script automatically falls back to the project's own relay mirror
+   (`wiki.htmlgo.to/_mirror/opencli-extension`), so mainland networks need
+   no extra flags; pass `--mirror-prefix` only when both channels fail,
+   choosing the accelerator at runtime per `cn-mirrors`; never hardcode one.
+3. Relay the script's printed `chrome://extensions` steps verbatim, always
+   including the staged folder path — loading the unpacked folder is the
+   user's manual browser action, never automated.
+4. Ask whether loading is done with a host-native single-select control
+   (same structured style as §7's Browser choice; never demand typed
+   yes/no): **Loaded — verify now** / **Skip for now**.
+5. On "Loaded", run `opencli doctor` and relay its verdict — it is the sole
+   authority on the live bridge. If it reports the bridge missing, re-show
+   the load steps and offer one retry or skip.
+
+A skip at any step is not a failure, but it leaves the doctor
+`opencli_extension` component at `warn`: the offer is unmet and must be
+re-presented on the next doctor run, never silently dropped. Do not steer
+users to the Chrome Web Store, which mainland-China networks generally
+cannot reach. (An overseas user who did install from the store leaves no
+staged folder; that edge case is why the doctor signal is a `warn` rather
+than `action-required`.) On macOS and Windows, also mention the official
+OpenCLIApp desktop bundle (https://opencli.info/download): it ships the CLI
+with a menu-bar manager and login keep-alive, but it is a manual GUI
+install, still requires the same extension, and the automated install route
+in this repository remains npm.
 
 If Hermes is selected, offer `approvals.mode: smart` and
 `security.redact_secrets: true`, while retaining `approvals.cron_mode: deny` and
