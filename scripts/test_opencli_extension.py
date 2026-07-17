@@ -163,6 +163,109 @@ class StagingTests(unittest.TestCase):
         self.assertEqual(ext.main(["--status", "--dest", str(self.dest)]), 0)
 
 
+class MirrorFallbackTests(unittest.TestCase):
+    """GitHub unreachable → the project-owned relay mirror takes over."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name)
+        self.dest = self.base / "opencli-extension"
+        archive = self.base / "opencli-extension-v1.0.22.zip"
+        make_extension_zip(archive)
+        self.zip_uri = archive.resolve().as_uri()
+
+    def fake_http_json(self, github_error: bool, mirror_payload):
+        def fake(url: str, timeout: float) -> dict:
+            if url == ext.RELEASES_LATEST_API:
+                if github_error:
+                    raise ext.ExtensionError(f"cannot fetch {url}: unreachable")
+                raise AssertionError("github should not be queried")
+            if url == ext.PROJECT_MIRROR_LATEST:
+                if isinstance(mirror_payload, Exception):
+                    raise mirror_payload
+                return mirror_payload
+            raise AssertionError(f"unexpected url {url}")
+
+        return fake
+
+    def test_falls_back_to_project_mirror_when_github_unreachable(self) -> None:
+        payload = {
+            "version": "1.0.22",
+            "tag": "v1.8.6",
+            "asset": "opencli-extension-v1.0.22.zip",
+            "url": self.zip_uri,
+        }
+        # The mirror hands back an https URL in production; the file:// URL here
+        # stands in for it, so only the https guard needs bypassing.
+        with mock.patch.object(
+            ext, "http_json", self.fake_http_json(github_error=True, mirror_payload=payload)
+        ), mock.patch.object(
+            ext, "resolve_via_project_mirror",
+            lambda timeout: (
+                {"name": payload["asset"], "version": "1.0.22", "url": self.zip_uri},
+                self.zip_uri,
+            ),
+        ):
+            report = ext.stage(self.dest)
+        self.assertEqual(report["status"], "staged")
+        self.assertEqual(report["channel"], "project-mirror")
+        self.assertTrue((Path(report["path"]) / "manifest.json").is_file())
+
+    def test_mirror_payload_with_bad_url_is_rejected(self) -> None:
+        payload = {
+            "asset": "opencli-extension-v1.0.22.zip",
+            "url": "http://insecure.example/x.zip",
+        }
+        with mock.patch.object(
+            ext, "http_json", self.fake_http_json(github_error=True, mirror_payload=payload)
+        ):
+            with self.assertRaises(ext.ExtensionError) as caught:
+                ext.stage(self.dest)
+        self.assertIn("every channel failed", str(caught.exception))
+
+    def test_combined_error_names_both_channels(self) -> None:
+        with mock.patch.object(
+            ext,
+            "http_json",
+            self.fake_http_json(
+                github_error=True,
+                mirror_payload=ext.ExtensionError("cannot fetch mirror: down"),
+            ),
+        ):
+            with self.assertRaises(ext.ExtensionError) as caught:
+                ext.stage(self.dest)
+        message = str(caught.exception)
+        self.assertIn("github:", message)
+        self.assertIn("project-mirror:", message)
+        self.assertIn("--mirror-prefix", message)
+
+    def test_github_success_never_touches_the_mirror(self) -> None:
+        release = {
+            "tag_name": "v1.8.6",
+            "assets": [
+                {"name": "opencli-extension-v1.0.22.zip", "browser_download_url": self.zip_uri}
+            ],
+        }
+
+        def fake(url: str, timeout: float) -> dict:
+            if url == ext.RELEASES_LATEST_API:
+                return release
+            raise AssertionError("mirror must not be queried when github works")
+
+        # select_asset requires https URLs; relax by staging via the resolved
+        # asset dict — patch resolve_via_github to return the local zip.
+        with mock.patch.object(
+            ext, "resolve_via_github",
+            lambda timeout, mirror_prefix="": (
+                {"name": "opencli-extension-v1.0.22.zip", "version": "1.0.22", "url": self.zip_uri},
+                self.zip_uri,
+            ),
+        ), mock.patch.object(ext, "http_json", fake):
+            report = ext.stage(self.dest)
+        self.assertEqual(report["channel"], "github")
+
+
 class DoctorComponentTests(unittest.TestCase):
     """The doctor component that keeps the staging offer visible to agents."""
 

@@ -201,8 +201,11 @@ component: while it reports `warn`, the offer is unmet and must be
 re-presented, never skipped. Staging runs
 `python3 scripts/opencli_extension.py` — a consented
 network download of the official `opencli-extension-v*.zip` release asset
-into `~/.my-llm-wiki/opencli-extension/`. Pass `--mirror-prefix` only when
-github.com is unreachable, choosing the accelerator at runtime per
+into `~/.my-llm-wiki/opencli-extension/`. When GitHub is unreachable the
+script automatically falls back to the project's own relay mirror
+(`wiki.htmlgo.to/_mirror/opencli-extension`), so mainland networks need no
+extra flags; pass `--mirror-prefix` only when both channels fail, choosing
+the accelerator at runtime per
 `cn-mirrors`; never hardcode one. Then relay the script's printed
 `chrome://extensions` steps verbatim: loading the unpacked folder is always
 the user's manual browser action, and `opencli doctor` remains the sole
