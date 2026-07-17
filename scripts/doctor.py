@@ -446,10 +446,9 @@ def check_opencli_extension(dest: Path | None = None) -> dict:
         "detail": (
             "opencli is installed but its Browser Bridge extension is not staged;"
             " offer `python3 scripts/opencli_extension.py` in the same reply as"
-            " this report (a Chrome Web Store install also satisfies it;"
-            " `opencli doctor` is the authority)"
+            " this report, then relay its printed manual chrome://extensions"
+            " load steps (`opencli doctor` verifies the live bridge)"
         ),
-        "web_store": extension_stager.WEB_STORE_URL,
     }
 
 
