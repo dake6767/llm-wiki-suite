@@ -44,7 +44,7 @@ Common fetch stacks, in rough order of capture cleanliness:
 
 | Stack | What it gives you | Watch out |
 |------|--------------------|-----------|
-| **opencli** | real logged-in browser: JS pages, auth-gated content, auto image download | an npm CLI; needs its sibling `node` on PATH, not only the binary |
+| **opencli** | real logged-in browser: JS pages, auth-gated content, auto image download | an npm CLI; needs its sibling `node` on PATH, not only the binary — plus its Browser Bridge Chrome extension, set up once during suite install (`opencli doctor` verifies) |
 | **agent-reach** | maintained per-platform access with its own doctor | output is text/Markdown; media usually needs separate localization |
 | **bare CLIs** | video/audio/subtitles and local-document conversion | compose the Adapter Contract shape yourself |
 | **agent built-ins** | zero-install text extraction for ordinary URLs | text-mostly; images, JS, and auth pages are weaker |
