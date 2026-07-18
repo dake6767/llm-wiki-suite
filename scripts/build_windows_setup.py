@@ -168,6 +168,8 @@ def enable_embedded_site(runtime: Path) -> None:
 
 
 def pip_target(target: Path, packages: list[str], report: Path) -> None:
+    target.mkdir(parents=True, exist_ok=True)
+    report.parent.mkdir(parents=True, exist_ok=True)
     command = [
         sys.executable, "-m", "pip", "install",
         "--disable-pip-version-check", "--no-input", "--no-compile",

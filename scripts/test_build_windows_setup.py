@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import copy
+import subprocess
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 from scripts import build_windows_setup as builder
 
@@ -42,6 +44,20 @@ class BuildWindowsSetupTests(unittest.TestCase):
                 bundle.writestr("../../outside", "bad")
             with self.assertRaisesRegex(builder.BuildError, "unsafe zip member"):
                 builder.safe_extract(archive, root / "out")
+
+    def test_pip_target_creates_report_parent_before_invocation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            subprocess, "run"
+        ) as run:
+            root = Path(tmp)
+            target = root / "component" / "site-packages"
+            report = root / "component" / "pip-report.json"
+            builder.pip_target(target, ["example==1.0"], report)
+            self.assertTrue(target.is_dir())
+            self.assertTrue(report.parent.is_dir())
+            argv = run.call_args.args[0]
+            self.assertIn(str(report), argv)
+            self.assertIn("example==1.0", argv)
 
 
 if __name__ == "__main__":
