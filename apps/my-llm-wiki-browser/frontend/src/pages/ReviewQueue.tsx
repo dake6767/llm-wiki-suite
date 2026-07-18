@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { AuthError, getReview, type ReviewItem } from "../api/client";
 import {
-  batchPrompt,
   copyToClipboard,
   isReviewOpen,
   reviewItemTime,
@@ -10,7 +9,7 @@ import {
 import ReviewItemCard from "../components/ReviewItemCard";
 
 // 阅读区的「待审 · Review」视图：展示该卷的 review 队列。浏览器不能直接跑 review，
-// 因此每条 / 整队都提供「复制提示词」，把待办拼成可交给 agent 的指令。
+// 因此每条待办都提供「复制提示词」，把待办拼成可交给 agent 的指令。
 // dense=true 为移动端单列布局（更紧凑的边距/字号），逻辑与桌面完全一致。
 export default function ReviewQueue({ dense = false }: { dense?: boolean }) {
   const { wiki } = useParams();
@@ -18,7 +17,7 @@ export default function ReviewQueue({ dense = false }: { dense?: boolean }) {
   const [root, setRoot] = useState("");
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
-  // 复制反馈：记住刚复制的 key（"all" 或条目索引），短暂高亮。
+  // 复制反馈：记住刚复制条目的 key，短暂高亮。
   const [copied, setCopied] = useState<string | null>(null);
 
   useEffect(() => {
@@ -94,14 +93,6 @@ export default function ReviewQueue({ dense = false }: { dense?: boolean }) {
           这些是维护 agent 沉淀下来的可深挖方向与待办。浏览器内无法直接发起 research，
           点「复制提示词」把待办拼成指令，粘贴给带 <code className="font-mono text-xs">my-llm-wiki-maintainer</code> skill 的 agent 执行即可。
         </p>
-        {openCount > 0 && (
-          <button
-            onClick={() => copy("all", batchPrompt(root, items))}
-            className="mt-5 inline-flex items-center gap-2 rounded border border-cinnabar/40 bg-cinnabar/5 px-4 py-2 font-serif text-sm text-cinnabar-deep transition-colors hover:bg-cinnabar/10"
-          >
-            {copied === "all" ? "已复制 ✓" : `复制全部待办提示词（${openCount}）`}
-          </button>
-        )}
       </header>
 
       {loading ? (

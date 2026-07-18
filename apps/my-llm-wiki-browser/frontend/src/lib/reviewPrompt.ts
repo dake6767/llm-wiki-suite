@@ -87,34 +87,6 @@ export function singleItemPrompt(root: string, item: ReviewItem): string {
   return lines.join("\n");
 }
 
-// 整个待办队列的批处理提示词。
-export function batchPrompt(root: string, items: ReviewItem[]): string {
-  const open = items.filter(isReviewOpen);
-  const lines: string[] = [];
-  lines.push("使用 my-llm-wiki-maintainer skill 维护下面这个知识库，处理它的 review 队列。");
-  lines.push("");
-  lines.push(`知识库 root：${root}`);
-  lines.push(`review 队列：.llm-wiki/review.json（共 ${open.length} 条待办）`);
-  lines.push("");
-  lines.push(
-    "请逐条处理：suggestion / missing-page 执行 deep research（检索 → 归档 RAW → 合成 wiki 页 → ingest）；contradiction / confirm 先交我判断再执行；duplicate 走 dedup 合并（需我确认规范名）。每条完成后在队列中标记状态。",
-  );
-  lines.push("");
-  lines.push("待办清单：");
-  open.forEach((item, i) => {
-    const title = item.title || "(无标题)";
-    const type = item.type || "item";
-    lines.push(`${i + 1}. [${type}] ${title}`);
-    const body = reviewItemBody(item);
-    if (body) lines.push(`   方向：${body}`);
-    const queries = item.searchQueries || [];
-    if (queries.length) lines.push(`   检索词：${queries.join(" / ")}`);
-    const source = reviewItemSource(item);
-    if (source) lines.push(`   来源：${source}`);
-  });
-  return lines.join("\n");
-}
-
 // 复制到剪贴板：优先 async clipboard（localhost / https 均为安全上下文），失败回退 textarea。
 export async function copyToClipboard(text: string): Promise<boolean> {
   try {

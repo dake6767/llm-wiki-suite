@@ -69,9 +69,9 @@ export default function ReviewItemCard({
       )}
       <button
         onClick={() => onCopy(cardKey, singleItemPrompt(root, item))}
-        className="mt-4 inline-flex items-center gap-2 font-mono text-xs text-cinnabar transition-colors hover:text-cinnabar-deep"
+        className="mt-4 inline-flex items-center gap-2 rounded border border-cinnabar/40 bg-cinnabar/5 px-3 py-1.5 font-mono text-xs text-cinnabar-deep transition-colors hover:bg-cinnabar/10"
       >
-        {copiedKey === cardKey ? "已复制 ✓" : "复制提示词 →"}
+        {copiedKey === cardKey ? "已复制 ✓" : "复制提示词"}
       </button>
     </>
   );
