@@ -1,7 +1,7 @@
 {
   "version": 3,
-  "pack_version": "1.0.9",
-  "pack_notes": "Windows 受限网络下 ffmpeg 走结构化 cn 配方：scripts/fetch_ffmpeg.py 从 gyan.dev（relay 镜像兜底）校验 SHA-256 后装入 ~/.my-llm-wiki/tools/ffmpeg/bin；工具链新增 route_ecosystem 按 github 探测路由 winget 配方，preflight 探测 portable 目录并支持配方级 postcheck。",
+  "pack_version": "1.0.10",
+  "pack_notes": "修复 win+大陆探测死角：gitee 判 slow 不再把 github 路由拖成 unavailable；ffmpeg 的 cn 配方标记 self_probing（通道为 gyan.dev/relay，与 github/gitee 无关），github 探测 unavailable 时仍提议 fetch_ffmpeg.py 而非死局。",
   "updated_at": "2026-07-18",
   "skills": [
     {

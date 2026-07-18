@@ -257,8 +257,11 @@ class ToolchainTests(unittest.TestCase):
         self.assertIn("fetch_ffmpeg.py", json.dumps(restricted["steps"]))
         self.assertIn("--status", restricted["postcheck"])
         self.assertIn("fetch_ffmpeg.py", json.dumps(restricted["postcheck"]))
-        self.assertEqual(offline["route"], "unavailable")
-        self.assertIn("github", offline["reason"])
+        # github fully unavailable (e.g. gitee unreachable too) must not
+        # dead-end ffmpeg: the cn recipe is self_probing — its channels
+        # (gyan.dev, project relay) are independent of github/gitee.
+        self.assertEqual(offline["route"], "cn")
+        self.assertIn("fetch_ffmpeg.py", json.dumps(offline["steps"]))
 
     def test_windows_without_winget_still_installs_portable_ffmpeg(self) -> None:
         ffmpeg = self.catalog["tools"]["ffmpeg"]

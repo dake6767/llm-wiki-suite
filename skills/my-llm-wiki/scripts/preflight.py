@@ -119,6 +119,12 @@ def load_catalog(path: Path | str | None = None) -> dict:
                     for key, value in env.items()
                 ):
                     raise ValueError(f"invalid install env for {name}: {os_name}/{route}")
+                if "self_probing" in recipe and not isinstance(
+                    recipe["self_probing"], bool
+                ):
+                    raise ValueError(
+                        f"invalid self_probing for {name}: {os_name}/{route}"
+                    )
                 recipe_postcheck = recipe.get("postcheck")
                 if recipe_postcheck is not None and (
                     not isinstance(recipe_postcheck, list)
@@ -319,6 +325,17 @@ def install_recipe(spec: dict, routes: dict[str, str]) -> dict | None:
         selected_platform, spec.get("ecosystem", "system")
     )
     route = routes.get(ecosystem, "unavailable")
+    platform_recipes = installs[selected_platform]
+    # A cn recipe marked self_probing carries its own channel probing and
+    # fallbacks (e.g. fetch_ffmpeg.py: gyan.dev → project relay), so the
+    # probed ecosystem being unreachable does not dead-end the tool — the
+    # recipe is still worth proposing and fails with an actionable error.
+    if (
+        route == "unavailable"
+        and isinstance(platform_recipes.get("cn"), dict)
+        and platform_recipes["cn"].get("self_probing") is True
+    ):
+        route = "cn"
     if route == "unavailable":
         return {
             **execution,
@@ -330,7 +347,6 @@ def install_recipe(spec: dict, routes: dict[str, str]) -> dict | None:
             "unavailable_runtime": [],
             "postcheck": _replace_placeholders(spec.get("postcheck", []), replacements),
         }
-    platform_recipes = installs[selected_platform]
     if route not in platform_recipes:
         raise ValueError(
             f"no {selected_platform}/{route} install recipe for {spec.get('description', 'tool')}"
