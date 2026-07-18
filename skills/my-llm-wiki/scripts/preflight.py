@@ -67,6 +67,11 @@ def load_catalog(path: Path | str | None = None) -> dict:
             "command", "python-module"
         } or not isinstance(probe_spec.get("name"), str):
             raise ValueError(f"invalid probe definition: {name}")
+        extra_paths = probe_spec.get("extra_paths", [])
+        if not isinstance(extra_paths, list) or any(
+            not isinstance(path, str) or not path for path in extra_paths
+        ):
+            raise ValueError(f"invalid probe extra_paths: {name}")
         installs = spec.get("install")
         if installs is None:
             continue
@@ -87,6 +92,13 @@ def load_catalog(path: Path | str | None = None) -> dict:
             "linux-dnf", "linux-dnf-root", "linux-pacman", "linux-pacman-root",
             "windows", "windows-winget",
         }
+        route_ecosystem = spec.get("route_ecosystem", {})
+        if not isinstance(route_ecosystem, dict) or any(
+            key not in valid_platforms
+            or value not in {"github", "pypi", "npm", "huggingface", "system"}
+            for key, value in route_ecosystem.items()
+        ):
+            raise ValueError(f"invalid route_ecosystem: {name}")
         for os_name, routes in installs.items():
             if os_name not in valid_platforms or not isinstance(routes, dict):
                 raise ValueError(f"invalid install platform for {name}: {os_name}")
@@ -107,6 +119,15 @@ def load_catalog(path: Path | str | None = None) -> dict:
                     for key, value in env.items()
                 ):
                     raise ValueError(f"invalid install env for {name}: {os_name}/{route}")
+                recipe_postcheck = recipe.get("postcheck")
+                if recipe_postcheck is not None and (
+                    not isinstance(recipe_postcheck, list)
+                    or not recipe_postcheck
+                    or any(not isinstance(arg, str) or not arg for arg in recipe_postcheck)
+                ):
+                    raise ValueError(
+                        f"invalid recipe postcheck for {name}: {os_name}/{route}"
+                    )
     return data
 
 
@@ -135,6 +156,16 @@ def profile_tool_names(catalog: dict, profiles: list[str]) -> list[str]:
 def command_tool(spec: dict, name: str) -> str:
     """Return the executable only after its declared postcheck succeeds."""
     path = shutil.which(name)
+    if not path:
+        # Portable installs (e.g. fetch_ffmpeg.py) live in declared well-known
+        # directories rather than on PATH.
+        extra_dirs = [
+            str(Path(entry).expanduser())
+            for entry in (spec.get("probe") or {}).get("extra_paths", [])
+        ]
+        extra_dirs = [entry for entry in extra_dirs if Path(entry).is_dir()]
+        if extra_dirs:
+            path = shutil.which(name, path=os.pathsep.join(extra_dirs))
     if not path:
         return ""
     postcheck = spec.get("postcheck") or [name, "--help"]
@@ -242,12 +273,11 @@ def install_recipe(spec: dict, routes: dict[str, str]) -> dict | None:
     installs = spec.get("install")
     if not isinstance(installs, dict):
         return None
-    ecosystem = spec.get("ecosystem", "system")
-    route = routes.get(ecosystem, "unavailable")
     replacements = {
         "python": sys.executable,
         "asr_venv": str(_ASR_VENV),
         "asr_python": str(ASR_VENV_PYTHON),
+        "suite": str(SKILL_DIR.parents[1]),
     }
     execution = {
         "step_timeout_seconds": spec["step_timeout_seconds"],
@@ -268,17 +298,6 @@ def install_recipe(spec: dict, routes: dict[str, str]) -> dict | None:
             "unavailable_runtime": [],
             "postcheck": _replace_placeholders(spec.get("postcheck", []), replacements),
         }
-    if route == "unavailable":
-        return {
-            **execution,
-            "route": route,
-            "reason": f"{ecosystem} has no reachable global or cn route",
-            "steps": [],
-            "env": {},
-            "runtime_env": {},
-            "unavailable_runtime": [],
-            "postcheck": _replace_placeholders(spec.get("postcheck", []), replacements),
-        }
     selected_platform = next(
         (key for key in platform_keys() if isinstance(installs.get(key), dict)), None
     )
@@ -287,6 +306,24 @@ def install_recipe(spec: dict, routes: dict[str, str]) -> dict | None:
             **execution,
             "route": "unavailable",
             "reason": f"no install recipe for {platform.system()} on this machine",
+            "steps": [],
+            "env": {},
+            "runtime_env": {},
+            "unavailable_runtime": [],
+            "postcheck": _replace_placeholders(spec.get("postcheck", []), replacements),
+        }
+    # A platform recipe may depend on a different ecosystem than the tool's
+    # own (winget's ffmpeg payload downloads from GitHub Releases); route by
+    # the declared override so a restricted network selects the cn recipe.
+    ecosystem = (spec.get("route_ecosystem") or {}).get(
+        selected_platform, spec.get("ecosystem", "system")
+    )
+    route = routes.get(ecosystem, "unavailable")
+    if route == "unavailable":
+        return {
+            **execution,
+            "route": route,
+            "reason": f"{ecosystem} has no reachable global or cn route",
             "steps": [],
             "env": {},
             "runtime_env": {},
@@ -318,7 +355,8 @@ def install_recipe(spec: dict, routes: dict[str, str]) -> dict | None:
         "env": env,
         "runtime_env": selected_runtime_env,
         "unavailable_runtime": unavailable_runtime,
-        "postcheck": _replace_placeholders(spec.get("postcheck", []), replacements),
+        "postcheck": recipe.get("postcheck")
+        or _replace_placeholders(spec.get("postcheck", []), replacements),
     }
 
 

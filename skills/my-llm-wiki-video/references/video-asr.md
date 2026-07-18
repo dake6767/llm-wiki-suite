@@ -238,6 +238,8 @@ make every downstream check lie:
 - **Tools found outside PATH must be put ON PATH for the session.** FunASR and
   yt-dlp shell out to a bare `ffmpeg` — knowing the full path yourself doesn't
   help their subprocesses. Windows winget installs land under
-  `%LOCALAPPDATA%\Microsoft\WinGet\…` which new shells often don't have:
+  `%LOCALAPPDATA%\Microsoft\WinGet\…` which new shells often don't have, and
+  the portable cn-route install lands in `~/.my-llm-wiki/tools/ffmpeg/bin`:
   `export PATH="<dir-with-ffmpeg>:$PATH"` once per session before any
-  download/ASR step (`preflight.py` prints the resolved locations).
+  download/ASR step (`preflight.py` prints the resolved locations; yt-dlp
+  alone also accepts `--ffmpeg-location <dir>`).
