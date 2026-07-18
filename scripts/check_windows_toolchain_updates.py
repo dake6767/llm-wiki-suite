@@ -86,6 +86,26 @@ def pypi_latest(project: str) -> str:
     return version
 
 
+def pypi_windows_cp312_versions(project: str) -> set[str]:
+    value = request_json(f"https://pypi.org/pypi/{urllib.parse.quote(project)}/json")
+    if not isinstance(value, dict) or not isinstance(value.get("releases"), dict):
+        raise CheckError(f"PyPI returned no release map for {project}")
+    versions = set()
+    for version, files in value["releases"].items():
+        if not isinstance(version, str) or not isinstance(files, list):
+            continue
+        if any(
+            isinstance(file, dict)
+            and "cp312" in str(file.get("filename", ""))
+            and "win_amd64" in str(file.get("filename", ""))
+            for file in files
+        ):
+            versions.add(version)
+    if not versions:
+        raise CheckError(f"PyPI has no Windows CPython 3.12 wheels for {project}")
+    return versions
+
+
 def github_latest(owner: str, repo: str) -> dict:
     value = request_json(f"https://api.github.com/repos/{owner}/{repo}/releases/latest")
     if not isinstance(value, dict):
@@ -233,6 +253,31 @@ def collect(lock: dict) -> dict:
         .strip(),
     )
 
+    asr_zh_packages = {
+        package.split("==", 1)[0]: exact_package_version(package)
+        for package in lock["components"]["asr-zh"]["packages"]
+    }
+    torch_version = asr_zh_packages.get("torch", "")
+    torchaudio_version = asr_zh_packages.get("torchaudio", "")
+
+    def pytorch_windows_pair() -> str:
+        if not torch_version or torch_version != torchaudio_version:
+            raise CheckError("lock must pin torch and torchaudio to one version")
+        common = pypi_windows_cp312_versions("torch") & pypi_windows_cp312_versions(
+            "torchaudio"
+        )
+        if not common:
+            raise CheckError("torch and torchaudio have no common Windows CPython 3.12 release")
+        return max(common, key=numeric_version)
+
+    add(
+        "torch+torchaudio",
+        torch_version,
+        "https://pypi.org/project/torch/ + https://pypi.org/project/torchaudio/",
+        pytorch_windows_pair,
+        policy="promote only a matching pair with Windows CPython 3.12 wheels",
+    )
+
     packages = {
         "markitdown": lock["components"]["documents"]["packages"][0],
         **{
@@ -242,6 +287,8 @@ def collect(lock: dict) -> dict:
         },
     }
     for project, package in packages.items():
+        if project in {"torch", "torchaudio"}:
+            continue
         add(
             project,
             exact_package_version(package),

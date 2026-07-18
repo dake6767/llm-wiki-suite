@@ -204,7 +204,8 @@ Setup，不再尝试兼容。Setup 的更新、修复、组件 doctor 和卸载�
 在 PR 中更新 `registry/windows-toolchain.lock.json` 的精确版本、URL、SHA-256/npm integrity，
 重新构建受影响组件，并通过组件 postcheck 与 PATH 为空的 Windows clean-room 安装。合并后只发布
 新 tag；绝不替换旧 Release 的同名资产。像 Python 3.12.13 这种只有源码、没有 Windows
-embeddable runtime 的版本不会被误报为可升级候选。
+embeddable runtime 的版本不会被误报为可升级候选；`torch`/`torchaudio` 这类耦合依赖只按
+同时提供 Windows CPython 3.12 wheel 的共同版本升级，不分别追各自的 latest。
 
 ### macOS / Linux 手动安装 skills
 
