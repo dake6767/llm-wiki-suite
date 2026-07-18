@@ -18,10 +18,13 @@ use std::time::Duration;
 
 use serde::Serialize;
 
-/// 官方技能源仓库（app 硬编码，不接受远端值）。
-const OFFICIAL_HOST: &str = "github.com";
-const OFFICIAL_OWNER: &str = "dake6767";
-const OFFICIAL_REPO: &str = "llm-wiki-suite";
+/// 官方技能源仓库（app 硬编码，不接受远端值）。GitHub 为 canonical；Gitee 是
+/// bootstrap.sh 在 GitHub 不可达时降级克隆的声明镜像——本白名单必须与
+/// bootstrap.sh `--update` 的 origin 白名单保持一致，否则镜像装机会被误判 Unknown。
+const OFFICIAL_REMOTES: &[(&str, &str, &str)] = &[
+    ("github.com", "dake6767", "llm-wiki-suite"),
+    ("gitee.com", "dake6767", "llm-wiki-suite"),
+];
 /// changelog 硬编码官方 releases 页（防钓鱼，不接受远端 changelog_url）。
 pub const CHANGELOG_URL: &str = "https://github.com/dake6767/llm-wiki-suite/releases";
 /// Unknown 状态下打开可信的官方 AGENTS.md，不接受远端提供的 URL。
@@ -208,7 +211,11 @@ pub fn parse_remote(url: &str) -> Option<(String, String, String)> {
 
 pub fn is_official_remote(url: &str) -> bool {
     parse_remote(url)
-        .map(|(h, o, r)| h == OFFICIAL_HOST && o == OFFICIAL_OWNER && r == OFFICIAL_REPO)
+        .map(|(h, o, r)| {
+            OFFICIAL_REMOTES
+                .iter()
+                .any(|(oh, oo, or)| h == *oh && o == *oo && r == *or)
+        })
         .unwrap_or(false)
 }
 
@@ -216,39 +223,45 @@ pub fn is_official_remote(url: &str) -> bool {
 
 /// 判定一个 host 技能目录条目的 git 检出根（若为指向官方 suite 检出的 symlink/junction）。
 ///
-/// 返回 `Some(toplevel)` 仅当：条目是 symlink/junction、解析后落在含 `registry/skills.json`
-/// 且列出该 slug 的检出内、且 origin remote 归一后 == 官方。否则 `None`（→ 逼向 Unknown）。
-pub fn gitlink_toplevel(entry: &Path, slug: &str) -> Option<PathBuf> {
+/// 返回 `Ok(toplevel)` 仅当：条目是 symlink/junction、解析后落在含 `registry/skills.json`
+/// 且列出该 slug 的检出内、且 origin remote 归一后在官方白名单（含声明镜像）。
+/// 否则 `Err(具体失败的关卡)`（→ 逼向 Unknown，细节进 `SourceInfo.reason` 供诊断）。
+pub fn gitlink_toplevel(entry: &Path, slug: &str) -> Result<PathBuf, String> {
     // 必须是链接（真实目录 = Copy，绝不当 GitLink）。
-    let meta = std::fs::symlink_metadata(entry).ok()?;
+    let meta =
+        std::fs::symlink_metadata(entry).map_err(|_| "无法读取条目元数据".to_string())?;
     if !is_link_or_junction(&meta) {
-        return None;
+        return Err("真实目录而非软链/junction（疑为拷贝安装）".into());
     }
-    let real = std::fs::canonicalize(entry).ok()?;
+    let real = std::fs::canonicalize(entry)
+        .map_err(|_| "链接目标无法解析（悬空链接？）".to_string())?;
     // 回溯 git toplevel。
-    let toplevel = git_output(&real, &["rev-parse", "--show-toplevel"])?;
+    let toplevel = git_output(&real, &["rev-parse", "--show-toplevel"])
+        .ok_or_else(|| "链接目标不在 git 检出内（或本机 git 不可用）".to_string())?;
     let toplevel = PathBuf::from(toplevel.trim());
     // 必须含 registry/skills.json 且列出该 slug。
     let registry = toplevel.join("registry/skills.json");
-    let text = std::fs::read_to_string(&registry).ok()?;
-    let json: serde_json::Value = serde_json::from_str(&text).ok()?;
-    let listed = json
-        .get("skills")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .any(|s| s.get("slug").and_then(|v| v.as_str()) == Some(slug))
+    let listed = std::fs::read_to_string(&registry)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|json| {
+            json.get("skills").and_then(|v| v.as_array()).map(|arr| {
+                arr.iter()
+                    .any(|s| s.get("slug").and_then(|v| v.as_str()) == Some(slug))
+            })
         })
         .unwrap_or(false);
     if !listed {
-        return None;
+        return Err("检出的 registry/skills.json 缺失或未列出该 slug".into());
     }
-    // origin remote 归一后 == 官方。
-    let origin = git_output(&toplevel, &["remote", "get-url", "origin"])?;
-    if !is_official_remote(origin.trim()) {
-        return None;
+    // origin remote 归一后在官方白名单内。
+    let origin = git_output(&toplevel, &["remote", "get-url", "origin"])
+        .ok_or_else(|| "无法读取检出的 origin remote".to_string())?;
+    let origin = origin.trim();
+    if !is_official_remote(origin) {
+        return Err(format!("origin 非官方仓亦非声明镜像：{origin}"));
     }
-    Some(toplevel)
+    Ok(toplevel)
 }
 
 fn is_link_or_junction(meta: &std::fs::Metadata) -> bool {
@@ -299,7 +312,7 @@ pub struct ResolvedSource {
 pub fn resolve_source(host_targets: &[PathBuf], builtin_slugs: &[String]) -> ResolvedSource {
     let mut occupied = 0usize;
     let mut toplevels: Vec<PathBuf> = Vec::new();
-    let mut copy_seen = false;
+    let mut failures: Vec<String> = Vec::new();
 
     for target in host_targets {
         for slug in builtin_slugs {
@@ -310,8 +323,9 @@ pub fn resolve_source(host_targets: &[PathBuf], builtin_slugs: &[String]) -> Res
             }
             occupied += 1;
             match gitlink_toplevel(&entry, slug) {
-                Some(top) => toplevels.push(top),
-                None => copy_seen = true, // 占了槽位却不达 GitLink → CopyPlain
+                Ok(top) => toplevels.push(top),
+                // 占了槽位却不达 GitLink → CopyPlain；带上败在哪一关供诊断。
+                Err(why) => failures.push(format!("{}：{why}", entry.display())),
             }
         }
     }
@@ -334,17 +348,22 @@ pub fn resolve_source(host_targets: &[PathBuf], builtin_slugs: &[String]) -> Res
             uniq.push(t);
         }
     }
-    if copy_seen || uniq.len() > 1 {
+    if !failures.is_empty() || uniq.len() > 1 {
         let reason = if uniq.len() > 1 {
-            "多来源混装（各 host 指向不同检出）"
+            "多来源混装（各 host 指向不同检出）".to_string()
         } else {
-            "拷贝安装或非官方源（占了技能槽位却不是指向官方检出的软链）"
+            // 逐槽位细节让用户能直接定位（限 3 条防 UI 溢出）。
+            let mut detail = failures[..failures.len().min(3)].join("；");
+            if failures.len() > 3 {
+                detail.push_str(&format!("；等共 {} 处", failures.len()));
+            }
+            format!("拷贝安装或非官方源——{detail}")
         };
         return ResolvedSource {
             info: SourceInfo {
                 class: SourceClass::Unknown,
                 path: uniq.first().map(|p| p.display().to_string()),
-                reason: Some(reason.into()),
+                reason: Some(reason),
             },
             toplevel: None,
         };
