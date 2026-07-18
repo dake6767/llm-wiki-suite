@@ -163,6 +163,14 @@ for every package source.
 System packages are also host-specific: ffmpeg recipes distinguish Homebrew,
 apt, dnf, pacman, root/non-root Linux, and winget. If no declared package
 manager exists, report `unavailable`; never substitute a guessed distro command.
+On Windows the ffmpeg recipes route by the **github** probe, not the system
+default: winget's `Gyan.FFmpeg` payload downloads from GitHub Releases, so a
+restricted network selects the structured `cn` recipe instead —
+`scripts/fetch_ffmpeg.py`, which resolves the official gyan.dev essentials
+build (project relay mirror as fallback), verifies its SHA-256, and stages it
+under `~/.my-llm-wiki/tools/ffmpeg/bin`. preflight probes that directory in
+addition to PATH, and the recipe carries its own `postcheck` argv; run the
+reported postcheck as usual and do not require ffmpeg to be on PATH.
 
 Interpret capability states exactly:
 

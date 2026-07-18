@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -230,6 +233,84 @@ class ToolchainTests(unittest.TestCase):
         self.assertEqual(recipe["env"], {"DEBIAN_FRONTEND": "noninteractive"})
         self.assertEqual(recipe["step_timeout_seconds"], 900)
         self.assertEqual(recipe["postcheck_timeout_seconds"], 30)
+
+    def test_windows_ffmpeg_routes_by_github_probe(self) -> None:
+        ffmpeg = self.catalog["tools"]["ffmpeg"]
+
+        def which(name: str, path: str | None = None):
+            return "C:\\winget.exe" if name == "winget" else None
+
+        with mock.patch.object(preflight.platform, "system", return_value="Windows"), \
+             mock.patch.object(preflight.shutil, "which", side_effect=which):
+            open_net = preflight.install_recipe(
+                ffmpeg, {"system": "global", "github": "global"}
+            )
+            restricted = preflight.install_recipe(
+                ffmpeg, {"system": "global", "github": "cn"}
+            )
+            offline = preflight.install_recipe(
+                ffmpeg, {"system": "global", "github": "unavailable"}
+            )
+        self.assertEqual(open_net["platform"], "windows-winget")
+        self.assertEqual(open_net["steps"][0][0], "winget")
+        self.assertEqual(restricted["platform"], "windows-winget")
+        self.assertIn("fetch_ffmpeg.py", json.dumps(restricted["steps"]))
+        self.assertIn("--status", restricted["postcheck"])
+        self.assertIn("fetch_ffmpeg.py", json.dumps(restricted["postcheck"]))
+        self.assertEqual(offline["route"], "unavailable")
+        self.assertIn("github", offline["reason"])
+
+    def test_windows_without_winget_still_installs_portable_ffmpeg(self) -> None:
+        ffmpeg = self.catalog["tools"]["ffmpeg"]
+        with mock.patch.object(preflight.platform, "system", return_value="Windows"), \
+             mock.patch.object(preflight.shutil, "which", return_value=None):
+            recipe = preflight.install_recipe(
+                ffmpeg, {"system": "global", "github": "cn"}
+            )
+        self.assertEqual(recipe["platform"], "windows")
+        self.assertIn("fetch_ffmpeg.py", json.dumps(recipe["steps"]))
+
+    def test_command_probe_falls_back_to_declared_extra_paths(self) -> None:
+        real_which = shutil.which
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = Path(tmp) / "bin"
+            bin_dir.mkdir()
+            if os.name == "nt":
+                fake = bin_dir / "ffmpeg.bat"
+                fake.write_text("@exit /b 0\n", encoding="utf-8")
+            else:
+                fake = bin_dir / "ffmpeg"
+                fake.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+                fake.chmod(0o755)
+            spec = {
+                "probe": {
+                    "kind": "command",
+                    "name": "ffmpeg",
+                    "extra_paths": [str(bin_dir)],
+                },
+                "postcheck": ["ffmpeg", "-version"],
+            }
+
+            def which(name: str, path: str | None = None):
+                return real_which(name, path=path) if path else None
+
+            with mock.patch.object(preflight.shutil, "which", side_effect=which):
+                found = preflight.command_tool(spec, "ffmpeg")
+        # Path comparison: Windows which() may report the PATHEXT match with
+        # different case (ffmpeg.BAT); WindowsPath equality folds case.
+        self.assertEqual(Path(found), fake)
+
+    def test_route_ecosystem_validation_rejects_unknown_keys(self) -> None:
+        catalog = json.loads(self.catalog_path.read_text(encoding="utf-8"))
+        catalog["tools"]["ffmpeg"]["route_ecosystem"] = {"solaris": "github"}
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
+            json.dump(catalog, handle)
+            bad_path = handle.name
+        try:
+            with self.assertRaises(ValueError):
+                preflight.load_catalog(bad_path)
+        finally:
+            os.unlink(bad_path)
 
     def test_every_install_recipe_has_noninteractive_deadlines(self) -> None:
         for name, spec in self.catalog["tools"].items():

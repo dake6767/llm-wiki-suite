@@ -66,8 +66,9 @@
       "postcheck": ["yt-dlp", "--version"]
     },
     "ffmpeg": {
-      "probe": {"kind": "command", "name": "ffmpeg"},
+      "probe": {"kind": "command", "name": "ffmpeg", "extra_paths": ["~/.my-llm-wiki/tools/ffmpeg/bin"]},
       "ecosystem": "system",
+      "route_ecosystem": {"windows-winget": "github", "windows": "github"},
       "description": "audio conversion and cover handling",
       "home": "https://ffmpeg.org",
       "step_timeout_seconds": 900,
@@ -95,7 +96,12 @@
           "global": {"steps": [["pacman", "-S", "--noconfirm", "ffmpeg"]]}
         },
         "windows-winget": {
-          "global": {"steps": [["winget", "install", "--id", "Gyan.FFmpeg", "--exact", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"]]}
+          "global": {"steps": [["winget", "install", "--id", "Gyan.FFmpeg", "--exact", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"]]},
+          "cn": {"steps": [["{python}", "{suite}/scripts/fetch_ffmpeg.py", "--json"]], "postcheck": ["{python}", "{suite}/scripts/fetch_ffmpeg.py", "--status"]}
+        },
+        "windows": {
+          "global": {"steps": [["{python}", "{suite}/scripts/fetch_ffmpeg.py", "--json"]], "postcheck": ["{python}", "{suite}/scripts/fetch_ffmpeg.py", "--status"]},
+          "cn": {"steps": [["{python}", "{suite}/scripts/fetch_ffmpeg.py", "--json"]], "postcheck": ["{python}", "{suite}/scripts/fetch_ffmpeg.py", "--status"]}
         }
       },
       "postcheck": ["ffmpeg", "-version"]
