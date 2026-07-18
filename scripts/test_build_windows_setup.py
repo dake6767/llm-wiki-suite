@@ -18,6 +18,7 @@ class BuildWindowsSetupTests(unittest.TestCase):
             {"documents", "web", "video", "asr-zh", "asr-other"},
         )
         self.assertEqual(lock["build"]["pyinstaller"], "6.21.0")
+        self.assertIn("shlex", builder.DYNAMIC_SUITE_STDLIB)
 
     def test_lock_rejects_unpinned_python_package(self) -> None:
         lock = builder.load_lock()

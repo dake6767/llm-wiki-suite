@@ -27,6 +27,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 LOCK = ROOT / "registry" / "windows-toolchain.lock.json"
 MAX_DOWNLOAD = 2 * 1024 * 1024 * 1024
+# ``windows_setup.py`` loads suite installer modules from the extracted payload
+# at runtime, so PyInstaller cannot discover standard-library imports that are
+# unique to those modules. Keep that frozen boundary explicit and tested.
+DYNAMIC_SUITE_STDLIB = ("shlex",)
 
 
 class BuildError(RuntimeError):
@@ -428,6 +432,11 @@ def build_manifest(lock: dict, tag: str, assets: dict[str, Path], dest: Path) ->
 def build_executable(payload: Path, dist: Path, work: Path, version: str) -> Path:
     env = os.environ.copy()
     env["LLM_WIKI_SETUP_VERSION"] = version
+    dynamic_imports = [
+        value
+        for module in DYNAMIC_SUITE_STDLIB
+        for value in ("--hidden-import", module)
+    ]
     subprocess.run(
         [
             sys.executable, "-m", "PyInstaller",
@@ -435,6 +444,7 @@ def build_executable(payload: Path, dist: Path, work: Path, version: str) -> Pat
             "--name", "My-LLM-Wiki-Setup",
             "--hidden-import", "tkinter",
             "--hidden-import", "tkinter.messagebox",
+            *dynamic_imports,
             "--add-data", f"{payload}{os.pathsep}payload",
             "--distpath", str(dist),
             "--workpath", str(work / "pyinstaller"),
