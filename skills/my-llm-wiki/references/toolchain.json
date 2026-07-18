@@ -97,11 +97,11 @@
         },
         "windows-winget": {
           "global": {"steps": [["winget", "install", "--id", "Gyan.FFmpeg", "--exact", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"]]},
-          "cn": {"steps": [["{python}", "{suite}/scripts/fetch_ffmpeg.py", "--json"]], "postcheck": ["{python}", "{suite}/scripts/fetch_ffmpeg.py", "--status"]}
+          "cn": {"steps": [["{python}", "{suite}/scripts/fetch_ffmpeg.py", "--json"]], "postcheck": ["{python}", "{suite}/scripts/fetch_ffmpeg.py", "--status"], "self_probing": true}
         },
         "windows": {
           "global": {"steps": [["{python}", "{suite}/scripts/fetch_ffmpeg.py", "--json"]], "postcheck": ["{python}", "{suite}/scripts/fetch_ffmpeg.py", "--status"]},
-          "cn": {"steps": [["{python}", "{suite}/scripts/fetch_ffmpeg.py", "--json"]], "postcheck": ["{python}", "{suite}/scripts/fetch_ffmpeg.py", "--status"]}
+          "cn": {"steps": [["{python}", "{suite}/scripts/fetch_ffmpeg.py", "--json"]], "postcheck": ["{python}", "{suite}/scripts/fetch_ffmpeg.py", "--status"], "self_probing": true}
         }
       },
       "postcheck": ["ffmpeg", "-version"]

@@ -170,7 +170,10 @@ restricted network selects the structured `cn` recipe instead —
 build (project relay mirror as fallback), verifies its SHA-256, and stages it
 under `~/.my-llm-wiki/tools/ffmpeg/bin`. preflight probes that directory in
 addition to PATH, and the recipe carries its own `postcheck` argv; run the
-reported postcheck as usual and do not require ffmpeg to be on PATH.
+reported postcheck as usual and do not require ffmpeg to be on PATH. This
+recipe is self-probing: its channels are independent of github/gitee, so it
+is proposed even when the github ecosystem probes `unavailable` — never
+downgrade it to "reported only" on that ground.
 
 Interpret capability states exactly:
 

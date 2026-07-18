@@ -107,7 +107,11 @@ def ecosystem_routes(dev: list[dict], mirrors: list[dict]) -> dict[str, str]:
     def choose(global_hosts: tuple[str, ...], mirror_host: str) -> str:
         if all(statuses.get(host) == "ok" for host in global_hosts):
             return "global"
-        if statuses.get(mirror_host) == "ok":
+        # A slow mirror still proves connectivity (same rule as the per-endpoint
+        # statuses: any HTTP response counts) — slow beats unavailable. The
+        # global side stays strict: when it is merely slow, the mirror route
+        # is the better recommendation anyway.
+        if statuses.get(mirror_host) in {"ok", "slow"}:
             return "cn"
         return "unavailable"
 
