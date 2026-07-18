@@ -77,7 +77,8 @@ class ToolchainTests(unittest.TestCase):
         profiles = ["capture.x.single", "capture.x.bookmarks"]
         names = preflight.profile_tool_names(self.catalog, profiles)
         self.assertEqual(names, ["opencli", "agent-reach"])
-        with mock.patch.object(preflight.shutil, "which", return_value="/bin/npm"):
+        with mock.patch.object(preflight.platform, "system", return_value="Darwin"), \
+                mock.patch.object(preflight.shutil, "which", return_value="/bin/npm"):
             report = preflight.build_report(
                 profiles,
                 self.catalog_path,
@@ -200,12 +201,13 @@ class ToolchainTests(unittest.TestCase):
         self.assertIn("tools: opencli ✓ · markitdown ✗ missing", rendered)
 
     def test_doc_profile_uses_cn_variant_when_network_is_restricted(self) -> None:
-        report = preflight.build_report(
-            ["capture.doc"],
-            self.catalog_path,
-            tools={"markitdown": ""},
-            routes={"pypi": "cn"},
-        )
+        with mock.patch.object(preflight.platform, "system", return_value="Darwin"):
+            report = preflight.build_report(
+                ["capture.doc"],
+                self.catalog_path,
+                tools={"markitdown": ""},
+                routes={"pypi": "cn"},
+            )
         self.assertEqual(report["status"], "action-required")
         recommendation = report["recommendations"][0]
         self.assertEqual(recommendation["tool"], "markitdown")
@@ -280,7 +282,8 @@ class ToolchainTests(unittest.TestCase):
             def which(name: str, path: str | None = None):
                 return real_which(name, path=path) if path else None
 
-            with mock.patch.object(preflight.shutil, "which", side_effect=which):
+            with mock.patch.object(preflight, "is_windows", return_value=False), \
+                    mock.patch.object(preflight.shutil, "which", side_effect=which):
                 found = preflight.command_tool(spec, "ffmpeg")
         # Path comparison: Windows which() may report the PATHEXT match with
         # different case (ffmpeg.BAT); WindowsPath equality folds case.
@@ -318,9 +321,10 @@ class ToolchainTests(unittest.TestCase):
 
     def test_huggingface_route_is_reported_as_runtime_environment(self) -> None:
         spec = self.catalog["tools"]["faster-whisper"]
-        recipe = preflight.install_recipe(
-            spec, {"pypi": "global", "huggingface": "cn"}
-        )
+        with mock.patch.object(preflight.platform, "system", return_value="Linux"):
+            recipe = preflight.install_recipe(
+                spec, {"pypi": "global", "huggingface": "cn"}
+            )
         self.assertEqual(recipe["env"], {})
         self.assertEqual(
             recipe["runtime_env"], {"HF_ENDPOINT": "https://hf-mirror.com"}

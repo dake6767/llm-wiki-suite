@@ -42,12 +42,11 @@ class ToolRuntimeTests(unittest.TestCase):
                     "opencli": {"argv": ["{home}/tools/opencli/node.exe", "{home}/tools/opencli/opencli.js"]}
                 },
             }), encoding="utf-8")
-            self.assertEqual(
-                tool_runtime.resolve_command_argv(
-                    "opencli", system="Windows", receipt_path=receipt
-                ),
-                [str(node.resolve()), str(script.resolve())],
+            resolved = tool_runtime.resolve_command_argv(
+                "opencli", system="Windows", receipt_path=receipt
             )
+            self.assertEqual(resolved[0], str(node.resolve()))
+            self.assertEqual(Path(resolved[1]), script.resolve())
 
     def test_windows_never_falls_back_to_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, \
