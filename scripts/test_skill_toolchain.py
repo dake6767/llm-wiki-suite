@@ -296,7 +296,9 @@ class ToolchainTests(unittest.TestCase):
 
             with mock.patch.object(preflight.shutil, "which", side_effect=which):
                 found = preflight.command_tool(spec, "ffmpeg")
-        self.assertEqual(found, str(fake))
+        # Path comparison: Windows which() may report the PATHEXT match with
+        # different case (ffmpeg.BAT); WindowsPath equality folds case.
+        self.assertEqual(Path(found), fake)
 
     def test_route_ecosystem_validation_rejects_unknown_keys(self) -> None:
         catalog = json.loads(self.catalog_path.read_text(encoding="utf-8"))
