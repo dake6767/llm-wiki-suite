@@ -100,6 +100,10 @@ fn official_remote_normalization() {
         "git@github.com:dake6767/llm-wiki-suite.git",
         "git@github.com:DAKE6767/LLM-WIKI-SUITE",
         "ssh://git@github.com/dake6767/llm-wiki-suite.git",
+        // Gitee 是 bootstrap.sh 大陆网络降级克隆的声明镜像，须与其白名单一致。
+        "https://gitee.com/dake6767/llm-wiki-suite.git",
+        "https://gitee.com/dake6767/llm-wiki-suite",
+        "git@gitee.com:dake6767/llm-wiki-suite.git",
     ] {
         assert!(is_official_remote(url), "should be official: {url}");
     }
@@ -109,6 +113,8 @@ fn official_remote_normalization() {
         "https://gitlab.com/dake6767/llm-wiki-suite",
         "https://github.com/dake6767/other-repo",
         "https://github.com/dake6767/llm-wiki-suite-evil",
+        "https://gitee.com/evil/llm-wiki-suite",
+        "https://gitee.com/dake6767/other-repo",
     ] {
         assert!(!is_official_remote(url), "should NOT be official: {url}");
     }
@@ -165,7 +171,12 @@ fn unknown_prompt_is_diagnose_only() {
 
 // ——— 源解析：临时目录 + 真实 symlink + 真实 git 检出（GitLink / Copy / Mixed / Absent）———
 
-fn init_official_checkout(dir: &std::path::Path, slug: &str, pack_version: &str) {
+fn init_checkout_with_remote(
+    dir: &std::path::Path,
+    slug: &str,
+    pack_version: &str,
+    remote_url: &str,
+) {
     use std::process::Command;
     std::fs::create_dir_all(dir.join("skills").join(slug)).unwrap();
     std::fs::create_dir_all(dir.join("registry")).unwrap();
@@ -185,12 +196,16 @@ fn init_official_checkout(dir: &std::path::Path, slug: &str, pack_version: &str)
             .unwrap();
     };
     git(&["init", "-q"]);
-    git(&[
-        "remote",
-        "add",
-        "origin",
+    git(&["remote", "add", "origin", remote_url]);
+}
+
+fn init_official_checkout(dir: &std::path::Path, slug: &str, pack_version: &str) {
+    init_checkout_with_remote(
+        dir,
+        slug,
+        pack_version,
         "https://github.com/dake6767/llm-wiki-suite.git",
-    ]);
+    );
 }
 
 #[cfg(unix)]
@@ -235,6 +250,28 @@ fn resolve_gitlink_reads_installed() {
 }
 
 #[test]
+fn resolve_gitee_mirror_link_is_gitlink() {
+    // bootstrap.sh 在 GitHub 不可达时从 Gitee 镜像克隆——同样是官方安装形态，
+    // 不得因 origin 是镜像而判 Unknown（曾在大陆 Windows 装机上误报）。
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("suite");
+    init_checkout_with_remote(
+        &repo,
+        "my-llm-wiki",
+        "1.2.0",
+        "https://gitee.com/dake6767/llm-wiki-suite.git",
+    );
+    let host = tmp.path().join(".claude/skills");
+    std::fs::create_dir_all(&host).unwrap();
+    link_skill_dir(&repo.join("skills/my-llm-wiki"), &host.join("my-llm-wiki"));
+
+    let resolved = resolve_source(&[host], &["my-llm-wiki".to_string()]);
+    assert_eq!(resolved.info.class, SourceClass::GitLink);
+    let top = resolved.toplevel.unwrap();
+    assert_eq!(read_installed_version(&top).unwrap().canonical(), "1.2.0");
+}
+
+#[test]
 fn resolve_real_dir_is_copy_unknown() {
     let tmp = tempfile::tempdir().unwrap();
     let host = tmp.path().join(".claude/skills");
@@ -242,43 +279,31 @@ fn resolve_real_dir_is_copy_unknown() {
     std::fs::create_dir_all(host.join("my-llm-wiki")).unwrap();
     let resolved = resolve_source(&[host], &["my-llm-wiki".to_string()]);
     assert_eq!(resolved.info.class, SourceClass::Unknown);
+    // reason 必须点名具体槽位和败因，让用户能直接定位。
+    let reason = resolved.info.reason.unwrap();
+    assert!(reason.contains("my-llm-wiki"), "reason: {reason}");
+    assert!(reason.contains("真实目录"), "reason: {reason}");
 }
 
 #[test]
 fn resolve_symlink_to_nonofficial_is_unknown() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = tmp.path().join("suite");
-    use std::process::Command;
-    std::fs::create_dir_all(repo.join("skills/my-llm-wiki")).unwrap();
-    std::fs::create_dir_all(repo.join("registry")).unwrap();
-    std::fs::write(
-        repo.join("registry/skills.json"),
-        r#"{"version":3,"pack_version":"1.0.0","skills":[{"slug":"my-llm-wiki"}]}"#,
-    )
-    .unwrap();
-    Command::new("git")
-        .arg("-C")
-        .arg(&repo)
-        .args(["init", "-q"])
-        .output()
-        .unwrap();
-    Command::new("git")
-        .arg("-C")
-        .arg(&repo)
-        .args([
-            "remote",
-            "add",
-            "origin",
-            "https://github.com/evil/llm-wiki-suite.git",
-        ])
-        .output()
-        .unwrap();
+    init_checkout_with_remote(
+        &repo,
+        "my-llm-wiki",
+        "1.0.0",
+        "https://github.com/evil/llm-wiki-suite.git",
+    );
     let host = tmp.path().join(".claude/skills");
     std::fs::create_dir_all(&host).unwrap();
     link_skill_dir(&repo.join("skills/my-llm-wiki"), &host.join("my-llm-wiki"));
 
     let resolved = resolve_source(&[host], &["my-llm-wiki".to_string()]);
     assert_eq!(resolved.info.class, SourceClass::Unknown);
+    // reason 带上实际 origin，诊断时无需再手查。
+    let reason = resolved.info.reason.unwrap();
+    assert!(reason.contains("github.com/evil"), "reason: {reason}");
 }
 
 #[test]
