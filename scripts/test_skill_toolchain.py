@@ -275,9 +275,13 @@ class ToolchainTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             bin_dir = Path(tmp) / "bin"
             bin_dir.mkdir()
-            fake = bin_dir / "ffmpeg"
-            fake.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-            fake.chmod(0o755)
+            if os.name == "nt":
+                fake = bin_dir / "ffmpeg.bat"
+                fake.write_text("@exit /b 0\n", encoding="utf-8")
+            else:
+                fake = bin_dir / "ffmpeg"
+                fake.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+                fake.chmod(0o755)
             spec = {
                 "probe": {
                     "kind": "command",

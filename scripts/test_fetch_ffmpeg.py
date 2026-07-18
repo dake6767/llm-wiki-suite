@@ -80,6 +80,12 @@ class StageTests(unittest.TestCase):
             "url": "https://example.invalid/ffmpeg.zip",
             "sha256": self.sha256,
         }
+        # The staged "binary" is fake zip content; on Windows run_postcheck
+        # would execute it for real (WinError 216). Neutralize it everywhere
+        # so the suite behaves identically across platforms.
+        patcher = mock.patch.object(fetch_ffmpeg, "run_postcheck", lambda *a, **k: None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def fake_download(self, url: str, target: Path, sha256: str, timeout: float) -> None:
         self.assertEqual(sha256, self.sha256)
