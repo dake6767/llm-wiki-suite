@@ -29,6 +29,13 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from tool_runtime import (
+    ToolRuntimeError,
+    is_windows,
+    resolve_command_argv,
+    resolve_python,
+)
+
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_CATALOG = SKILL_DIR / "references" / "toolchain.json"
@@ -72,6 +79,11 @@ def load_catalog(path: Path | str | None = None) -> dict:
             not isinstance(path, str) or not path for path in extra_paths
         ):
             raise ValueError(f"invalid probe extra_paths: {name}")
+        windows_component = spec.get("windows_component")
+        if windows_component is not None and (
+            not isinstance(windows_component, str) or not windows_component
+        ):
+            raise ValueError(f"invalid windows_component: {name}")
         installs = spec.get("install")
         if installs is None:
             continue
@@ -161,8 +173,17 @@ def profile_tool_names(catalog: dict, profiles: list[str]) -> list[str]:
 
 def command_tool(spec: dict, name: str) -> str:
     """Return the executable only after its declared postcheck succeeds."""
-    path = shutil.which(name)
-    if not path:
+    prefix: list[str] = []
+    if is_windows():
+        try:
+            prefix = resolve_command_argv(name)
+        except ToolRuntimeError:
+            return ""
+    else:
+        path = shutil.which(name)
+        if path:
+            prefix = [path]
+    if not prefix and not is_windows():
         # Portable installs (e.g. fetch_ffmpeg.py) live in declared well-known
         # directories rather than on PATH.
         extra_dirs = [
@@ -172,12 +193,14 @@ def command_tool(spec: dict, name: str) -> str:
         extra_dirs = [entry for entry in extra_dirs if Path(entry).is_dir()]
         if extra_dirs:
             path = shutil.which(name, path=os.pathsep.join(extra_dirs))
-    if not path:
+            if path:
+                prefix = [path]
+    if not prefix:
         return ""
     postcheck = spec.get("postcheck") or [name, "--help"]
     if not isinstance(postcheck, list) or not postcheck:
         raise ValueError(f"invalid command postcheck for {name}")
-    argv = [path, *postcheck[1:]]
+    argv = [*prefix, *postcheck[1:]]
     try:
         result = subprocess.run(
             argv,
@@ -189,7 +212,9 @@ def command_tool(spec: dict, name: str) -> str:
         )
     except (OSError, subprocess.SubprocessError):
         return ""
-    return path if result.returncode == 0 else ""
+    if result.returncode != 0:
+        return ""
+    return prefix[0] if len(prefix) == 1 else json.dumps(prefix, ensure_ascii=False)
 
 
 _ASR_VENV = Path.home() / ".local" / "share" / "llm-wiki" / "asr-venv"
@@ -201,7 +226,18 @@ ASR_VENV_PYTHON = _ASR_VENV / (
 @functools.lru_cache(maxsize=None)
 def _module_python(module: str) -> str:
     """Return an interpreter that can import ``module``, or ""."""
-    candidates = [os.environ.get("LLM_WIKI_ASR_PYTHON", ""), str(ASR_VENV_PYTHON), sys.executable]
+    if is_windows():
+        profile = {"funasr": "asr-zh", "faster_whisper": "asr-other"}.get(module)
+        try:
+            candidates = [resolve_python(profile)] if profile else []
+        except ToolRuntimeError:
+            candidates = []
+    else:
+        candidates = [
+            os.environ.get("LLM_WIKI_ASR_PYTHON", ""),
+            str(ASR_VENV_PYTHON),
+            sys.executable,
+        ]
     seen = set()
     for candidate in candidates:
         if not candidate or candidate in seen:
@@ -276,6 +312,24 @@ def _replace_placeholders(value, replacements: dict[str, str]):
 
 
 def install_recipe(spec: dict, routes: dict[str, str]) -> dict | None:
+    if platform.system().lower() == "windows":
+        component = spec.get("windows_component")
+        if not isinstance(component, str) or not component:
+            return None
+        setup = Path.home() / ".my-llm-wiki" / "setup" / "My-LLM-Wiki-Setup.exe"
+        return {
+            "step_timeout_seconds": spec["step_timeout_seconds"],
+            "postcheck_timeout_seconds": spec["postcheck_timeout_seconds"],
+            "route": "windows-setup",
+            "platform": "windows-setup",
+            "reason": "Windows toolchains are managed only by My-LLM-Wiki-Setup.exe",
+            "component": component,
+            "steps": [[str(setup), "components", "install", "--component", component]],
+            "env": {},
+            "runtime_env": {},
+            "unavailable_runtime": [],
+            "postcheck": [str(setup), "components", "doctor", "--component", component],
+        }
     installs = spec.get("install")
     if not isinstance(installs, dict):
         return None

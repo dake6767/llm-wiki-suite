@@ -65,7 +65,12 @@ def ready_wikis(entries: list[dict]) -> list[Path]:
     return ready
 
 
-def ensure_wiki(config: dict, *, dry_run: bool = False) -> Path:
+def ensure_wiki(
+    config: dict,
+    *,
+    dry_run: bool = False,
+    python_executable: str | None = None,
+) -> Path:
     registry = registry_path(config)
     root = default_wiki_root(config)
     existing = ready_wikis(load_registry(registry))
@@ -88,7 +93,7 @@ def ensure_wiki(config: dict, *, dry_run: bool = False) -> Path:
     try:
         subprocess.run(
             [
-                sys.executable,
+                python_executable or sys.executable,
                 str(INIT_WIKI),
                 "--path",
                 str(root),

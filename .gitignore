@@ -1,6 +1,9 @@
 __pycache__/
 *.pyc
 .DS_Store
+.setup-payload/
+setup-dist/
+windows-setup-dist/
 
 # Per-skill locally generated outputs (self-interpretation reports, render artifacts)
 skills/*/reports/

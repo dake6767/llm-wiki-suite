@@ -733,6 +733,8 @@ function SkillsPanel() {
   const sourceLabel =
     info?.source?.class === "git_link"
       ? "GitLink"
+      : info?.source?.class === "managed_pack"
+        ? "Windows Setup"
       : info?.source?.class === "unknown"
         ? "Unknown"
         : info?.source?.class === "absent"
@@ -745,8 +747,9 @@ function SkillsPanel() {
         <div className="min-w-0">
           <h3 className="font-display text-xl font-semibold">技能更新</h3>
           <p className="mt-2 text-sm leading-6 text-ink-soft">
-            探测 llm-wiki 技能包版本。更新由 agent 完成——复制下方提示词，交给任一 host 的
-            agent 走 <span className="font-mono">bootstrap.sh --update</span>。App 只提醒、不改技能文件。
+            探测 llm-wiki 技能包版本。更新由 agent 完成——GitLink 走
+            <span className="font-mono"> bootstrap.sh --update</span>，Windows 受管副本走新版
+            <span className="font-mono"> My-LLM-Wiki-Setup.exe</span>。App 只提醒、不改技能文件。
           </p>
           <p className="mt-2 text-sm leading-6 text-ink-faint">
             {installed ? (

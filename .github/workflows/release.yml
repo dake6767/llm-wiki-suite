@@ -28,6 +28,7 @@ jobs:
       contents: write
     outputs:
       release_id: ${{ steps.create.outputs.result }}
+      release_upload_url: ${{ steps.create.outputs.upload_url }}
     steps:
       - name: Create or reuse draft release
         id: create
@@ -45,23 +46,85 @@ jobs:
             });
             const existing = releases.find((r) => r.tag_name === tag);
             if (existing) {
+              if (!existing.draft) {
+                throw new Error(`refusing to mutate published release ${tag}`);
+              }
               core.info(`reusing release ${existing.id} for ${tag}`);
+              core.setOutput('upload_url', existing.upload_url);
               return existing.id;
             }
             const { data: created } = await github.rest.repos.createRelease({
               owner: context.repo.owner,
               repo: context.repo.repo,
               tag_name: tag,
-              name: `My LLM Wiki Browser ${tag}`,
+              name: `My LLM Wiki ${tag}`,
               // macOS 产物是完整 ad-hoc 签名（无 Developer ID/公证），浏览器下载会带
               // quarantine：Gatekeeper 提示「无法验证开发者」，需到系统设置里「仍要打开」；
               // 右键打开对这种情况不适用（老文案误导，v1.0.5 起修正）。脚本/更新器下载
               // 不带 quarantine，无此步。
-              body: '下载对应平台的安装包；Windows 另有免安装的 portable zip（解压即用，需系统已有 WebView2，Win10/11 自带）。产物未做 Apple 公证 / Windows 代码签名，浏览器下载后首次运行需手动放行：macOS 提示「无法验证开发者」时，到 系统设置 → 隐私与安全性 → 点「仍要打开」（用 install 脚本安装或应用内自动更新则无此步）；Windows SmartScreen 选「仍要运行」。',
+              body: 'Windows agent/skills/toolchain 请下载 My-LLM-Wiki-Setup.exe；它不要求预装 Git、Python、Node、npm、pip 或 winget，并按 component-manifest.json 的 SHA-256 安装受管组件。Browser 仍提供各平台安装包，Windows 另有免安装 portable zip（需 WebView2）。产物未做 Apple 公证 / Windows Authenticode 代码签名：macOS 首次运行按系统提示到 隐私与安全性 → 仍要打开；Windows SmartScreen 选择仍要运行。',
               draft: true,
               prerelease: false,
             });
+            core.setOutput('upload_url', created.upload_url);
             return created.id;
+
+  build-windows-setup:
+    needs: create-release
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install locked Setup builder
+        shell: pwsh
+        run: |
+          $lock = Get-Content registry/windows-toolchain.lock.json -Raw | ConvertFrom-Json
+          python -m pip install --disable-pip-version-check --no-input "pyinstaller==$($lock.build.pyinstaller)"
+      - name: Build pinned Setup and component packs
+        shell: pwsh
+        run: |
+          python scripts/build_windows_setup.py `
+            --release-tag "${{ github.ref_name }}" `
+            --dist windows-setup-dist
+          $rows = Get-ChildItem windows-setup-dist -File |
+            Sort-Object Name |
+            ForEach-Object {
+              $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              "$hash  $($_.Name)"
+            }
+          $rows | Set-Content windows-setup-dist/SHA256SUMS-windows-setup.txt
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-native-setup-${{ github.ref_name }}
+          path: windows-setup-dist/*
+          retention-days: 14
+      - name: Upload Setup assets to draft release
+        if: needs.create-release.outputs.release_id != ''
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $existing = gh api "repos/${{ github.repository }}/releases/$env:RELEASE_ID/assets" | ConvertFrom-Json
+          Get-ChildItem windows-setup-dist -File | ForEach-Object {
+            $file = $_
+            $asset = $existing | Where-Object { $_.name -eq $file.Name } | Select-Object -First 1
+            if ($asset) {
+              gh api --method DELETE "repos/${{ github.repository }}/releases/assets/$($asset.id)"
+            }
+            $name = [Uri]::EscapeDataString($file.Name)
+            curl.exe -sSf -X POST `
+              -H "Authorization: Bearer $env:GITHUB_TOKEN" `
+              -H "Content-Type: application/octet-stream" `
+              --data-binary "@$($file.FullName)" `
+              "https://uploads.github.com/repos/${{ github.repository }}/releases/$env:RELEASE_ID/assets?name=$name"
+          }
 
   build:
     needs: create-release

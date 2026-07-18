@@ -2,21 +2,18 @@
 name: my-llm-wiki
 description: >-
   Ingest external content into the immutable RAW layer of an LLM-WIKI knowledge
-  base as a faithful, self-contained original rather than a summary. Use whenever
-  the user wants to save, archive, clip, capture, file, or “沉淀” a URL, WeChat
-  article, web page, Xiaohongshu note, local document, X/Twitter post or bookmarks,
-  online video, or their own note/idea into a wiki or knowledge base; also use to
-  initialize a new wiki or when the user explicitly invokes my-llm-wiki. For X or
-  Twitter capture, combine with my-llm-wiki-x. For online-video capture, combine
-  with my-llm-wiki-video. When one request combines capture with downstream wiki
-  synthesis—e.g. “抓取并整理”, “沉淀后直接整理”, “抓取并理解/读懂/吃透”, or
-  “capture then ingest/synthesize”—own the full single-request chain: write RAW,
-  hand the exact wiki root and RAW path to my-llm-wiki-maintainer, verify its
-  ingest ledger, then issue the terminal report. Do not stop after RAW or ask the
-  user to repeat the synthesis request. Do not use merely to summarize/analyze
-  content, search the web, judge
-  whether something is worth reading, rip a video file, convert a PDF only for
-  reading, edit already-derived wiki pages, or sync notes between apps.
+  base as a faithful, self-contained original, not a summary. Use when the user
+  wants to save, archive, clip, capture, file, or “沉淀” a URL, WeChat article,
+  webpage, Xiaohongshu note, local document, X/Twitter post or bookmarks, online
+  video, or their own note/idea; also use to initialize a wiki or when explicitly
+  invoked. Combine with my-llm-wiki-x for X/Twitter and my-llm-wiki-video for
+  online video. For requests that combine capture with synthesis—such as “抓取并整理”,
+  “抓取并理解/读懂/吃透”, or “capture then ingest”—own the full chain: write RAW,
+  hand its exact wiki root and path to my-llm-wiki-maintainer, verify the ingest
+  ledger, and report both stages. Do not stop after RAW or ask the user to repeat
+  the synthesis request. Do not use merely to summarize/analyze content, search
+  the web, judge whether it is worth reading, rip a video, convert a PDF only for
+  reading, edit derived wiki pages, or sync notes between apps.
 ---
 
 # my-llm-wiki — RAW capture facade and core
@@ -138,6 +135,34 @@ and confirm it has exited before the final report. Enable completion pushes only
 when deliberately returning before the job finishes and a later user-facing
 follow-up is wanted. Mixing active polling with a completion push creates a
 second, stale reply after the real result has already been delivered.
+
+## Use the platform command runner
+
+The command examples below are literal on macOS/Linux: run skill scripts with
+the selected Python and invoke installed tools through PATH. Windows is a hard
+cutover to the Setup receipt, so translate every Python/tool example through
+the stable native runner instead of searching PATH or recreating an old venv:
+
+```powershell
+$Setup = "$env:USERPROFILE\.my-llm-wiki\setup\My-LLM-Wiki-Setup.exe"
+
+# A core skill script (preflight, normalization, wiki routing, etc.)
+& $Setup python run --profile core -- "<skill>\scripts\preflight.py" --profile capture.web
+
+# A managed external tool and all of its ordinary argv
+& $Setup tools run opencli -- web read --url "https://example.com" --output "<temp>"
+& $Setup tools run markitdown -- "C:\path\document.pdf" -o "<temp>\doc.md"
+```
+
+For video ASR runners, use `python run --profile asr-zh -- ...` for
+SenseVoice and `python run --profile asr-other -- ...` for faster-whisper.
+The Setup runner applies the recorded runtime environment at model load time.
+If a component is absent, use only the doctor's structured
+`My-LLM-Wiki-Setup.exe components install --component <id>` recommendation
+after consent. Do not fall back to `python`, `python3`, npm, pip, winget,
+global PATH, MSYS path rewriting, or `~/.local/share/llm-wiki/asr-venv` on
+Windows. This single translation rule applies to every command in this skill
+and its references; macOS/Linux behavior remains unchanged.
 
 ## Fetch payloads are disk-first
 

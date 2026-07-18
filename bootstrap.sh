@@ -22,6 +22,7 @@ PROTOCOL=4
 CANONICAL_REPO_URL="https://github.com/dake6767/llm-wiki-suite.git"
 CANONICAL_REPO_PROBE_URL="https://github.com/dake6767/llm-wiki-suite"
 CHINA_MIRROR_REPO_URL="https://gitee.com/dake6767/llm-wiki-suite.git"
+WINDOWS_SETUP_URL="https://github.com/dake6767/llm-wiki-suite/releases/latest/download/My-LLM-Wiki-Setup.exe"
 DEFAULT_REPO_HOME="${LLM_WIKI_REPO_HOME:-$HOME/.my-llm-wiki/suite}"
 
 IS_WINDOWS=0
@@ -38,6 +39,14 @@ native_path() {
 die() { echo "bootstrap: $*" >&2; exit 2; }
 fail() { echo "bootstrap: $*" >&2; exit 1; }
 need_value() { [ $# -ge 2 ] && [ -n "$2" ] || die "$1 requires a value"; }
+
+if [ "$IS_WINDOWS" -eq 1 ]; then
+  echo "bootstrap: Windows no longer supports the Git-Bash/Python/Git install flow." >&2
+  echo "bootstrap: download and run the native My-LLM-Wiki-Setup.exe:" >&2
+  echo "bootstrap: $WINDOWS_SETUP_URL" >&2
+  echo "bootstrap: the Setup UI owns host selection, skills, private runtimes, tools, repair, and uninstall." >&2
+  exit 2
+fi
 
 REPO_ARG=""
 REPO_URL="${LLM_WIKI_REPO_URL:-$CANONICAL_REPO_URL}"

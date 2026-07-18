@@ -27,11 +27,14 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
+
+CORE_SCRIPTS = Path(__file__).resolve().parents[2] / "my-llm-wiki" / "scripts"
+sys.path.insert(0, str(CORE_SCRIPTS))
+from tool_runtime import ToolRuntimeError, resolve_command_argv  # noqa: E402
 
 _BV = re.compile(r"(BV[0-9A-Za-z]{6,})")
 _TS = re.compile(r"^\d{1,2}(:\d{1,2}){1,2}(\.\d+)?$")
@@ -147,18 +150,19 @@ def try_opencli(url: str, host: str, out: Path, timeout: int, warnings: list[str
     """subs path, or None. Tool breakage goes to `errors`, a clean empty result
     ("this video has no captions") only to `warnings` — the caller uses the
     distinction to pick exit 2 (branch to ASR) vs exit 1 (fix the tool/auth)."""
-    binary = shutil.which("opencli")
-    if not binary:
-        warnings.append("opencli not on PATH")
+    try:
+        prefix = resolve_command_argv("opencli")
+    except ToolRuntimeError as exc:
+        warnings.append(str(exc))
         return None
     if host == "youtube":
-        argv = [binary, "youtube", "transcript", url, "--mode", "grouped", "-f", "json"]
+        argv = [*prefix, "youtube", "transcript", url, "--mode", "grouped", "-f", "json"]
     else:
         bvid = _BV.search(url)
         if not bvid:
             warnings.append("no BV id in Bilibili URL; leaving captions to yt-dlp")
             return None
-        argv = [binary, "bilibili", "subtitle", bvid.group(1), "-f", "json"]
+        argv = [*prefix, "bilibili", "subtitle", bvid.group(1), "-f", "json"]
     result = run_argv(argv, timeout)
     raw = result.stdout or ""
     # opencli prints adapter warnings to stderr; stdout should be the JSON payload.
@@ -193,11 +197,12 @@ def pick_caption_file(files: list[Path], prefs: list[str]) -> Path:
 def try_ytdlp(url: str, out: Path, browser: str | None, timeout: int,
               warnings: list[str], errors: list[str], prefs: list[str]) -> Path | None:
     """Same error-vs-empty contract as try_opencli."""
-    binary = shutil.which("yt-dlp")
-    if not binary:
-        warnings.append("yt-dlp not on PATH")
+    try:
+        prefix = resolve_command_argv("yt-dlp")
+    except ToolRuntimeError as exc:
+        warnings.append(str(exc))
         return None
-    argv = [binary, "--skip-download", "--write-subs", "--write-auto-subs",
+    argv = [*prefix, "--skip-download", "--write-subs", "--write-auto-subs",
             "--sub-langs", "all", "--no-warnings",
             "-o", str(out / "subs.%(ext)s")]
     if browser:

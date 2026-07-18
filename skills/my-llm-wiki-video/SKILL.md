@@ -36,6 +36,15 @@ If the check fails, stop and install `my-llm-wiki`; do not duplicate or improvis
 the core. Suite installs declare this runtime dependency and install it
 automatically.
 
+On Windows, inherit the sibling core's **Use the platform command runner**
+rule for every command in this skill and its references. Resolve the sibling
+with native paths, then run core/video scripts through
+`My-LLM-Wiki-Setup.exe python run --profile core -- ...`; use profile
+`asr-zh` or `asr-other` for the matching ASR runner, and invoke opencli,
+yt-dlp, and ffmpeg through `My-LLM-Wiki-Setup.exe tools run <tool> -- ...`.
+Never reinterpret the macOS/Linux `python3` or bare-tool examples as permission
+to use global PATH on Windows.
+
 ## Workflow
 
 1. **Read the complete SOP.** Always read

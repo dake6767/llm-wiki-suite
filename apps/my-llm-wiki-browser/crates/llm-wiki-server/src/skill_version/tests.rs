@@ -285,6 +285,98 @@ fn resolve_real_dir_is_copy_unknown() {
     assert!(reason.contains("真实目录"), "reason: {reason}");
 }
 
+fn init_managed_copy(root: &std::path::Path, slug: &str, pack_version: &str) -> (PathBuf, PathBuf) {
+    let home = root.join("home/.my-llm-wiki");
+    let suite = home.join("suite/versions").join(pack_version);
+    std::fs::create_dir_all(suite.join("registry")).unwrap();
+    std::fs::write(
+        suite.join("registry/skills.json"),
+        format!(
+            r#"{{"version":3,"pack_version":"{pack_version}","skills":[{{"slug":"{slug}"}}]}}"#
+        ),
+    )
+    .unwrap();
+    let setup = home.join("setup/My-LLM-Wiki-Setup.exe");
+    std::fs::create_dir_all(setup.parent().unwrap()).unwrap();
+    std::fs::write(&setup, b"MZ-test").unwrap();
+
+    let host = root.join("home/.codex/skills");
+    let entry = host.join(slug);
+    std::fs::create_dir_all(&entry).unwrap();
+    std::fs::write(entry.join("SKILL.md"), "# Managed\n").unwrap();
+    std::fs::create_dir_all(entry.join("scripts")).unwrap();
+    std::fs::write(entry.join("scripts/run.py"), "print('ok')\n").unwrap();
+    let digest = content_digest(&entry).unwrap();
+    let install_id = "0123456789abcdef";
+    std::fs::write(
+        entry.join(INSTALL_MANIFEST),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema": 1,
+            "slug": slug,
+            "pack_version": pack_version,
+            "source_digest": digest,
+            "source_repo": suite,
+            "installer": "windows-setup",
+            "install_id": install_id,
+            "distribution": "managed-pack"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let receipt = home.join("setup/install-state.json");
+    std::fs::write(
+        &receipt,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema": 1,
+            "platform": "windows",
+            "home": home,
+            "suite": suite,
+            "pack_version": pack_version,
+            "install_id": install_id
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    (host, receipt)
+}
+
+#[test]
+fn resolve_setup_managed_copy_reads_installed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (host, receipt) = init_managed_copy(tmp.path(), "my-llm-wiki", "1.2.0");
+    let resolved =
+        resolve_source_with_receipt(&[host], &["my-llm-wiki".to_string()], Some(&receipt));
+    assert_eq!(resolved.info.class, SourceClass::ManagedPack);
+    assert!(
+        resolved
+            .info
+            .path
+            .unwrap()
+            .ends_with("My-LLM-Wiki-Setup.exe")
+    );
+    assert_eq!(
+        read_installed_version(resolved.toplevel.as_ref().unwrap())
+            .unwrap()
+            .canonical(),
+        "1.2.0"
+    );
+}
+
+#[test]
+fn mutated_setup_copy_is_unknown() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (host, receipt) = init_managed_copy(tmp.path(), "my-llm-wiki", "1.2.0");
+    std::fs::write(
+        host.join("my-llm-wiki/scripts/run.py"),
+        "print('mutated')\n",
+    )
+    .unwrap();
+    let resolved =
+        resolve_source_with_receipt(&[host], &["my-llm-wiki".to_string()], Some(&receipt));
+    assert_eq!(resolved.info.class, SourceClass::Unknown);
+    assert!(resolved.info.reason.unwrap().contains("内容摘要不匹配"));
+}
+
 #[test]
 fn resolve_symlink_to_nonofficial_is_unknown() {
     let tmp = tempfile::tempdir().unwrap();
@@ -360,6 +452,25 @@ fn gitlink_source() -> ResolvedSource {
         },
         toplevel: Some(PathBuf::from("/tmp/suite")),
     }
+}
+
+#[test]
+fn managed_prompt_routes_to_new_setup_not_bootstrap() {
+    let candidate = Candidate {
+        pack_version: SemVer::parse("1.3.0").unwrap(),
+        source_commit: None,
+        released_at: None,
+        notes: None,
+        min_app_version: None,
+    };
+    let prompt = build_managed_prompt(
+        r"C:\Users\tester\.my-llm-wiki\setup\My-LLM-Wiki-Setup.exe",
+        &candidate,
+    );
+    assert!(prompt.contains("My-LLM-Wiki-Setup.exe"));
+    assert!(prompt.contains("1.3.0"));
+    assert!(prompt.contains("不要运行旧 `bootstrap.sh`"));
+    assert!(!prompt.contains("bootstrap.sh --update"));
 }
 
 #[test]

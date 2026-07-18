@@ -178,7 +178,35 @@ doctor 后留给用户处理。doctor 完成后，agent 会用宿主原生单选
 （GitHub 仅作回退）。抓取工具仍需独立确认。完成后另发一条真实 URL 或自己的 note，即可开始
 首次 `capture → RAW → Wiki`。
 
-### 手动安装 skills
+### Windows 原生安装
+
+Windows 不再兼容 Git Bash + Python + Git 的旧安装链路，也不要求用户预装这些工具。
+请从 [最新 Release](https://github.com/dake6767/llm-wiki-suite/releases/latest)
+下载并运行 `My-LLM-Wiki-Setup.exe`。Setup 会显式列出 Codex、Claude、Hermes、agents 和
+WorkBuddy，未默认勾选任何宿主；你选定宿主后，它以受管 copy 模式安装 skills、私有
+Python 核心并初始化 Wiki。Documents、Web/OpenCLI、Video/yt-dlp+FFmpeg、中文 ASR 和
+非中文 ASR 都是可独立维护的版本锁定组件，不读取全局 PATH，也不会调用用户机器上的
+npm、pip 或 winget。
+
+旧 `bootstrap.sh` / `scripts/install.sh` 在 MSYS、MINGW、Cygwin 上会立即停止并指向
+Setup，不再尝试兼容。Setup 的更新、修复、组件 doctor 和卸载都依据
+`~/.my-llm-wiki/setup/install-state.json`；外来目录或无法确认来源的旧 skill 会在写入前
+停止，不会静默覆盖。当前 Windows Setup 尚未配置 Authenticode 代码签名，首次运行可能
+出现 Windows 安全提示；Release 中的组件由 SHA-256 清单固定并校验。
+
+`My-LLM-Wiki-Setup.exe uninstall` 只删除同一 `install_id` 拥有的 skill copy；加
+`--purge` 会在所有受管宿主移除后继续清理 suite、私有 Python 和工具组件，但始终保留 Wiki
+内容与注册表。正在运行的稳定 Setup EXE 由用户在进程退出后手动删除。
+
+上游工具不会在用户机器上自动追新。仓库每周运行
+`scripts/check_windows_toolchain_updates.py`，只查询各项目官方元数据；发现确有对应 Windows
+资产的新版本时创建或刷新 `windows-toolchain` issue。维护者审阅 changelog、许可证和兼容性后，
+在 PR 中更新 `registry/windows-toolchain.lock.json` 的精确版本、URL、SHA-256/npm integrity，
+重新构建受影响组件，并通过组件 postcheck 与 PATH 为空的 Windows clean-room 安装。合并后只发布
+新 tag；绝不替换旧 Release 的同名资产。像 Python 3.12.13 这种只有源码、没有 Windows
+embeddable runtime 的版本不会被误报为可升级候选。
+
+### macOS / Linux 手动安装 skills
 
 先下载并审阅独立 bootstrap 脚本，不使用 `curl | bash`。全球入口：
 
@@ -200,7 +228,7 @@ bash bootstrap.sh \
   --host workbuddy
 ```
 
-默认安装使用软链，checkout 是长期 source of truth，不应放在临时目录。脚本只同步到用户
+以下 bootstrap 命令只适用于 macOS 和 Linux。默认安装使用软链，checkout 是长期 source of truth，不应放在临时目录。脚本只同步到用户
 明确传入的 `--host`（`codex` / `claude` / `hermes` / `agents` / `workbuddy`），不会根据
 预先存在的目录擅自创建或修改 skills。已在开发 checkout 中运行时直接使用该 checkout；从
 独立下载的 bootstrap 安装时，如需复用开发 checkout，必须明确传 `--repo DIR`。未显式指定

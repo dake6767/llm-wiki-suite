@@ -9,12 +9,15 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+
+CORE_SCRIPTS = Path(__file__).resolve().parents[2] / "my-llm-wiki" / "scripts"
+sys.path.insert(0, str(CORE_SCRIPTS))
+from tool_runtime import ToolRuntimeError, resolve_command_argv  # noqa: E402
 
 
 def normalize_metadata(data: Any) -> dict[str, Any]:
@@ -53,11 +56,12 @@ def run_ytdlp(url: str, browser: str | None, timeout: int) -> Any:
     parsed = urlparse(url)
     if parsed.scheme != "https" or not parsed.netloc:
         raise ValueError("video URL must be an absolute HTTPS URL")
-    binary = shutil.which("yt-dlp")
-    if not binary:
-        raise RuntimeError("yt-dlp is not on PATH")
+    try:
+        prefix = resolve_command_argv("yt-dlp")
+    except ToolRuntimeError as exc:
+        raise RuntimeError(str(exc)) from exc
     command = [
-        binary,
+        *prefix,
         "--dump-single-json",
         "--skip-download",
         "--no-warnings",
