@@ -1,8 +1,51 @@
 # Agent Bootstrap Protocol 4
 
 This repository has one deterministic install protocol for Codex, Claude,
-Hermes, agents-compatible hosts, and WorkBuddy. It intentionally does not
-accept the pre-v4 `--target`, `--force`, `--yes`, or implicit-host flows.
+Hermes, agents-compatible hosts, and WorkBuddy. macOS and Linux use bootstrap
+protocol 4. Windows is a hard cutover to the native
+`My-LLM-Wiki-Setup.exe`; the legacy Git-Bash/Python/Git flow is unsupported.
+Neither path accepts the pre-v4 `--target`, `--force`, `--yes`, or
+implicit-host flows.
+
+## 0. Windows Native Setup Is The Only Windows Entry Point
+
+On Windows, download `My-LLM-Wiki-Setup.exe` from the latest GitHub Release
+and run it. Do not run `bootstrap.sh`, `scripts/install.sh`, or
+`scripts/install.py`, and do not install Git, Python, Node, npm, pip, winget,
+or Git Bash as prerequisites. The old scripts deliberately stop on MSYS,
+MINGW, and Cygwin before parsing install arguments:
+
+```text
+https://github.com/dake6767/llm-wiki-suite/releases/latest/download/My-LLM-Wiki-Setup.exe
+```
+
+The Setup UI must show every `registry/bootstrap.json` → `agent_hosts` entry
+with expanded skills path and detection state, start with no host selected,
+and require at least one explicit selection. It installs immutable skill
+copies plus a private CPython core under `~/.my-llm-wiki`, and may install the
+pinned Documents, Web, Video, Chinese ASR, and non-Chinese ASR components.
+Windows skills resolve external tools exclusively from the atomic Setup
+receipt at `~/.my-llm-wiki/setup/install-state.json`; they never fall back to
+global `PATH`, an old venv, npm, pip, winget, or a development checkout.
+
+Setup owns install, update, repair, component maintenance, exact postchecks,
+and uninstall for paths carrying its `install_id`. It may replace a verified
+older official checkout/link or an older Setup-owned copy through the normal
+backup mechanism. A foreign link or ordinary directory stops the whole plan
+before destination writes. Wiki initialization before doctor remains
+mandatory. `registry/windows-toolchain.lock.json` is the reviewed upstream
+input lock; released component archive hashes in `component-manifest.json`
+are the user-install boundary.
+
+Windows upstream updates are release engineering work, not user-side
+upgrades. The scheduled candidate check opens or refreshes a labeled issue,
+but it must not mutate the lock, an existing release, or silently promote
+versions. A version counts as a candidate only when its required Windows asset
+exists (for example Python source-only security releases are not embeddable
+runtime candidates). Review the version, source, hash/integrity and
+compatibility in a PR, rebuild every affected component, pass the Windows
+clean-room workflow, merge, then publish a new immutable release.
+macOS/Linux recipes and bootstrap behavior must not change as a side effect.
 
 ## 1. Ask For The Host Before Writing
 
@@ -25,9 +68,9 @@ or `~/.workbuddy` directories.
 
 ## 2. Release-First Entry Point
 
-For a URL-only installation, download the root `bootstrap.sh`, inspect it, and
-then execute it. Never pipe a remote script into a shell and never open an
-interactive pager during an unattended run.
+For a macOS/Linux URL-only installation, download the root `bootstrap.sh`,
+inspect it, and then execute it. Never pipe a remote script into a shell and
+never open an interactive pager during an unattended run. Windows uses §0.
 
 Canonical:
 
@@ -82,16 +125,17 @@ checkouts stop without replacement. Do not overwrite local changes.
 
 ## 4. Skill Installation Contract
 
-`scripts/install.py` owns the low-level target resolution, dependency/bundle
+On macOS/Linux, `scripts/install.py` owns the low-level target resolution, dependency/bundle
 closure, conflicts, provenance, locking, rollback, and exact doctor command.
 `bootstrap.sh` owns the complete install sequence, and `scripts/install.sh` is
 its local-checkout launcher. Do not treat a direct `scripts/install.py` run as a
-completed installation. Run the launchers as-is on macOS, Linux, and Windows
-Git Bash; do not create links manually or rewrite MSYS paths yourself.
+completed installation. Run the launchers as-is on macOS and Linux. Windows
+uses §0 and never uses these launchers.
 
-Default link mode creates POSIX directory symlinks or Windows PowerShell
-junctions. A destination is current only when it resolves to this exact skill
-source. A foreign/broken link or ordinary directory is a conflict.
+Default link mode creates POSIX directory symlinks. A destination is current
+only when it resolves to this exact skill source. A foreign/broken link or
+ordinary directory is a conflict. Windows Setup always installs verified
+immutable copies and does not create junctions.
 
 Copy mode is explicit:
 
@@ -160,20 +204,16 @@ routes GitHub, PyPI, npm, and Hugging Face independently. `global`, `cn`, and
 `unavailable` are per-ecosystem results; do not use one GitHub result as a proxy
 for every package source.
 
-System packages are also host-specific: ffmpeg recipes distinguish Homebrew,
-apt, dnf, pacman, root/non-root Linux, and winget. If no declared package
-manager exists, report `unavailable`; never substitute a guessed distro command.
-On Windows the ffmpeg recipes route by the **github** probe, not the system
-default: winget's `Gyan.FFmpeg` payload downloads from GitHub Releases, so a
-restricted network selects the structured `cn` recipe instead —
-`scripts/fetch_ffmpeg.py`, which resolves the official gyan.dev essentials
-build (project relay mirror as fallback), verifies its SHA-256, and stages it
-under `~/.my-llm-wiki/tools/ffmpeg/bin`. preflight probes that directory in
-addition to PATH, and the recipe carries its own `postcheck` argv; run the
-reported postcheck as usual and do not require ffmpeg to be on PATH. This
-recipe is self-probing: its channels are independent of github/gitee, so it
-is proposed even when the github ecosystem probes `unavailable` — never
-downgrade it to "reported only" on that ground.
+System packages on macOS/Linux are host-specific: ffmpeg recipes distinguish
+Homebrew, apt, dnf, pacman, and root/non-root Linux. If no declared package
+manager exists, report `unavailable`; never substitute a guessed distro
+command. On Windows every tool recommendation is instead a structured
+`My-LLM-Wiki-Setup.exe components install --component ...` argv followed by
+the matching Setup component doctor. Never surface or execute the historical
+winget, portable-ffmpeg, npm, or pip recipes on Windows. The Video component
+contains the release-pinned yt-dlp and verified Gyan FFmpeg bytes and is
+downloaded from the project htmlgo release route with GitHub Releases as the
+canonical fallback.
 
 Interpret capability states exactly:
 

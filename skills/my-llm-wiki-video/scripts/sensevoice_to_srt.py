@@ -16,6 +16,10 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+CORE_SCRIPTS = Path(__file__).resolve().parents[2] / "my-llm-wiki" / "scripts"
+sys.path.insert(0, str(CORE_SCRIPTS))
+from tool_runtime import ensure_managed_python  # noqa: E402
+
 
 # Keep Unicode controls escaped in source so command/security scanners never
 # see literal variation-selector characters in generated shell text.
@@ -134,6 +138,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    ensure_managed_python("asr-zh")
     args = build_parser().parse_args(argv)
     if not args.audio.is_file():
         print(f"sensevoice_to_srt: audio not found: {args.audio}", file=sys.stderr)

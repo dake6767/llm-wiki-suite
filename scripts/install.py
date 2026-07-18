@@ -318,17 +318,24 @@ def apply_plan(config: dict, plan: dict) -> None:
             if item["mode"] == "link":
                 make_link(source, dest)
             else:
+                copy_manifest = {
+                    "schema": 1,
+                    "slug": item["slug"],
+                    "pack_version": plan["pack_version"],
+                    "source_digest": item["source_digest"],
+                    "source_commit": plan["commit"],
+                    "source_repo": plan["repo_root"],
+                }
+                extra = plan.get("copy_manifest") or {}
+                if not isinstance(extra, dict) or any(
+                    not isinstance(key, str) for key in extra
+                ):
+                    raise InstallError("invalid copy_manifest metadata")
+                copy_manifest.update(extra)
                 install_copy(
                     source,
                     dest,
-                    {
-                        "schema": 1,
-                        "slug": item["slug"],
-                        "pack_version": plan["pack_version"],
-                        "source_digest": item["source_digest"],
-                        "source_commit": plan["commit"],
-                        "source_repo": plan["repo_root"],
-                    },
+                    copy_manifest,
                 )
             item["state"] = "installed"
     except BaseException as exc:

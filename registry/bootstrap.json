@@ -22,6 +22,15 @@
       "url": "https://gitee.com/dake6767/llm-wiki-suite/raw/main/bootstrap.sh"
     }
   ],
+  "windows_setup": {
+    "required": true,
+    "architecture": "x86_64",
+    "asset": "My-LLM-Wiki-Setup.exe",
+    "release_page": "https://github.com/dake6767/llm-wiki-suite/releases/latest",
+    "download_url": "https://github.com/dake6767/llm-wiki-suite/releases/latest/download/My-LLM-Wiki-Setup.exe",
+    "project_mirror_template": "https://wiki.htmlgo.to/_update/dl/{tag}/{asset}",
+    "legacy_bootstrap": "unsupported"
+  },
   "default_repo_home": "~/.my-llm-wiki/suite",
   "connector_dir": "~/.my-llm-wiki/connector",
   "wiki_registry_path": "~/.my-llm-wiki/wikis.json",

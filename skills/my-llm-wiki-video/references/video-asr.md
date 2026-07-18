@@ -23,7 +23,9 @@ cue→anchor assembly (§3), and content verification (§4) stay in
 
 ## 1. Audio-only download
 
-Download audio only with yt-dlp (never the video), e.g.
+Apply the loaded SKILL.md platform-runner rule to every bare tool and Python
+example below. On Windows that means Setup `tools run` / `python run`, never
+PATH. Download audio only with yt-dlp (never the video), e.g.
 `yt-dlp -x --audio-format mp3 -o "<tmp>/audio.%(ext)s" <url>` — but see the
 Bilibili format trap in `video-bilibili-pitfalls.md` (on Bilibili, list formats
 and pick the audio-only stream id explicitly).
@@ -41,16 +43,17 @@ Guess from the title/author (a title with ≥4 CJK chars and more CJK than latin
 - **Chinese → SenseVoice** (FunASR `SenseVoiceSmall`,
   [github.com/FunAudioLLM/SenseVoice](https://github.com/FunAudioLLM/SenseVoice)
   via [FunASR](https://github.com/modelscope/FunASR)): ~15× faster than
-  Whisper on CPU and far better on Chinese proper nouns. Install into a
-  dedicated venv: `python3 -m venv ~/.local/share/llm-wiki/asr-venv &&
+  Whisper on CPU and far better on Chinese proper nouns. On macOS/Linux,
+  install into a dedicated venv: `python3 -m venv ~/.local/share/llm-wiki/asr-venv &&
   ~/.local/share/llm-wiki/asr-venv/bin/pip install funasr torch`
   (torchaudio is NOT needed — the recipe loads audio with librosa, already
   a funasr dep). Create the venv with **python 3.11/3.12**: on 3.13,
   funasr's `editdistance` dep has no prebuilt wheel and without a C
-  compiler the whole install rolls back (live Windows incident; the field
+  compiler the whole install rolls back (a prior field incident required
   workaround was `--no-deps` + a python-Levenshtein `editdistance.py`
-  shim). On Windows the venv interpreter is `asr-venv/Scripts/python.exe`,
-  not `bin/python`. Slow PyPI (mainland networks): add
+  shim). Windows never creates this venv: install the locked `asr-zh`
+  component with `My-LLM-Wiki-Setup.exe`; the runner re-executes its private
+  Python from the Setup receipt. Slow PyPI on macOS/Linux (mainland networks): add
   `-i https://pypi.tuna.tsinghua.edu.cn/simple`; the model weights need no
   mirror — funasr pulls them from ModelScope, a domestic CDN.
   It reads wav (not m4a — convert first, §1) and has **no native
@@ -66,18 +69,20 @@ Guess from the title/author (a title with ≥4 CJK chars and more CJK than latin
   ([github.com/SYSTRAN/faster-whisper](https://github.com/SYSTRAN/faster-whisper);
   the CTranslate2 reimplementation — same models ~3-5× faster, makes
   `large-v3` affordable on CPU). It is a Python **library with no CLI**:
-  install it into the same dedicated ASR venv
+  on macOS/Linux install it into the same dedicated ASR venv
   (`python3 -m venv ~/.local/share/llm-wiki/asr-venv &&
   ~/.local/share/llm-wiki/asr-venv/bin/pip install faster-whisper`; the venv
-  caveats above — Windows `Scripts\python.exe`, TUNA index on mainland
-  networks — apply) and run the shipped runner in §3, never an ad-hoc
+  caveats above and the TUNA index on mainland networks apply) and run the
+  shipped runner in §3, never an ad-hoc
   inline snippet. Stock `whisper` (`brew install openai-whisper`,
   [github.com/openai/whisper](https://github.com/openai/whisper)) is the
   last resort. faster-whisper pulls its models from Hugging Face — on
   networks where that's blocked (mainland China) prefix the first run with
   `HF_ENDPOINT=https://hf-mirror.com`. Unlike the SenseVoice path it decodes
   m4a/mp3 itself (PyAV) — no wav conversion needed — and its segments carry
-  native timestamps, so there is no VAD-first trick to apply.
+  native timestamps, so there is no VAD-first trick to apply. On Windows,
+  install the locked `asr-other` Setup component instead; first-use model
+  downloads receive the route-specific runtime environment from the receipt.
 - **Cloud fallback** — `agent-reach transcribe <url>` (Groq/OpenAI Whisper
   API) is fast and zero-install, **but returns plain text without
   timestamps**, so it breaks the anchor contract. Use it only when no local
@@ -235,11 +240,11 @@ make every downstream check lie:
   `--downloader aria2c`, see its pitfalls file) and re-check duration with
   ffprobe. It is NOT a VAD length limit — fsmn-vad handles 40+ min fine —
   so don't reach for chunked-VAD workarounds before ruling out a bad file.
-- **Tools found outside PATH must be put ON PATH for the session.** FunASR and
+- **On macOS/Linux, tools found outside PATH must be put ON PATH for the session.** FunASR and
   yt-dlp shell out to a bare `ffmpeg` — knowing the full path yourself doesn't
-  help their subprocesses. Windows winget installs land under
-  `%LOCALAPPDATA%\Microsoft\WinGet\…` which new shells often don't have, and
-  the portable cn-route install lands in `~/.my-llm-wiki/tools/ffmpeg/bin`:
+  help their subprocesses. Use
   `export PATH="<dir-with-ffmpeg>:$PATH"` once per session before any
   download/ASR step (`preflight.py` prints the resolved locations; yt-dlp
-  alone also accepts `--ffmpeg-location <dir>`).
+  alone also accepts `--ffmpeg-location <dir>`). Windows uses the Setup
+  receipt and managed argv prefixes instead of PATH; never add a winget or
+  legacy portable directory as a workaround.

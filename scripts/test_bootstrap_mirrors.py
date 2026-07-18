@@ -161,8 +161,8 @@ class BootstrapMirrorTests(unittest.TestCase):
         self.assertIn("requires branch main", completed.stderr)
         self.assertNotIn("checkout:", completed.stderr)
 
-    def test_windows_gitbash_normalizes_msys_paths_for_native_tools(self) -> None:
-        """Simulated Git Bash: /c/... args must become C:/... before git/python."""
+    def test_windows_gitbash_hard_cuts_over_to_native_setup(self) -> None:
+        """A simulated Git Bash must stop before parsing legacy install arguments."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             script = root / "bootstrap.sh"
@@ -173,21 +173,7 @@ class BootstrapMirrorTests(unittest.TestCase):
             shims = root / "shims"
             shims.mkdir()
             (shims / "uname").write_text("#!/bin/sh\necho MINGW64_NT-10.0\n", encoding="utf-8")
-            (shims / "cygpath").write_text(
-                "#!/bin/sh\n"
-                '# minimal cygpath -m: /c/foo -> C:/foo, pass anything else through\n'
-                'p="$2"\n'
-                'case "$p" in\n'
-                "  /[a-zA-Z]/*)\n"
-                '    d=$(printf %s "$p" | cut -c2 | tr "[:lower:]" "[:upper:]")\n'
-                '    printf "%s:%s\\n" "$d" "$(printf %s "$p" | cut -c3-)"\n'
-                "    ;;\n"
-                '  *) printf "%s\\n" "$p" ;;\n'
-                "esac\n",
-                encoding="utf-8",
-            )
-            for shim in ("uname", "cygpath"):
-                (shims / shim).chmod(0o755)
+            (shims / "uname").chmod(0o755)
 
             env = os.environ.copy()
             env["HOME"] = bash_path(home)
@@ -205,14 +191,16 @@ class BootstrapMirrorTests(unittest.TestCase):
                 ],
                 cwd=root,
                 env=env,
-                check=True,
+                check=False,
                 capture_output=True,
                 text=True,
             )
 
-        self.assertIn("repo: C:/Users/tester/.my-llm-wiki/suite", completed.stdout)
-        self.assertIn("custom-target: C:/Users/tester/.workbuddy/skills", completed.stdout)
-        self.assertNotIn("/c/Users/tester", completed.stdout)
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("Windows no longer supports", completed.stderr)
+        self.assertIn("My-LLM-Wiki-Setup.exe", completed.stderr)
+        self.assertNotIn("repo:", completed.stdout)
+        self.assertNotIn("custom-target:", completed.stdout)
 
     def test_bootstrap_initializes_wiki_before_doctor_and_reports_installed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -249,9 +249,9 @@ export interface UpdateConfigInfo {
 }
 
 // 技能版本探测（doc 21）。state：idle | checking | up_to_date | update_available | unknown。
-// class：git_link | unknown | absent。supported=false → 前端隐藏面板。
+// class：git_link | managed_pack | unknown | absent。supported=false → 前端隐藏面板。
 export interface SkillSourceInfo {
-  class: "git_link" | "unknown" | "absent";
+  class: "git_link" | "managed_pack" | "unknown" | "absent";
   path?: string | null;
   reason?: string | null;
 }

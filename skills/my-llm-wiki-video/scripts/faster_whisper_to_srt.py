@@ -16,6 +16,10 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+CORE_SCRIPTS = Path(__file__).resolve().parents[2] / "my-llm-wiki" / "scripts"
+sys.path.insert(0, str(CORE_SCRIPTS))
+from tool_runtime import ensure_managed_python  # noqa: E402
+
 
 def srt_timestamp(seconds: float) -> str:
     millis = int(round(seconds * 1000))
@@ -125,6 +129,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    ensure_managed_python("asr-other")
     args = build_parser().parse_args(argv)
     if not args.audio.is_file():
         print(f"faster_whisper_to_srt: audio not found: {args.audio}", file=sys.stderr)

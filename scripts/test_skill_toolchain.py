@@ -234,14 +234,9 @@ class ToolchainTests(unittest.TestCase):
         self.assertEqual(recipe["step_timeout_seconds"], 900)
         self.assertEqual(recipe["postcheck_timeout_seconds"], 30)
 
-    def test_windows_ffmpeg_routes_by_github_probe(self) -> None:
+    def test_windows_ffmpeg_is_owned_by_setup_independent_of_network_probe(self) -> None:
         ffmpeg = self.catalog["tools"]["ffmpeg"]
-
-        def which(name: str, path: str | None = None):
-            return "C:\\winget.exe" if name == "winget" else None
-
-        with mock.patch.object(preflight.platform, "system", return_value="Windows"), \
-             mock.patch.object(preflight.shutil, "which", side_effect=which):
+        with mock.patch.object(preflight.platform, "system", return_value="Windows"):
             open_net = preflight.install_recipe(
                 ffmpeg, {"system": "global", "github": "global"}
             )
@@ -251,27 +246,15 @@ class ToolchainTests(unittest.TestCase):
             offline = preflight.install_recipe(
                 ffmpeg, {"system": "global", "github": "unavailable"}
             )
-        self.assertEqual(open_net["platform"], "windows-winget")
-        self.assertEqual(open_net["steps"][0][0], "winget")
-        self.assertEqual(restricted["platform"], "windows-winget")
-        self.assertIn("fetch_ffmpeg.py", json.dumps(restricted["steps"]))
-        self.assertIn("--status", restricted["postcheck"])
-        self.assertIn("fetch_ffmpeg.py", json.dumps(restricted["postcheck"]))
-        # github fully unavailable (e.g. gitee unreachable too) must not
-        # dead-end ffmpeg: the cn recipe is self_probing — its channels
-        # (gyan.dev, project relay) are independent of github/gitee.
-        self.assertEqual(offline["route"], "cn")
-        self.assertIn("fetch_ffmpeg.py", json.dumps(offline["steps"]))
-
-    def test_windows_without_winget_still_installs_portable_ffmpeg(self) -> None:
-        ffmpeg = self.catalog["tools"]["ffmpeg"]
-        with mock.patch.object(preflight.platform, "system", return_value="Windows"), \
-             mock.patch.object(preflight.shutil, "which", return_value=None):
-            recipe = preflight.install_recipe(
-                ffmpeg, {"system": "global", "github": "cn"}
-            )
-        self.assertEqual(recipe["platform"], "windows")
-        self.assertIn("fetch_ffmpeg.py", json.dumps(recipe["steps"]))
+        for recipe in (open_net, restricted, offline):
+            self.assertEqual(recipe["platform"], "windows-setup")
+            self.assertEqual(recipe["route"], "windows-setup")
+            self.assertEqual(recipe["steps"][0][1:4], ["components", "install", "--component"])
+            self.assertEqual(recipe["steps"][0][-1], "video")
+            self.assertEqual(recipe["postcheck"][1:4], ["components", "doctor", "--component"])
+            self.assertEqual(recipe["postcheck"][-1], "video")
+            self.assertNotIn("winget", json.dumps(recipe))
+            self.assertNotIn("fetch_ffmpeg.py", json.dumps(recipe))
 
     def test_command_probe_falls_back_to_declared_extra_paths(self) -> None:
         real_which = shutil.which

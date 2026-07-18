@@ -10,7 +10,8 @@ on:
       - 'scripts/**'
       - 'skills/cn-mirrors/**'
       - 'skills/my-llm-wiki/references/toolchain.json'
-      - 'skills/my-llm-wiki/scripts/preflight.py'
+      - 'skills/my-llm-wiki/scripts/**'
+      - 'skills/my-llm-wiki-video/scripts/**'
       - 'apps/my-llm-wiki-browser/crates/llm-wiki-server/src/skill_version.rs'
       - '.github/workflows/installer-ci.yml'
   push:
@@ -21,7 +22,8 @@ on:
       - 'scripts/**'
       - 'skills/cn-mirrors/**'
       - 'skills/my-llm-wiki/references/toolchain.json'
-      - 'skills/my-llm-wiki/scripts/preflight.py'
+      - 'skills/my-llm-wiki/scripts/**'
+      - 'skills/my-llm-wiki-video/scripts/**'
       - '.github/workflows/installer-ci.yml'
 
 permissions:
@@ -33,7 +35,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -54,3 +56,79 @@ jobs:
         run: python -m unittest discover -s scripts -p "test_*.py"
       - name: Check approval-safe examples
         run: python scripts/check_approval_safety.py
+
+  windows-setup-tests:
+    name: Windows native Setup clean-room
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify Git Bash hard cutover
+        shell: bash
+        run: |
+          set +e
+          bash bootstrap.sh --host codex >windows-bootstrap.out 2>&1
+          status=$?
+          set -e
+          test "$status" -eq 2
+          grep -F 'Windows no longer supports' windows-bootstrap.out
+          grep -F 'My-LLM-Wiki-Setup.exe' windows-bootstrap.out
+      - name: Validate lock and controller tests
+        shell: pwsh
+        run: |
+          python -m json.tool registry/windows-toolchain.lock.json | Out-Null
+          python -m compileall -q scripts skills/my-llm-wiki/scripts skills/my-llm-wiki-video/scripts
+          python -m unittest `
+            scripts/test_build_windows_setup.py `
+            scripts/test_windows_setup.py `
+            scripts/test_windows_toolchain_updates.py `
+            scripts/test_skill_toolchain.py `
+            skills/my-llm-wiki/scripts/test_tool_runtime.py `
+            skills/my-llm-wiki-video/scripts/test_caption_fetch.py
+      - name: Install locked PyInstaller
+        shell: pwsh
+        run: |
+          $lock = Get-Content registry/windows-toolchain.lock.json -Raw | ConvertFrom-Json
+          python -m pip install --disable-pip-version-check --no-input "pyinstaller==$($lock.build.pyinstaller)"
+      - name: Build core-only Setup smoke artifact
+        shell: pwsh
+        run: |
+          python scripts/build_windows_setup.py `
+            --release-tag v-ci `
+            --dist setup-dist `
+            --components ""
+      - name: Install with no Git/Python/Node on PATH
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $testRoot = Join-Path $env:RUNNER_TEMP 'llm-wiki-setup-clean-room'
+          $profileRoot = Join-Path $testRoot 'profile'
+          $managedHome = Join-Path $profileRoot '.my-llm-wiki'
+          New-Item -ItemType Directory -Force -Path $profileRoot | Out-Null
+          $env:USERPROFILE = $profileRoot
+          $env:HOME = $profileRoot
+          $savedPath = $env:PATH
+          $env:PATH = ''
+          try {
+            & "$pwd/setup-dist/My-LLM-Wiki-Setup.exe" `
+              --home $managedHome --skip-postcheck `
+              install --host codex
+            if ($LASTEXITCODE -ne 0) { throw "Setup install exited $LASTEXITCODE" }
+            & "$managedHome/setup/My-LLM-Wiki-Setup.exe" `
+              --home $managedHome status --json
+            if ($LASTEXITCODE -ne 0) { throw "Setup status exited $LASTEXITCODE" }
+          } finally {
+            $env:PATH = $savedPath
+          }
+          if (-not (Test-Path "$profileRoot/.codex/skills/my-llm-wiki/.llm-wiki-install.json")) {
+            throw 'Setup-owned Codex skill copy is missing'
+          }
+          if (-not (Test-Path "$profileRoot/wikis/my-llm-wiki/schema.md")) {
+            throw 'Required Wiki initialization did not complete'
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: My-LLM-Wiki-Setup-core-smoke
+          path: setup-dist/My-LLM-Wiki-Setup.exe

@@ -1,7 +1,7 @@
 {
   "version": 3,
-  "pack_version": "1.0.10",
-  "pack_notes": "修复 win+大陆探测死角：gitee 判 slow 不再把 github 路由拖成 unavailable；ffmpeg 的 cn 配方标记 self_probing（通道为 gyan.dev/relay，与 github/gitee 无关），github 探测 unavailable 时仍提议 fetch_ffmpeg.py 而非死局。",
+  "pack_version": "1.0.11",
+  "pack_notes": "Windows 改用 My-LLM-Wiki-Setup.exe 管理私有运行时与工具组件；macOS/Linux 保持 v4 bootstrap 流程。继续包含 ffmpeg 大陆网络 self-probing 修复。",
   "updated_at": "2026-07-18",
   "skills": [
     {

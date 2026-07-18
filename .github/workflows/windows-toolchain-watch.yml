@@ -1,0 +1,67 @@
+name: windows-toolchain-watch
+
+on:
+  schedule:
+    - cron: '23 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: windows-toolchain-watch
+  cancel-in-progress: false
+
+jobs:
+  candidates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Query official upstream metadata
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/check_windows_toolchain_updates.py \
+            --output windows-toolchain-report.json \
+            --markdown-output windows-toolchain-report.md
+          cat windows-toolchain-report.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Read report state
+        id: report
+        shell: bash
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          report = json.load(open("windows-toolchain-report.json", encoding="utf-8"))
+          print(f"updates={len(report['updates'])}")
+          print(f"errors={len(report['errors'])}")
+          PY
+      - name: Create or refresh candidate issue
+        if: steps.report.outputs.updates != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh label create windows-toolchain \
+            --description "Reviewed Windows Setup dependency update candidates" \
+            --color 1D76DB --force
+          issue="$(gh issue list --state open --label windows-toolchain \
+            --search 'Windows toolchain update candidates in:title' \
+            --json number --jq '.[0].number // empty')"
+          if [ -n "$issue" ]; then
+            gh issue edit "$issue" --body-file windows-toolchain-report.md
+          else
+            gh issue create \
+              --title "Windows toolchain update candidates" \
+              --label windows-toolchain \
+              --body-file windows-toolchain-report.md
+          fi
+      - name: Fail on incomplete upstream probes
+        if: steps.report.outputs.errors != '0'
+        shell: bash
+        run: |
+          echo "One or more official upstream probes failed; see the workflow summary." >&2
+          exit 1
