@@ -29,6 +29,14 @@ class BuildWindowsSetupTests(unittest.TestCase):
         with self.assertRaisesRegex(builder.BuildError, "exact == pins"):
             builder.validate_lock(modified)
 
+    def test_lock_rejects_mismatched_pytorch_family(self) -> None:
+        lock = builder.load_lock()
+        modified = copy.deepcopy(lock)
+        packages = modified["components"]["asr-zh"]["packages"]
+        packages[packages.index("torchaudio==2.11.0")] = "torchaudio==2.10.0"
+        with self.assertRaisesRegex(builder.BuildError, "same reviewed version"):
+            builder.validate_lock(modified)
+
     def test_lock_rejects_direct_input_without_hash(self) -> None:
         lock = builder.load_lock()
         modified = copy.deepcopy(lock)

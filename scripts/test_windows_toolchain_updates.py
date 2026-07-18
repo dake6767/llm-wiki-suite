@@ -42,6 +42,16 @@ class WindowsToolchainUpdateTests(unittest.TestCase):
                 return {"tag_name": lock["components"]["video"]["yt_dlp"]["version"]}
             if "pypi.org/pypi/" in url:
                 project = url.split("/pypi/", 1)[1].split("/", 1)[0]
+                if url.endswith("/json") and project in {"torch", "torchaudio"}:
+                    version = pypi_versions[project]
+                    releases = {
+                        version: [{"filename": f"{project}-{version}-cp312-cp312-win_amd64.whl"}]
+                    }
+                    if project == "torch":
+                        releases["9.9.0"] = [
+                            {"filename": "torch-9.9.0-cp312-cp312-win_amd64.whl"}
+                        ]
+                    return {"releases": releases}
                 return {"info": {"version": pypi_versions[project]}}
             raise AssertionError(f"unexpected URL: {url}")
 

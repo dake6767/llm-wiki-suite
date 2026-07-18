@@ -140,6 +140,12 @@ def validate_lock(data: dict) -> None:
             for package in packages
         ):
             raise BuildError(f"{component} packages must use exact == pins")
+    asr_zh = {
+        package.split("==", 1)[0]: package.split("==", 1)[1]
+        for package in components["asr-zh"]["packages"]
+    }
+    if asr_zh.get("torch") != asr_zh.get("torchaudio"):
+        raise BuildError("torch and torchaudio must use the same reviewed version")
     direct = [
         components["web"]["node"],
         components["web"]["extension"],

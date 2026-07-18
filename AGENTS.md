@@ -42,9 +42,12 @@ upgrades. The scheduled candidate check opens or refreshes a labeled issue,
 but it must not mutate the lock, an existing release, or silently promote
 versions. A version counts as a candidate only when its required Windows asset
 exists (for example Python source-only security releases are not embeddable
-runtime candidates). Review the version, source, hash/integrity and
-compatibility in a PR, rebuild every affected component, pass the Windows
-clean-room workflow, merge, then publish a new immutable release.
+runtime candidates). Coupled runtimes are promoted as compatibility sets:
+`torch` and `torchaudio`, for example, move only to their newest shared version
+that provides Windows CPython 3.12 wheels, never to unrelated individual latest
+versions. Review the version, source, hash/integrity and compatibility in a PR,
+rebuild every affected component, pass the Windows clean-room workflow, merge,
+then publish a new immutable release.
 macOS/Linux recipes and bootstrap behavior must not change as a side effect.
 
 ## 1. Ask For The Host Before Writing
