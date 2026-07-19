@@ -55,6 +55,25 @@ def emit(event: str, **values) -> None:
     print(json.dumps({"event": event, **values}, ensure_ascii=False), flush=True)
 
 
+_progress_hook = None
+
+
+def set_progress_hook(hook) -> None:
+    """Install a GUI observer for install progress; the frozen exe has no
+    console, so stdout events alone leave the window silent for minutes."""
+    global _progress_hook
+    _progress_hook = hook
+
+
+def notify_progress(**info) -> None:
+    if _progress_hook is None:
+        return
+    try:
+        _progress_hook(info)
+    except Exception:
+        pass
+
+
 def payload_dir(explicit: Path | None = None) -> Path:
     if explicit is not None:
         root = explicit.resolve()
@@ -356,6 +375,7 @@ def ensure_suite(payload: Path, home: Path) -> tuple[Path, str]:
             raise SetupError(f"managed suite version directory is corrupt: {root}")
         return root, version
     staging = root.parent / f".{version}.{uuid.uuid4().hex}.staging"
+    notify_progress(phase="Installing skills suite")
     try:
         safe_extract(payload / "suite.zip", staging)
         installed = load_json(staging / "registry" / "skills.json")
@@ -398,6 +418,7 @@ def ensure_runtime(payload: Path, home: Path, lock: dict) -> Path:
             return runtime
     staging = runtime.parent / f".python.{uuid.uuid4().hex}.staging"
     backup = runtime.parent / f".python.backup.{uuid.uuid4().hex}"
+    notify_progress(phase="Installing private Python runtime")
     try:
         safe_extract(payload / "python.zip", staging)
         enable_embedded_python(staging)
@@ -479,9 +500,13 @@ def download_component(
         digest = hashlib.sha256()
         total = 0
         emit("component-download", component=component, source=url)
+        notify_progress(phase=f"Downloading {component} ({asset})", component=component)
         try:
             request = urllib.request.Request(url, headers={"User-Agent": "My-LLM-Wiki-Setup"})
             with urllib.request.urlopen(request, timeout=30) as response, temp.open("wb") as sink:
+                declared = response.headers.get("Content-Length")
+                expected_total = int(declared) if declared and declared.isdigit() else 0
+                last_notice = 0.0
                 while True:
                     chunk = response.read(1 << 20)
                     if not chunk:
@@ -491,6 +516,13 @@ def download_component(
                         raise SetupError(f"component exceeds {MAX_DOWNLOAD} bytes")
                     digest.update(chunk)
                     sink.write(chunk)
+                    now = time.monotonic()
+                    if now - last_notice >= 0.25:
+                        last_notice = now
+                        notify_progress(
+                            component=component, received=total, total=expected_total
+                        )
+                notify_progress(component=component, received=total, total=expected_total)
             if digest.hexdigest() != expected:
                 raise SetupError(
                     f"component hash mismatch: expected {expected}, got {digest.hexdigest()}"
@@ -560,6 +592,8 @@ def postcheck_component(
     *,
     skip: bool = False,
 ) -> tuple[dict[str, dict], dict[str, str], dict[str, dict[str, str]]]:
+    if not skip:
+        notify_progress(phase=f"Verifying {component}", component=component)
     tools: dict[str, dict] = {}
     profiles: dict[str, str] = {}
     runtime_env: dict[str, dict[str, str]] = {}
@@ -651,6 +685,7 @@ def ensure_component(
         staging = root.parent / f".{version}.{uuid.uuid4().hex}.staging"
         backup = root.parent / f".{version}.{uuid.uuid4().hex}.backup"
         try:
+            notify_progress(phase=f"Extracting {component}", component=component)
             safe_extract(archive, staging)
             (staging / ".llm-wiki-component.json").write_text(
                 json.dumps(expected_marker, indent=2) + "\n", encoding="utf-8"
@@ -891,6 +926,7 @@ def install_flow(
     asset_dir: Path | None,
     allow_test_platform: bool = False,
     skip_postcheck: bool = False,
+    guidance: list[str] | None = None,
 ) -> int:
     validate_platform(allow_test_platform)
     rows = {row["id"]: row for row in host_rows(payload)}
@@ -988,12 +1024,16 @@ def install_flow(
                 "install_id": receipt["install_id"],
                 "distribution": "managed-pack",
             }
+            notify_progress(phase="Installing skills into agent hosts")
             install.apply_plan(config, plan)
             write_receipt(home, receipt)
+            notify_progress(phase="Initializing wiki")
             initialize.ensure_wiki(
                 config,
                 python_executable=str(runtime / "python.exe"),
             )
+        if not skip_postcheck:
+            notify_progress(phase="Running doctor checks")
         doctor_status = 0 if skip_postcheck else run_doctor(runtime, suite, hosts, home)
         if doctor_status not in {0, 3}:
             raise SetupError(f"doctor failed with status {doctor_status}")
@@ -1010,6 +1050,9 @@ def install_flow(
         steps = stage_opencli_extension(home, component_states["web"])
         for index, step in enumerate(steps, start=1):
             print(f"Browser Bridge {index}. {step}")
+        if guidance is not None:
+            guidance.append("Browser Bridge (Chrome extension) still needs a manual load:")
+            guidance.extend(f"  {index}. {step}" for index, step in enumerate(steps, start=1))
     emit(
         "installed",
         hosts=hosts,
@@ -1219,7 +1262,7 @@ def component_choices(manifest: dict) -> list[dict]:
 def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
     try:
         import tkinter as tk
-        from tkinter import filedialog, messagebox
+        from tkinter import filedialog, messagebox, ttk
     except ImportError as exc:
         raise SetupError("Windows Setup GUI is unavailable; use the install command") from exc
 
@@ -1299,6 +1342,51 @@ def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
     result = {"code": 2}
     status = tk.StringVar(value="Ready")
     tk.Label(root, textvariable=status, fg="#555").pack(anchor="w", padx=24, pady=(18, 4))
+    progress_bar = ttk.Progressbar(root, mode="determinate", maximum=100, value=0)
+    progress_bar.pack(fill="x", padx=24, pady=(0, 2))
+    progress_text = tk.StringVar(value="")
+    tk.Label(root, textvariable=progress_text, fg="#555").pack(anchor="w", padx=24)
+    notes = tk.Text(root, height=6, wrap="word", state="disabled", relief="flat", bg="#f5f5f5")
+    notes.pack(fill="both", expand=True, padx=24, pady=(8, 0))
+
+    speed_state = {"time": 0.0, "received": 0, "rate": 0.0}
+
+    def apply_progress(info: dict) -> None:
+        phase = info.get("phase")
+        if phase:
+            status.set(phase + "…")
+            progress_bar.configure(maximum=100, value=0)
+            progress_text.set("")
+            speed_state.update(time=0.0, received=0, rate=0.0)
+        received = info.get("received")
+        if received is None:
+            return
+        total = info.get("total") or 0
+        now = time.monotonic()
+        if speed_state["time"]:
+            elapsed = now - speed_state["time"]
+            if elapsed > 0:
+                instant = (received - speed_state["received"]) / elapsed
+                rate = speed_state["rate"]
+                speed_state["rate"] = instant if not rate else rate * 0.7 + instant * 0.3
+        speed_state["time"] = now
+        speed_state["received"] = received
+        rate_text = f" · {speed_state['rate'] / 1048576:.1f} MiB/s" if speed_state["rate"] else ""
+        if total:
+            progress_bar.configure(maximum=total, value=received)
+            progress_text.set(
+                f"{received / 1048576:.1f} / {total / 1048576:.1f} MiB{rate_text}"
+            )
+        else:
+            progress_text.set(f"{received / 1048576:.1f} MiB{rate_text}")
+
+    set_progress_hook(lambda info: root.after(0, lambda info=info: apply_progress(info)))
+
+    def show_notes(lines: list[str]) -> None:
+        notes.configure(state="normal")
+        notes.delete("1.0", "end")
+        notes.insert("1.0", "\n".join(lines))
+        notes.configure(state="disabled")
 
     def run_install() -> None:
         hosts = [name for name, var in host_vars.items() if var.get()]
@@ -1318,6 +1406,7 @@ def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
         install_button.configure(state="disabled")
 
         def worker() -> None:
+            guidance: list[str] = []
             try:
                 if data_root is not None:
                     ensure_data_root(home_link, data_root)
@@ -1327,16 +1416,32 @@ def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
                     home=home_link.resolve(),
                     payload=payload,
                     asset_dir=asset_dir,
+                    guidance=guidance,
                 )
                 result["code"] = code
-                root.after(0, lambda: messagebox.showinfo(
-                    "My LLM Wiki Setup",
-                    "Installation completed." + (
-                        " Some selected capabilities still need action; see the Setup log."
-                        if code == 3 else ""
-                    ),
-                ))
-                root.after(0, root.destroy)
+
+                def finish() -> None:
+                    status.set(
+                        "Installation completed."
+                        + (" Some capabilities still need action; see the Setup log." if code == 3 else "")
+                    )
+                    progress_text.set("")
+                    show_notes(
+                        guidance
+                        or ["No manual follow-up is needed — you can close this window."]
+                    )
+                    close_button.configure(text="Close")
+                    messagebox.showinfo(
+                        "My LLM Wiki Setup",
+                        "Installation completed."
+                        + (
+                            " Review the remaining manual steps in the Setup window before closing."
+                            if guidance
+                            else ""
+                        ),
+                    )
+
+                root.after(0, finish)
             except Exception as exc:  # noqa: BLE001 - surface the full installer failure
                 message = str(exc)
                 root.after(0, lambda message=message: messagebox.showerror(
@@ -1349,10 +1454,10 @@ def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
 
     install_button = tk.Button(root, text="Install", command=run_install, width=18)
     install_button.pack(side="left", padx=(24, 8), pady=12)
-    tk.Button(root, text="Cancel", command=root.destroy, width=18).pack(
-        side="left", padx=8, pady=12
-    )
+    close_button = tk.Button(root, text="Cancel", command=root.destroy, width=18)
+    close_button.pack(side="left", padx=8, pady=12)
     root.mainloop()
+    set_progress_hook(None)
     return int(result["code"])
 
 
