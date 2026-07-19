@@ -214,6 +214,42 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+VERSION_DIR_MAX = 32
+
+
+def version_dir_name(version: str) -> str:
+    """On-disk directory name for a managed version.
+
+    Component versions concatenate every pinned package, and asr-zh's runs to
+    77 characters over a tree whose own members reach 152 — together they push
+    real files past Windows' 260-char MAX_PATH (9 of them overflow even under
+    the shortest possible home path, 70 under a typical one), so extraction
+    fails with ENOENT.  Long names collapse to a truncated prefix plus a
+    digest, which stays unique and stable across runs; the exact version is
+    still recorded in the tree's marker file."""
+    if len(version) <= VERSION_DIR_MAX:
+        return version
+    digest = hashlib.sha256(version.encode("utf-8")).hexdigest()[:12]
+    return f"{version[:VERSION_DIR_MAX - 13].rstrip('+.-')}.{digest}"
+
+
+def long_path(path: Path | str) -> str:
+    """Extended-length form of *path* so Windows APIs skip the MAX_PATH check.
+
+    Applies to whole subtrees, so it keeps deep component trees extractable
+    and removable regardless of the LongPathsEnabled machine policy."""
+    text = os.path.abspath(str(path))
+    if os.name != "nt" or text.startswith("\\\\?\\"):
+        return text
+    if text.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + text[2:]
+    return "\\\\?\\" + text
+
+
+def remove_tree(path: Path) -> None:
+    shutil.rmtree(long_path(path), ignore_errors=True)
+
+
 def safe_extract(archive: Path, destination: Path) -> None:
     destination.mkdir(parents=True, exist_ok=True)
     root = destination.resolve()
@@ -226,7 +262,7 @@ def safe_extract(archive: Path, destination: Path) -> None:
                 resolved = (root / member).resolve()
                 if resolved != root and root not in resolved.parents:
                     raise SetupError(f"unsafe zip member: {info.filename}")
-            bundle.extractall(destination)
+            bundle.extractall(long_path(destination))
     except zipfile.BadZipFile as exc:
         raise SetupError(f"invalid zip archive: {archive}") from exc
 
@@ -400,7 +436,7 @@ def cleanup_stale_workdirs(home: Path) -> None:
                 continue
             try:
                 if entry.is_dir() and not is_reparse_link(entry):
-                    shutil.rmtree(entry)
+                    shutil.rmtree(long_path(entry))
                 else:
                     entry.unlink()
                 removed.append(str(entry))
@@ -419,7 +455,10 @@ def preflight_disk_space(home: Path, manifest: dict, components: list[str]) -> N
         if not isinstance(spec, dict):
             continue
         version = str(spec.get("version", ""))
-        marker = home / "components" / component / "versions" / version / ".llm-wiki-component.json"
+        marker = (
+            home / "components" / component / "versions"
+            / version_dir_name(version) / ".llm-wiki-component.json"
+        )
         if marker.is_file():
             continue
         required += int(spec.get("size", 0)) * 3
@@ -542,13 +581,13 @@ def ensure_suite(payload: Path, home: Path) -> tuple[Path, str]:
     version = registry.get("pack_version")
     if not isinstance(version, str) or not version:
         raise SetupError("embedded suite has no pack_version")
-    root = home / "suite" / "versions" / version
+    root = home / "suite" / "versions" / version_dir_name(version)
     if root.is_dir():
         installed = load_json(root / "registry" / "skills.json")
         if installed.get("pack_version") != version:
             raise SetupError(f"managed suite version directory is corrupt: {root}")
         return root, version
-    staging = root.parent / f".{version}.{uuid.uuid4().hex}.staging"
+    staging = root.parent / f".{uuid.uuid4().hex}.staging"
     notify_progress(phase="正在安装技能套件")
     try:
         safe_extract(payload / "suite.zip", staging)
@@ -558,7 +597,7 @@ def ensure_suite(payload: Path, home: Path) -> tuple[Path, str]:
         root.parent.mkdir(parents=True, exist_ok=True)
         replace_with_retries(staging, root)
     finally:
-        shutil.rmtree(staging, ignore_errors=True)
+        remove_tree(staging)
     emit("suite-ready", version=version, path=str(root))
     return root, version
 
@@ -608,13 +647,13 @@ def ensure_runtime(payload: Path, home: Path, lock: dict) -> Path:
         if runtime.exists():
             replace_with_retries(runtime, backup)
         replace_with_retries(staging, runtime)
-        shutil.rmtree(backup, ignore_errors=True)
+        remove_tree(backup)
     except Exception:
         if backup.exists() and not runtime.exists():
             replace_with_retries(backup, runtime)
         raise
     finally:
-        shutil.rmtree(staging, ignore_errors=True)
+        remove_tree(staging)
     emit("runtime-ready", version=lock["python"]["version"], path=str(runtime))
     return runtime
 
@@ -840,7 +879,7 @@ def ensure_component(
     version = str(spec.get("version", ""))
     if not version:
         raise SetupError(f"component {component} has no version")
-    root = home / "components" / component / "versions" / version
+    root = home / "components" / component / "versions" / version_dir_name(version)
     marker = root / ".llm-wiki-component.json"
     expected_marker = {
         "schema": 1,
@@ -858,8 +897,8 @@ def ensure_component(
 
     def replace_component_bytes() -> None:
         archive = download_component(component, spec, manifest, home, asset_dir)
-        staging = root.parent / f".{version}.{uuid.uuid4().hex}.staging"
-        backup = root.parent / f".{version}.{uuid.uuid4().hex}.backup"
+        staging = root.parent / f".{uuid.uuid4().hex}.staging"
+        backup = root.parent / f".{uuid.uuid4().hex}.backup"
         try:
             notify_progress(phase=f"正在解压 {component}", component=component)
             safe_extract(archive, staging)
@@ -870,13 +909,13 @@ def ensure_component(
             if root.exists():
                 replace_with_retries(root, backup)
             replace_with_retries(staging, root)
-            shutil.rmtree(backup, ignore_errors=True)
+            remove_tree(backup)
         except Exception:
             if backup.exists() and not root.exists():
                 replace_with_retries(backup, root)
             raise
         finally:
-            shutil.rmtree(staging, ignore_errors=True)
+            remove_tree(staging)
 
     if not marker_valid:
         replace_component_bytes()
@@ -1593,7 +1632,7 @@ def uninstall_hosts(
             home / SETUP_DIR / "downloads",
         ):
             if managed.is_dir():
-                shutil.rmtree(managed)
+                shutil.rmtree(long_path(managed))
             elif managed.exists():
                 managed.unlink()
         receipt_path(home).unlink(missing_ok=True)

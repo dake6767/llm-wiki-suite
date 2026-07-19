@@ -13,6 +13,7 @@ import sys
 import tempfile
 import unittest
 import unittest.mock
+import uuid
 import zipfile
 from pathlib import Path
 
@@ -557,6 +558,81 @@ def _write_pe(path, machine: int) -> None:
     blob += b"PE\0\0"
     blob += machine.to_bytes(2, "little")
     path.write_bytes(bytes(blob))
+
+
+class VersionDirTests(unittest.TestCase):
+    # Versions shipped by component-manifest.json as of v1.0.27.
+    SHIPPED = {
+        "documents": "0.1.6",
+        "web": "1.8.6+ext.1.0.22",
+        "video": "2026.07.04+ffmpeg.8.1.2",
+        "asr-other": "faster-whisper.1.2.1",
+    }
+    ASR_ZH = (
+        "funasr.1.3.16+torch.2.11.0+torchaudio.2.11.0"
+        "+librosa.0.11.0+modelscope.1.38.1"
+    )
+    # Deepest member inside My-LLM-Wiki-ASR-ZH_x64.zip.
+    DEEPEST_MEMBER = 152
+
+    def test_short_versions_keep_their_exact_directory(self) -> None:
+        # Renaming these would strand every already-installed component tree.
+        for component, version in self.SHIPPED.items():
+            with self.subTest(component=component):
+                self.assertEqual(windows_setup.version_dir_name(version), version)
+
+    def test_long_version_collapses_deterministically(self) -> None:
+        name = windows_setup.version_dir_name(self.ASR_ZH)
+        self.assertNotEqual(name, self.ASR_ZH)
+        self.assertLessEqual(len(name), windows_setup.VERSION_DIR_MAX)
+        self.assertEqual(name, windows_setup.version_dir_name(self.ASR_ZH))
+        other = self.ASR_ZH.replace("funasr.1.3.16", "funasr.1.3.17")
+        self.assertNotEqual(windows_setup.version_dir_name(other), name)
+
+    def test_asr_zh_tree_fits_under_max_path(self) -> None:
+        # The v1.0.27 failure: the full version name pushed extraction past
+        # MAX_PATH, so Setup aborted with ENOENT partway through asr-zh.
+        home = "C:\\Users\\Administrator\\.my-llm-wiki"
+        root = (
+            f"{home}\\components\\asr-zh\\versions\\"
+            f"{windows_setup.version_dir_name(self.ASR_ZH)}"
+        )
+        self.assertLess(len(root) + 1 + self.DEEPEST_MEMBER, 260)
+
+    def test_staging_names_stay_collectable_as_stale_workdirs(self) -> None:
+        staging = f".{uuid.uuid4().hex}.staging"
+        self.assertTrue(staging.startswith("."))
+        self.assertTrue(windows_setup.STALE_HEX.search(staging))
+
+
+class LongPathTests(unittest.TestCase):
+    def test_windows_paths_get_extended_length_prefix(self) -> None:
+        # os.name is patched globally here, which would make pathlib build a
+        # WindowsPath on a posix runner, so feed long_path plain strings.
+        cases = [
+            ("C:\\Users\\L\\x", "\\\\?\\C:\\Users\\L\\x"),
+            ("\\\\server\\share\\x", "\\\\?\\UNC\\server\\share\\x"),
+            ("\\\\?\\C:\\already", "\\\\?\\C:\\already"),
+        ]
+        with unittest.mock.patch.object(windows_setup.os, "name", "nt"), \
+                unittest.mock.patch.object(
+                    windows_setup.os.path, "abspath", side_effect=lambda p: p
+                ):
+            for raw, expected in cases:
+                self.assertEqual(windows_setup.long_path(raw), expected)
+
+    def test_posix_paths_are_left_alone(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            if os.name != "nt":
+                self.assertEqual(windows_setup.long_path(Path(tmp)), tmp)
+
+    def test_remove_tree_deletes_a_populated_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "tree"
+            (target / "a" / "b").mkdir(parents=True)
+            (target / "a" / "b" / "f.txt").write_text("x", encoding="utf-8")
+            windows_setup.remove_tree(target)
+            self.assertFalse(target.exists())
 
 
 class PlatformValidationTests(unittest.TestCase):
