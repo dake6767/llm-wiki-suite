@@ -26,6 +26,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 LOCK = ROOT / "registry" / "windows-toolchain.lock.json"
+BROWSER_ICONS = ROOT / "apps" / "my-llm-wiki-browser" / "desktop" / "src-tauri" / "icons"
+SETUP_ICON_ICO = BROWSER_ICONS / "icon.ico"
+SETUP_ICON_PNG = BROWSER_ICONS / "64x64.png"
 MAX_DOWNLOAD = 2 * 1024 * 1024 * 1024
 # ``windows_setup.py`` loads suite installer modules from the extracted payload
 # at runtime, so PyInstaller cannot discover standard-library imports that are
@@ -448,7 +451,10 @@ def build_executable(payload: Path, dist: Path, work: Path, version: str) -> Pat
     subprocess.run(
         [
             sys.executable, "-m", "PyInstaller",
-            "--noconfirm", "--clean", "--onefile", "--console",
+            # Windowed, not console: the GUI must not drag a terminal along.
+            # CLI invocations reattach to the parent console at runtime.
+            "--noconfirm", "--clean", "--onefile", "--windowed",
+            "--icon", str(SETUP_ICON_ICO),
             "--name", "My-LLM-Wiki-Setup",
             "--hidden-import", "tkinter",
             "--hidden-import", "tkinter.messagebox",
@@ -531,6 +537,7 @@ def main(argv: list[str] | None = None) -> int:
         shutil.copy2(python_zip, payload / "python.zip")
         shutil.copy2(LOCK, payload / "windows-toolchain.lock.json")
         build_manifest(lock, args.release_tag, assets, payload / "component-manifest.json")
+        shutil.copy2(SETUP_ICON_PNG, payload / "setup-icon.png")
         payload_files = [
             "suite.zip",
             "python.zip",

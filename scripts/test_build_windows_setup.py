@@ -53,6 +53,27 @@ class BuildWindowsSetupTests(unittest.TestCase):
             with self.assertRaisesRegex(builder.BuildError, "unsafe zip member"):
                 builder.safe_extract(archive, root / "out")
 
+    def test_executable_is_windowed_with_branded_icon(self) -> None:
+        self.assertTrue(builder.SETUP_ICON_ICO.is_file())
+        self.assertTrue(builder.SETUP_ICON_PNG.is_file())
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dist = root / "dist"
+            dist.mkdir()
+
+            def fake_run(argv, **kwargs):
+                (dist / "My-LLM-Wiki-Setup.exe").write_bytes(b"exe")
+                return mock.Mock(returncode=0)
+
+            with mock.patch.object(subprocess, "run", side_effect=fake_run) as run, \
+                    mock.patch.object(builder, "checked_output"):
+                builder.build_executable(root / "payload", dist, root / "work", "1.0.0")
+            argv = run.call_args.args[0]
+            self.assertIn("--windowed", argv)
+            self.assertNotIn("--console", argv)
+            self.assertIn("--icon", argv)
+            self.assertIn(str(builder.SETUP_ICON_ICO), argv)
+
     def test_pip_target_creates_report_parent_before_invocation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
             subprocess, "run"
