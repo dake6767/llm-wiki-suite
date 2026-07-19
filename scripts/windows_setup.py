@@ -816,6 +816,31 @@ def setup_copy_matches(path: Path, install_id: str) -> bool:
     )
 
 
+def install_browser_app(suite: Path, runtime: Path) -> None:
+    """Run the suite's release-first Browser installer silently.
+
+    The NSIS build carries the Tauri updater, so after this one managed
+    install the app keeps itself current; Setup never owns Browser updates."""
+    script = suite / "scripts" / "install-browser.py"
+    if not script.is_file():
+        raise SetupError(f"suite has no Browser installer: {script}")
+    result = subprocess.run(
+        [str(runtime / "python.exe"), str(script), "--windows-silent"],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=1800,
+        check=False,
+        env={**os.environ, "PYTHONUTF8": "1"},
+    )
+    if result.stdout:
+        print(result.stdout, end="")
+    if result.stderr:
+        print(result.stderr, end="", file=sys.stderr)
+    if result.returncode != 0:
+        raise SetupError(f"Browser installer exited with {result.returncode}")
+
+
 def import_suite_modules(suite: Path):
     scripts = str(suite / "scripts")
     if scripts not in sys.path:
@@ -927,6 +952,7 @@ def install_flow(
     allow_test_platform: bool = False,
     skip_postcheck: bool = False,
     guidance: list[str] | None = None,
+    browser: bool = False,
 ) -> int:
     validate_platform(allow_test_platform)
     rows = {row["id"]: row for row in host_rows(payload)}
@@ -1053,6 +1079,22 @@ def install_flow(
         if guidance is not None:
             guidance.append("Browser Bridge (Chrome extension) still needs a manual load:")
             guidance.extend(f"  {index}. {step}" for index, step in enumerate(steps, start=1))
+    if browser:
+        notify_progress(phase="Installing Browser desktop app")
+        browser_error = ""
+        try:
+            install_browser_app(suite, runtime)
+        except (SetupError, subprocess.SubprocessError, OSError) as exc:
+            browser_error = str(exc)
+            print(f"Browser install failed: {browser_error}", file=sys.stderr)
+        if guidance is not None:
+            guidance.append(
+                "Browser desktop app installed; it keeps itself updated from now on."
+                if not browser_error
+                else "Browser desktop app could not be installed now; rerun Setup "
+                "later or download it from the release page."
+            )
+        emit("browser-install", ok=not browser_error, error=browser_error)
     emit(
         "installed",
         hosts=hosts,
@@ -1308,6 +1350,17 @@ def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
             anchor="w",
         ).pack(fill="x", padx=36, pady=2)
 
+    tk.Label(root, text="Desktop app", font=("Segoe UI", 11, "bold")).pack(
+        anchor="w", padx=24, pady=(16, 0)
+    )
+    browser_var = tk.BooleanVar(value=True)
+    tk.Checkbutton(
+        root,
+        text="My LLM Wiki Browser — installs silently, then keeps itself updated",
+        variable=browser_var,
+        anchor="w",
+    ).pack(fill="x", padx=36)
+
     tk.Label(root, text="Install location", font=("Segoe UI", 11, "bold")).pack(
         anchor="w", padx=24, pady=(16, 0)
     )
@@ -1417,6 +1470,7 @@ def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
                     payload=payload,
                     asset_dir=asset_dir,
                     guidance=guidance,
+                    browser=browser_var.get(),
                 )
                 result["code"] = code
 
@@ -1488,6 +1542,11 @@ def parser() -> argparse.ArgumentParser:
     install.add_argument("--host", action="append", default=[])
     install.add_argument("--component", action="append", default=[])
     install.add_argument("--all-tools", action="store_true")
+    install.add_argument(
+        "--browser",
+        action="store_true",
+        help="also install the Browser desktop app silently (auto-updates itself)",
+    )
 
     components = sub.add_parser("components", help="maintain installed tool components")
     component_sub = components.add_subparsers(dest="component_command", required=True)
@@ -1569,6 +1628,7 @@ def main(argv: list[str] | None = None) -> int:
                 asset_dir=asset_dir,
                 allow_test_platform=args.allow_test_platform,
                 skip_postcheck=args.skip_postcheck,
+                browser=args.browser,
             )
         if args.command == "components":
             selected = list(dict.fromkeys(args.component))
