@@ -181,8 +181,11 @@ doctor 后留给用户处理。doctor 完成后，agent 会用宿主原生单选
 ### Windows 原生安装
 
 Windows 不再兼容 Git Bash + Python + Git 的旧安装链路，也不要求用户预装这些工具。
-请从 [最新 Release](https://github.com/dake6767/llm-wiki-suite/releases/latest)
-下载并运行 `My-LLM-Wiki-Setup.exe`。Setup 会显式列出 Codex、Claude、Hermes、agents 和
+大陆网络优先从项目自有 Worker
+[下载 My-LLM-Wiki-Setup.exe](https://wiki.htmlgo.to/_setup/latest/My-LLM-Wiki-Setup.exe)，
+也可下载配套的 [SHA-256 清单](https://wiki.htmlgo.to/_setup/latest/SHA256SUMS-windows-setup.txt)；
+[GitHub 最新 Release](https://github.com/dake6767/llm-wiki-suite/releases/latest) 是 canonical
+源与回退入口。两条路径提供同一份正式 Release 字节。Setup 会显式列出 Codex、Claude、Hermes、agents 和
 WorkBuddy，未默认勾选任何宿主；你选定宿主后，它以受管 copy 模式安装 skills、私有
 Python 核心并初始化 Wiki。Documents、Web/OpenCLI、Video/yt-dlp+FFmpeg、中文 ASR 和
 非中文 ASR 都是可独立维护的版本锁定组件，不读取全局 PATH，也不会调用用户机器上的
