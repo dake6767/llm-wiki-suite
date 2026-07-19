@@ -77,10 +77,12 @@ def notify_progress(**info) -> None:
 def hidden_console_flags() -> int:
     """Child-process creation flags for console-subsystem children.
 
-    The frozen exe is a windowed app: without CREATE_NO_WINDOW every console
-    child (python.exe, cmd.exe) pops up its own console window during install.
-    When Setup itself runs inside a console (CLI use from a terminal), return 0
-    so children keep inheriting that console."""
+    The frozen exe is a console app whose bootloader hides the console it owns
+    (double-clicked GUI launch); children then inherit that hidden console and
+    stay invisible.  This guard covers the residual case where Setup has no
+    console at all: without CREATE_NO_WINDOW each console child (python.exe,
+    cmd.exe) would pop up its own window.  Inside a visible console (CLI use)
+    it returns 0 so children keep inheriting it."""
     if os.name != "nt":
         return 0
     try:
@@ -94,12 +96,12 @@ def hidden_console_flags() -> int:
 
 
 def attach_parent_console() -> None:
-    """Reconnect std streams when the windowed exe is launched from a terminal.
+    """Reconnect std streams if the exe ever runs without a console.
 
-    A windowed app gets no console of its own; CLI commands would run silently.
-    Attaching to the parent console restores print output there.  Piped or
-    redirected streams are already usable and are left untouched, and a
-    double-clicked GUI launch has no parent console, so this is a no-op."""
+    The console build normally always has one (possibly hidden), making this a
+    no-op; it is a safety net so CLI output cannot silently vanish if the exe
+    is embedded or repackaged without a console.  Piped or redirected streams
+    are already usable and are left untouched."""
     if os.name != "nt":
         return
     try:

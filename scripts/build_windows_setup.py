@@ -461,9 +461,12 @@ def build_executable(payload: Path, dist: Path, work: Path, version: str) -> Pat
     subprocess.run(
         [
             sys.executable, "-m", "PyInstaller",
-            # Windowed, not console: the GUI must not drag a terminal along.
-            # CLI invocations reattach to the parent console at runtime.
-            "--noconfirm", "--clean", "--onefile", "--windowed",
+            # Console subsystem so shells wait and exit codes propagate (a
+            # windowed exe makes PowerShell's `& exe` return immediately with
+            # no $LASTEXITCODE).  The bootloader hides the console only when
+            # the process owns it, i.e. a double-clicked GUI launch.
+            "--noconfirm", "--clean", "--onefile", "--console",
+            "--hide-console", "hide-early",
             "--icon", str(SETUP_ICON_ICO),
             "--name", "My-LLM-Wiki-Setup",
             "--hidden-import", "tkinter",

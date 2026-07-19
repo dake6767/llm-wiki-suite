@@ -63,7 +63,7 @@ class BuildWindowsSetupTests(unittest.TestCase):
             "apps/my-llm-wiki-browser/desktop/src-tauri/tauri.conf.json", names
         )
 
-    def test_executable_is_windowed_with_branded_icon(self) -> None:
+    def test_executable_hides_owned_console_and_carries_icon(self) -> None:
         self.assertTrue(builder.SETUP_ICON_ICO.is_file())
         self.assertTrue(builder.SETUP_ICON_PNG.is_file())
         with tempfile.TemporaryDirectory() as tmp:
@@ -79,8 +79,10 @@ class BuildWindowsSetupTests(unittest.TestCase):
                     mock.patch.object(builder, "checked_output"):
                 builder.build_executable(root / "payload", dist, root / "work", "1.0.0")
             argv = run.call_args.args[0]
-            self.assertIn("--windowed", argv)
-            self.assertNotIn("--console", argv)
+            self.assertIn("--console", argv)
+            self.assertNotIn("--windowed", argv)
+            self.assertIn("--hide-console", argv)
+            self.assertIn("hide-early", argv)
             self.assertIn("--icon", argv)
             self.assertIn(str(builder.SETUP_ICON_ICO), argv)
 
