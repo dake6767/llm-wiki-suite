@@ -1249,6 +1249,48 @@ def _remainder(values: list[str]) -> list[str]:
     return values[1:] if values[:1] == ["--"] else values
 
 
+_MSYS_PATH = re.compile(r"^/([A-Za-z])(/.*)?$")
+
+
+def msys_to_windows_path(value: str) -> str | None:
+    """Map /c/Users/... to C:/Users/... so bash-shaped agent paths keep working."""
+    match = _MSYS_PATH.match(value)
+    if match is None:
+        return None
+    return f"{match.group(1).upper()}:{match.group(2) or '/'}"
+
+
+def normalize_script_path(value: str) -> str:
+    if Path(value).is_file():
+        return value
+    converted = msys_to_windows_path(value)
+    if converted is not None and Path(converted).is_file():
+        return converted
+    return value
+
+
+# The private runtime is an embedded (``._pth``) Python: it neither prepends
+# the script's directory to sys.path nor honors PYTHONPATH, so plain
+# ``python.exe script.py`` breaks every suite script with sibling imports.
+# Restore the standard file-form contract through a -c bootstrap.
+_FILE_FORM_BOOTSTRAP = (
+    "import os, runpy, sys\n"
+    "script = sys.argv.pop(1)\n"
+    "sys.argv[0] = script\n"
+    "sys.path.insert(0, os.path.dirname(os.path.abspath(script)))\n"
+    "runpy.run_path(script, run_name='__main__')\n"
+)
+
+
+def python_file_command(executable: str, values: list[str]) -> list[str]:
+    if not values or values[0].startswith("-"):
+        return [executable, *values]
+    script = normalize_script_path(values[0])
+    if not script.endswith(".py") or not Path(script).is_file():
+        return [executable, script, *values[1:]]
+    return [executable, "-c", _FILE_FORM_BOOTSTRAP, script, *values[1:]]
+
+
 def run_managed_tool(name: str, values: list[str], home: Path) -> int:
     receipt = read_receipt(home)
     if receipt is None:
@@ -1277,7 +1319,8 @@ def run_managed_python(profile: str, values: list[str], home: Path) -> int:
             for key, value in values_by_profile.items()
             if isinstance(key, str) and isinstance(value, str)
         })
-    return subprocess.run([*prefix, *_remainder(values)], env=env, check=False).returncode
+    command = python_file_command(prefix[0], [*prefix[1:], *_remainder(values)])
+    return subprocess.run(command, env=env, check=False).returncode
 
 
 def uninstall_hosts(

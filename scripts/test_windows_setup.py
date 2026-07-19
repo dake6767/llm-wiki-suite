@@ -7,6 +7,8 @@ import hashlib
 import json
 import shutil
 import stat
+import subprocess
+import sys
 import tempfile
 import unittest
 import unittest.mock
@@ -244,6 +246,44 @@ class WindowsSetupTests(unittest.TestCase):
                 windows_setup.shutil, "disk_usage", return_value=usage
             ):
                 windows_setup.preflight_disk_space(home, manifest, ["video"])
+
+    def test_python_file_command_restores_sibling_imports(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            scripts = Path(tmp)
+            (scripts / "helper_mod.py").write_text("VALUE = 42\n", encoding="utf-8")
+            main = scripts / "main.py"
+            main.write_text(
+                "import sys\nimport helper_mod\nprint(helper_mod.VALUE, sys.argv[1])\n",
+                encoding="utf-8",
+            )
+            command = windows_setup.python_file_command(sys.executable, [str(main), "tail"])
+            self.assertEqual(command[1], "-c")
+            # -I drops the script directory from sys.path exactly like the
+            # embedded ._pth runtime; the plain file form must fail there
+            # while the bootstrapped command succeeds.
+            plain = subprocess.run(
+                [sys.executable, "-I", str(main), "tail"],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertNotEqual(plain.returncode, 0)
+            isolated = [command[0], "-I", *command[1:]]
+            result = subprocess.run(isolated, capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), "42 tail")
+
+    def test_python_file_command_passthrough_and_msys_paths(self) -> None:
+        self.assertEqual(
+            windows_setup.python_file_command("py", ["-c", "print(1)"]),
+            ["py", "-c", "print(1)"],
+        )
+        self.assertEqual(
+            windows_setup.python_file_command("py", ["C:/nope/x.py", "a"]),
+            ["py", "C:/nope/x.py", "a"],
+        )
+        self.assertEqual(windows_setup.msys_to_windows_path("/c/Users/x"), "C:/Users/x")
+        self.assertEqual(windows_setup.msys_to_windows_path("/D"), "D:/")
+        self.assertIsNone(windows_setup.msys_to_windows_path("relative/x.py"))
+        self.assertIsNone(windows_setup.msys_to_windows_path("C:/Users/x.py"))
 
     def test_run_doctor_capture_uses_receipt_and_returns_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
