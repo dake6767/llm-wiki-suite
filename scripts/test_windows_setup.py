@@ -154,6 +154,97 @@ class WindowsSetupTests(unittest.TestCase):
                 with self.assertRaisesRegex(windows_setup.SetupError, "antivirus"):
                     windows_setup.replace_with_retries(root / "staging", root / "final")
 
+    def test_ensure_data_root_links_home_and_wikis(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profile = root / "profile"
+            profile.mkdir()
+            home_link = profile / ".my-llm-wiki"
+            wikis_link = profile / "wikis"
+            data_root = root / "drive-d" / "MyLLMWiki"
+            with unittest.mock.patch.object(
+                windows_setup, "DEFAULT_WIKIS", str(wikis_link)
+            ):
+                windows_setup.ensure_data_root(home_link, data_root)
+                (home_link / "probe.txt").write_text("x", encoding="utf-8")
+                self.assertTrue((data_root / "home" / "probe.txt").is_file())
+                self.assertTrue((data_root / "wikis").is_dir())
+                windows_setup.ensure_data_root(home_link, data_root)  # idempotent rerun
+                self.assertTrue((home_link / "probe.txt").is_file())
+
+    def test_ensure_data_root_refuses_existing_profile_data(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profile = root / "profile"
+            home_link = profile / ".my-llm-wiki"
+            home_link.mkdir(parents=True)
+            (home_link / "existing.txt").write_text("x", encoding="utf-8")
+            with unittest.mock.patch.object(
+                windows_setup, "DEFAULT_WIKIS", str(profile / "wikis")
+            ):
+                with self.assertRaisesRegex(windows_setup.SetupError, "already holds data"):
+                    windows_setup.ensure_data_root(home_link, root / "drive-d")
+            self.assertTrue((home_link / "existing.txt").is_file())
+
+    def test_ensure_data_root_refuses_foreign_link(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profile = root / "profile"
+            profile.mkdir()
+            home_link = profile / ".my-llm-wiki"
+            elsewhere = root / "elsewhere"
+            elsewhere.mkdir()
+            windows_setup.create_directory_link(home_link, elsewhere)
+            with unittest.mock.patch.object(
+                windows_setup, "DEFAULT_WIKIS", str(profile / "wikis")
+            ):
+                with self.assertRaisesRegex(windows_setup.SetupError, "already links"):
+                    windows_setup.ensure_data_root(home_link, root / "drive-d")
+
+    def test_cleanup_stale_workdirs_removes_only_uuid_leftovers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            versions = home / "components" / "video" / "versions"
+            versions.mkdir(parents=True)
+            keep = versions / "2026.07.04+ffmpeg.8.1.2"
+            keep.mkdir()
+            stale = versions / f".2026.07.04+ffmpeg.8.1.2.{'a' * 32}.staging"
+            stale.mkdir()
+            (stale / "big.bin").write_bytes(b"x" * 128)
+            downloads = home / windows_setup.SETUP_DIR / "downloads"
+            downloads.mkdir(parents=True)
+            part = downloads / f".pack.zip.{'b' * 32}.part"
+            part.write_bytes(b"x")
+            cached = downloads / (("c" * 64) + "-pack.zip")
+            cached.write_bytes(b"x")
+            windows_setup.cleanup_stale_workdirs(home)
+            self.assertTrue(keep.is_dir())
+            self.assertTrue(cached.is_file())
+            self.assertFalse(stale.exists())
+            self.assertFalse(part.exists())
+
+    def test_preflight_disk_space_blocks_when_short(self) -> None:
+        manifest = {
+            "components": {
+                "video": {"version": "1.0", "size": 200 * 1024 * 1024},
+            }
+        }
+        usage = type("Usage", (), {"free": 500 * 1024 * 1024})()
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            with unittest.mock.patch.object(
+                windows_setup.shutil, "disk_usage", return_value=usage
+            ):
+                with self.assertRaisesRegex(windows_setup.SetupError, "disk space"):
+                    windows_setup.preflight_disk_space(home, manifest, ["video"])
+            marker = home / "components" / "video" / "versions" / "1.0" / ".llm-wiki-component.json"
+            marker.parent.mkdir(parents=True)
+            marker.write_text("{}", encoding="utf-8")
+            with unittest.mock.patch.object(
+                windows_setup.shutil, "disk_usage", return_value=usage
+            ):
+                windows_setup.preflight_disk_space(home, manifest, ["video"])
+
     def test_payload_manifest_rejects_tampering(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
