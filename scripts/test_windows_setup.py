@@ -410,7 +410,7 @@ class WindowsSetupTests(unittest.TestCase):
                 windows_setup.set_progress_hook(None)
             self.assertEqual(cache.read_bytes(), data)
         phases = [info["phase"] for info in seen if "phase" in info]
-        self.assertTrue(any("Downloading video" in phase for phase in phases))
+        self.assertTrue(any("正在下载 video" in phase for phase in phases))
         finals = [info for info in seen if info.get("received") == len(data)]
         self.assertTrue(finals)
         self.assertEqual(finals[-1]["total"], len(data))
@@ -534,6 +534,19 @@ class WindowedExecutableHelperTests(unittest.TestCase):
 
     def test_dpi_awareness_is_noop_off_windows(self) -> None:
         windows_setup.enable_windows_dpi_awareness()
+
+    def test_chrome_executable_is_windows_only(self) -> None:
+        if os.name != "nt":
+            self.assertIsNone(windows_setup.chrome_executable())
+
+    def test_component_choices_fall_back_to_english_labels(self) -> None:
+        manifest = {"components": {"demo": {"label": "Demo", "description": "d"}}}
+        row = windows_setup.component_choices(manifest)[0]
+        self.assertEqual(row["label_zh"], "Demo")
+        self.assertEqual(row["description_zh"], "d")
+        manifest["components"]["demo"]["label_zh"] = "示例"
+        row = windows_setup.component_choices(manifest)[0]
+        self.assertEqual(row["label_zh"], "示例")
 
 
 if __name__ == "__main__":
