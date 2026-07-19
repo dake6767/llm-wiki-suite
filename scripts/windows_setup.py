@@ -437,33 +437,77 @@ def preflight_disk_space(home: Path, manifest: dict, components: list[str]) -> N
     emit("disk-preflight", required=required, free=free)
 
 
+IMAGE_FILE_MACHINE_AMD64 = 0x8664
+IMAGE_FILE_MACHINE_ARM64 = 0xAA64
+
+
+def pe_machine(path: str) -> int | None:
+    """Machine field of a PE image header, or None when unreadable/not PE."""
+    try:
+        with open(path, "rb") as fh:
+            if fh.read(2) != b"MZ":
+                return None
+            fh.seek(0x3C)
+            offset = int.from_bytes(fh.read(4), "little")
+            fh.seek(offset)
+            if fh.read(4) != b"PE\0\0":
+                return None
+            return int.from_bytes(fh.read(2), "little")
+    except OSError:
+        return None
+
+
+def running_x64_build() -> bool:
+    """True when the currently executing image is an x64 PE.
+
+    This is the load-bearing ARM64 signal: the Setup exe and the managed
+    runtime are x64-only builds, so the fact that this code executes at all
+    proves the machine runs x64 code (natively or through Windows-on-ARM
+    emulation) — regardless of what ``platform.machine()`` or the WOW64 APIs
+    claim.  Field report 2026-07-19: on a real ARM64 Win11 device both
+    PROCESSOR_ARCHITEW6432 and the IsWow64Process2 probe missed the
+    emulation, so architecture APIs cannot be the primary gate."""
+    return os.name == "nt" and pe_machine(sys.executable) == IMAGE_FILE_MACHINE_AMD64
+
+
+def wow64_process2_probe() -> tuple[bool, int, int]:
+    """(call ok, processMachine, nativeMachine) from IsWow64Process2."""
+    if os.name != "nt":
+        return (False, 0, 0)
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+        kernel32.IsWow64Process2.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_ushort),
+            ctypes.POINTER(ctypes.c_ushort),
+        ]
+        kernel32.IsWow64Process2.restype = ctypes.c_int
+        process_machine = ctypes.c_ushort()
+        native_machine = ctypes.c_ushort()
+        ok = kernel32.IsWow64Process2(
+            kernel32.GetCurrentProcess(),
+            ctypes.byref(process_machine),
+            ctypes.byref(native_machine),
+        )
+        return (bool(ok), process_machine.value, native_machine.value)
+    except Exception:  # noqa: BLE001 - best-effort platform probe
+        return (False, 0, 0)
+
+
 def x64_emulation_on_arm64() -> bool:
     """True when this x64 build runs under Windows-on-ARM x64 emulation.
 
     CPython 3.12's ``platform.machine()`` reports the *native* machine, so an
-    emulated x64 process on ARM64 Windows still sees ``ARM64``.  The Setup
-    payload is x64-only, which Windows 11 runs through its x64 emulator, so
-    that combination is supported; a genuinely non-x64, non-emulated process
-    (a native ARM64 build) is not."""
+    emulated x64 process on ARM64 Windows still sees ``ARM64``.  Secondary
+    signal behind ``running_x64_build``; kept for non-frozen script runs
+    under an arbitrary interpreter."""
     if os.environ.get("PROCESSOR_ARCHITEW6432", "").lower() == "arm64":
         return True
-    if os.name != "nt":
-        return False
-    try:
-        import ctypes
-
-        process_machine = ctypes.c_ushort()
-        native_machine = ctypes.c_ushort()
-        kernel32 = ctypes.windll.kernel32
-        if not kernel32.IsWow64Process2(
-            kernel32.GetCurrentProcess(),
-            ctypes.byref(process_machine),
-            ctypes.byref(native_machine),
-        ):
-            return False
-        return native_machine.value == 0xAA64  # IMAGE_FILE_MACHINE_ARM64
-    except Exception:  # noqa: BLE001 - best-effort platform probe
-        return False
+    ok, _process_machine, native_machine = wow64_process2_probe()
+    return ok and native_machine == IMAGE_FILE_MACHINE_ARM64
 
 
 def validate_platform(allow_test_platform: bool = False) -> None:
@@ -476,10 +520,21 @@ def validate_platform(allow_test_platform: bool = False) -> None:
     machine = platform.machine().lower()
     if machine in {"amd64", "x86_64", "x64"}:
         return
-    if x64_emulation_on_arm64():
-        emit("x64-emulation", machine=platform.machine())
+    if running_x64_build():
+        emit("x64-emulation", machine=platform.machine(), signal="pe-self-check")
         return
-    raise SetupError(f"unsupported Windows architecture: {platform.machine()}")
+    if x64_emulation_on_arm64():
+        emit("x64-emulation", machine=platform.machine(), signal="wow64-probe")
+        return
+    ok, process_machine, native_machine = wow64_process2_probe()
+    raise SetupError(
+        f"unsupported Windows architecture: {platform.machine()} "
+        f"(exe-machine={pe_machine(sys.executable) or 0:#06x}, "
+        f"arch-env={os.environ.get('PROCESSOR_ARCHITECTURE', '-')}, "
+        f"wow64-env={os.environ.get('PROCESSOR_ARCHITEW6432', '-')}, "
+        f"iswow64process2={'ok' if ok else 'fail'}"
+        f":{process_machine:#06x}/{native_machine:#06x})"
+    )
 
 
 def ensure_suite(payload: Path, home: Path) -> tuple[Path, str]:

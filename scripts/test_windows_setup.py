@@ -549,7 +549,65 @@ class WindowedExecutableHelperTests(unittest.TestCase):
         self.assertEqual(row["label_zh"], "示例")
 
 
+def _write_pe(path, machine: int) -> None:
+    header_offset = 0x40
+    blob = bytearray(b"MZ")
+    blob += b"\0" * (0x3C - len(blob))
+    blob += header_offset.to_bytes(4, "little")
+    blob += b"PE\0\0"
+    blob += machine.to_bytes(2, "little")
+    path.write_bytes(bytes(blob))
+
+
 class PlatformValidationTests(unittest.TestCase):
+    def test_pe_machine_reads_machine_field(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            exe = Path(tmp) / "fake.exe"
+            _write_pe(exe, windows_setup.IMAGE_FILE_MACHINE_AMD64)
+            self.assertEqual(
+                windows_setup.pe_machine(str(exe)),
+                windows_setup.IMAGE_FILE_MACHINE_AMD64,
+            )
+            _write_pe(exe, windows_setup.IMAGE_FILE_MACHINE_ARM64)
+            self.assertEqual(
+                windows_setup.pe_machine(str(exe)),
+                windows_setup.IMAGE_FILE_MACHINE_ARM64,
+            )
+
+    def test_pe_machine_rejects_non_pe_and_missing_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            not_pe = Path(tmp) / "not_pe.bin"
+            not_pe.write_bytes(b"#!/bin/sh\n")
+            self.assertIsNone(windows_setup.pe_machine(str(not_pe)))
+            self.assertIsNone(windows_setup.pe_machine(str(Path(tmp) / "absent.exe")))
+
+    def test_validate_platform_accepts_x64_pe_self_check_on_arm64(self) -> None:
+        # The real-device case: platform.machine() says ARM64, both WOW64
+        # signals miss, but the executing image itself is an x64 PE.
+        with unittest.mock.patch.object(
+            windows_setup.platform, "system", return_value="Windows"
+        ), unittest.mock.patch.object(
+            windows_setup.platform, "machine", return_value="ARM64"
+        ), unittest.mock.patch.object(
+            windows_setup, "running_x64_build", return_value=True
+        ), unittest.mock.patch.dict(os.environ, {}, clear=True):
+            windows_setup.validate_platform()
+
+    def test_platform_error_carries_probe_diagnostics(self) -> None:
+        with unittest.mock.patch.object(
+            windows_setup.platform, "system", return_value="Windows"
+        ), unittest.mock.patch.object(
+            windows_setup.platform, "machine", return_value="ARM64"
+        ), unittest.mock.patch.object(
+            windows_setup, "running_x64_build", return_value=False
+        ), unittest.mock.patch.object(
+            windows_setup, "wow64_process2_probe", return_value=(False, 0, 0)
+        ), unittest.mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(
+                windows_setup.SetupError, r"iswow64process2=fail"
+            ):
+                windows_setup.validate_platform()
+
     def test_emulation_probe_ignores_non_arm64_wow64_env(self) -> None:
         with unittest.mock.patch.dict(os.environ, {}, clear=True):
             self.assertFalse(windows_setup.x64_emulation_on_arm64())
@@ -575,6 +633,10 @@ class PlatformValidationTests(unittest.TestCase):
             windows_setup.platform, "system", return_value="Windows"
         ), unittest.mock.patch.object(
             windows_setup.platform, "machine", return_value="ARM64"
+        ), unittest.mock.patch.object(
+            windows_setup, "running_x64_build", return_value=False
+        ), unittest.mock.patch.object(
+            windows_setup, "wow64_process2_probe", return_value=(False, 0, 0)
         ), unittest.mock.patch.dict(
             os.environ, {}, clear=True
         ):
