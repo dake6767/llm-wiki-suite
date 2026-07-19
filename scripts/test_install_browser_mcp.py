@@ -39,6 +39,36 @@ class McpRegistrationTests(unittest.TestCase):
         run.assert_not_called()
         verify.assert_not_called()
 
+    def test_windows_silent_install_waits_and_verifies_registration(self):
+        setup = Path("C:/Users/Test/Downloads/browser-setup.exe")
+        exe = Path("C:/Users/Test/AppData/Local/Browser/browser.exe")
+        with mock.patch.object(installer.subprocess, "Popen") as popen, \
+             mock.patch.object(installer.subprocess, "run") as run, \
+             mock.patch.object(
+                 installer, "_windows_registry_install_location", return_value=exe
+             ) as verify:
+            run.return_value = mock.Mock(returncode=0)
+            result = installer.install_windows_artifact(
+                {}, setup, dry_run=False, silent=True
+            )
+        self.assertEqual(result, exe)
+        popen.assert_not_called()
+        self.assertEqual(run.call_args[0][0], [str(setup), "/S"])
+        verify.assert_called_once()
+
+    def test_windows_silent_install_raises_on_installer_failure(self):
+        setup = Path("C:/Users/Test/Downloads/browser-setup.exe")
+        with mock.patch.object(installer.subprocess, "run") as run, \
+             mock.patch.object(
+                 installer, "_windows_registry_install_location"
+             ) as verify:
+            run.return_value = mock.Mock(returncode=5)
+            with self.assertRaisesRegex(RuntimeError, "exit code 5"):
+                installer.install_windows_artifact(
+                    {}, setup, dry_run=False, silent=True
+                )
+        verify.assert_not_called()
+
     def test_windows_msi_uses_native_installer_and_returns_immediately(self):
         msi = Path("C:/Users/Test/Downloads/browser.msi")
         with mock.patch.object(installer.subprocess, "Popen") as popen:

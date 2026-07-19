@@ -245,6 +245,24 @@ class WindowsSetupTests(unittest.TestCase):
             ):
                 windows_setup.preflight_disk_space(home, manifest, ["video"])
 
+    def test_install_browser_app_runs_suite_installer_silently(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            suite = Path(tmp) / "suite"
+            runtime = Path(tmp) / "runtime"
+            script = suite / "scripts" / "install-browser.py"
+            script.parent.mkdir(parents=True)
+            script.write_text("", encoding="utf-8")
+            with unittest.mock.patch.object(windows_setup.subprocess, "run") as run:
+                run.return_value = unittest.mock.Mock(returncode=0, stdout="", stderr="")
+                windows_setup.install_browser_app(suite, runtime)
+                argv = run.call_args[0][0]
+                self.assertEqual(argv[0], str(runtime / "python.exe"))
+                self.assertEqual(argv[1], str(script))
+                self.assertIn("--windows-silent", argv)
+                run.return_value = unittest.mock.Mock(returncode=1, stdout="", stderr="boom")
+                with self.assertRaisesRegex(windows_setup.SetupError, "exited with 1"):
+                    windows_setup.install_browser_app(suite, runtime)
+
     def test_download_component_reports_progress(self) -> None:
         data = b"payload-bytes" * 1024
         digest = hashlib.sha256(data).hexdigest()

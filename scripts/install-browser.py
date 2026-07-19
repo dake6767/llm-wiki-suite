@@ -714,7 +714,7 @@ def _windows_portable_executable(config: dict, directory: Path) -> Path:
 
 
 def install_windows_artifact(
-    config: dict, path: Path, dry_run: bool = False
+    config: dict, path: Path, dry_run: bool = False, silent: bool = False
 ) -> Path | InstallerLaunch:
     """Install a portable build or launch a native Windows installer."""
     if path.suffix.lower() == ".zip":
@@ -734,6 +734,31 @@ def install_windows_artifact(
     suffix = path.suffix.lower()
     if suffix not in {".exe", ".msi"}:
         raise RuntimeError(f"unsupported Windows Browser artifact: {path.name}")
+    if silent:
+        argv = (
+            [str(path), "/S"]
+            if suffix == ".exe"
+            else ["msiexec.exe", "/i", str(path), "/qn"]
+        )
+        if dry_run:
+            print(f"[dry-run] run silently and wait: {display_argv(argv, 'windows')}")
+            return InstallerLaunch(path)
+        print("running Windows installer silently; waiting for completion")
+        result = subprocess.run(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=900,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"silent Windows installer failed with exit code {result.returncode}"
+            )
+        executable = _windows_registry_install_location(config)
+        print(f"verified installed Browser: {executable}")
+        return executable
     argv = [str(path)] if suffix == ".exe" else ["msiexec.exe", "/i", str(path)]
     if dry_run:
         print(f"[dry-run] launch and return: {display_argv(argv, 'windows')}")
@@ -879,11 +904,11 @@ def browser_install_state(config: dict) -> dict:
 
 
 def install_downloaded_artifact(
-    config: dict, path: Path, dry_run: bool = False
+    config: dict, path: Path, dry_run: bool = False, windows_silent: bool = False
 ) -> Path | InstallerLaunch:
     system = platform.system().lower()
     if system == "windows":
-        return install_windows_artifact(config, path, dry_run)
+        return install_windows_artifact(config, path, dry_run, silent=windows_silent)
     if system == "darwin":
         app_dir = expand(config["browser"]["install_locations"]["darwin_app_dir"])
         installed = install_macos_app_archive(path, app_dir, dry_run)
@@ -1346,7 +1371,8 @@ def perform_browser_install(config: dict, args: argparse.Namespace) -> int:
             dry_run=args.dry_run,
             skip_network_probe=args.dry_run,
             prepare=lambda artifact: install_downloaded_artifact(
-                config, artifact, args.dry_run
+                config, artifact, args.dry_run,
+                windows_silent=getattr(args, "windows_silent", False),
             ),
         )
         print(f"release source: {source}")
@@ -1442,6 +1468,14 @@ def main() -> int:
         help="Build from source if release download is unavailable.",
     )
     parser.add_argument("--dry-run", action="store_true", help="Print actions without changing files.")
+    parser.add_argument(
+        "--windows-silent",
+        action="store_true",
+        help=(
+            "Windows only: run the .exe/.msi installer silently, wait for it, "
+            "and verify the registered install (for Setup orchestration)."
+        ),
+    )
     mcp_group = parser.add_mutually_exclusive_group()
     mcp_group.add_argument(
         "--register-mcp",
