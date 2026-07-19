@@ -233,7 +233,7 @@ def version_dir_name(version: str) -> str:
     return f"{version[:VERSION_DIR_MAX - 13].rstrip('+.-')}.{digest}"
 
 
-def long_path(path: Path) -> str:
+def long_path(path: Path | str) -> str:
     """Extended-length form of *path* so Windows APIs skip the MAX_PATH check.
 
     Applies to whole subtrees, so it keeps deep component trees extractable

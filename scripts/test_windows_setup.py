@@ -607,22 +607,19 @@ class VersionDirTests(unittest.TestCase):
 
 class LongPathTests(unittest.TestCase):
     def test_windows_paths_get_extended_length_prefix(self) -> None:
+        # os.name is patched globally here, which would make pathlib build a
+        # WindowsPath on a posix runner, so feed long_path plain strings.
+        cases = [
+            ("C:\\Users\\L\\x", "\\\\?\\C:\\Users\\L\\x"),
+            ("\\\\server\\share\\x", "\\\\?\\UNC\\server\\share\\x"),
+            ("\\\\?\\C:\\already", "\\\\?\\C:\\already"),
+        ]
         with unittest.mock.patch.object(windows_setup.os, "name", "nt"), \
                 unittest.mock.patch.object(
                     windows_setup.os.path, "abspath", side_effect=lambda p: p
                 ):
-            self.assertEqual(
-                windows_setup.long_path(Path("C:\\Users\\L\\x")),
-                "\\\\?\\C:\\Users\\L\\x",
-            )
-            self.assertEqual(
-                windows_setup.long_path(Path("\\\\server\\share\\x")),
-                "\\\\?\\UNC\\server\\share\\x",
-            )
-            self.assertEqual(
-                windows_setup.long_path(Path("\\\\?\\C:\\already")),
-                "\\\\?\\C:\\already",
-            )
+            for raw, expected in cases:
+                self.assertEqual(windows_setup.long_path(raw), expected)
 
     def test_posix_paths_are_left_alone(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
