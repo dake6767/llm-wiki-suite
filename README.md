@@ -191,6 +191,10 @@ Python 核心并初始化 Wiki。Documents、Web/OpenCLI、Video/yt-dlp+FFmpeg�
 非中文 ASR 都是可独立维护的版本锁定组件，不读取全局 PATH，也不会调用用户机器上的
 npm、pip 或 winget。
 
+Setup 也可勾选桌面端 Browser：它下载官方 NSIS 安装包（经 minisign 签名校验、走 Worker
+镜像路由）并静默安装；装好后由应用内置的 Tauri updater 自行保持更新，Setup 不接管
+Browser 的后续升级。该项失败不影响 skills/组件安装，可稍后重跑 Setup 补装。
+
 Setup 支持选择安装位置：默认在用户目录（C 盘）；选其他盘时，数据实际放在所选目录的
 `home`/`wikis` 子目录，`~/.my-llm-wiki` 与 `~/wikis` 变为 NTFS junction（无需管理员权限），
 所有 skills 与 agent 文档中的路径约定不变。重装系统清空 C 盘后，重跑 Setup 选同一位置

@@ -44,6 +44,14 @@ Windows skills resolve external tools exclusively from the atomic Setup
 receipt at `~/.my-llm-wiki/setup/install-state.json`; they never fall back to
 global `PATH`, an old venv, npm, pip, winget, or a development checkout.
 
+Setup can optionally install the Browser desktop app: it runs the suite's
+release-first `install-browser.py` with `--windows-silent`, which downloads
+the NSIS installer through the usual mirror-first sources, verifies its
+minisign signature, installs silently per-user, and confirms the uninstall
+registration. The installed app then updates itself through the Tauri
+updater; Setup never owns Browser upgrades, and a Browser failure never
+fails the core install.
+
 Setup can anchor the managed data on another drive: the user picks an install
 location (GUI selector or `--data-root`), bytes live under that folder's
 `home`/`wikis` subdirectories, and `~/.my-llm-wiki` plus `~/wikis` become NTFS
