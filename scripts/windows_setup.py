@@ -1144,6 +1144,19 @@ def install_flow(
                 "later or download it from the release page."
             )
         emit("browser-install", ok=not browser_error, error=browser_error)
+    if guidance is not None:
+        # Mirror the Browser FirstCaptureGuide copy so the first prompt the
+        # user types matches what the app itself teaches.
+        wiki_root = Path(
+            str(config.get("default_wiki_root", "~/wikis/my-llm-wiki"))
+        ).expanduser()
+        guidance.extend([
+            "",
+            "第一次使用：在你的 agent（Claude Code / Codex / Hermes 等）里发送：",
+            "  使用 my-llm-wiki 技能，把下面这篇内容抓取沉淀到我的知识库，并直接整理成 wiki 页面：",
+            "  <把这一行换成你想收藏的链接>",
+            f"  知识库 root：{wiki_root}",
+        ])
     emit(
         "installed",
         hosts=hosts,
@@ -1534,9 +1547,16 @@ def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
                     )
                     progress_text.set("")
                     if guidance:
-                        guidance.append(
+                        # Keep verification advice with the manual steps, ahead
+                        # of the first-capture prompt block.
+                        try:
+                            insert_at = guidance.index("")
+                        except ValueError:
+                            insert_at = len(guidance)
+                        guidance.insert(
+                            insert_at,
                             "When the manual steps are done, click “Run doctor check” "
-                            "below to verify everything end to end."
+                            "below to verify everything end to end.",
                         )
                     show_notes(
                         guidance

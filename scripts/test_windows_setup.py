@@ -389,6 +389,7 @@ class WindowsSetupTests(unittest.TestCase):
             root = Path(tmp)
             payload, target, wiki = self.make_payload(root)
             home = root / "managed-home"
+            guidance: list[str] = []
             status = windows_setup.install_flow(
                 hosts=["codex"],
                 components=[],
@@ -397,8 +398,11 @@ class WindowsSetupTests(unittest.TestCase):
                 asset_dir=None,
                 allow_test_platform=True,
                 skip_postcheck=True,
+                guidance=guidance,
             )
             self.assertEqual(status, 0)
+            self.assertTrue(any("知识库 root" in line for line in guidance))
+            self.assertTrue(any("my-llm-wiki 技能" in line for line in guidance))
             receipt = windows_setup.read_receipt(home)
             self.assertEqual(receipt["hosts"], ["codex"])
             self.assertEqual(receipt["components"], {})
