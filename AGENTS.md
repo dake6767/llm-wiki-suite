@@ -9,11 +9,27 @@ implicit-host flows.
 
 ## 0. Windows Native Setup Is The Only Windows Entry Point
 
-On Windows, download `My-LLM-Wiki-Setup.exe` from the latest GitHub Release
-and run it. Do not run `bootstrap.sh`, `scripts/install.sh`, or
+On Windows, download the latest official `My-LLM-Wiki-Setup.exe` and run it.
+Mainland-China networks should use the project-owned Worker download first;
+GitHub Releases remains canonical and is the fallback. Do not run
+`bootstrap.sh`, `scripts/install.sh`, or
 `scripts/install.py`, and do not install Git, Python, Node, npm, pip, winget,
 or Git Bash as prerequisites. The old scripts deliberately stop on MSYS,
 MINGW, and Cygwin before parsing install arguments:
+
+Mainland China:
+
+```text
+https://wiki.htmlgo.to/_setup/latest/My-LLM-Wiki-Setup.exe
+```
+
+Matching SHA-256 manifest:
+
+```text
+https://wiki.htmlgo.to/_setup/latest/SHA256SUMS-windows-setup.txt
+```
+
+Canonical GitHub fallback:
 
 ```text
 https://github.com/dake6767/llm-wiki-suite/releases/latest/download/My-LLM-Wiki-Setup.exe
