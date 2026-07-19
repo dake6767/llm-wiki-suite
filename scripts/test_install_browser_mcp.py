@@ -304,6 +304,23 @@ class McpRegistrationTests(unittest.TestCase):
             self.assertEqual(installer.platform_keys(), [])
             self.assertEqual(installer.tauri_platform_keys(), [])
 
+    def test_windows_arm64_emulation_selects_x64_assets(self):
+        with mock.patch.object(installer.platform, "system", return_value="Windows"), \
+             mock.patch.object(installer.platform, "machine", return_value="ARM64"), \
+             mock.patch.dict(os.environ, {"PROCESSOR_ARCHITEW6432": "ARM64"}):
+            self.assertEqual(installer.platform_keys(), ["windows-x64"])
+            self.assertEqual(
+                installer.tauri_platform_keys(),
+                ["windows-x86_64-nsis", "windows-x86_64", "windows-x86_64-msi"],
+            )
+
+    def test_windows_native_arm64_has_no_assets(self):
+        with mock.patch.object(installer.platform, "system", return_value="Windows"), \
+             mock.patch.object(installer.platform, "machine", return_value="ARM64"), \
+             mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(installer.platform_keys(), [])
+            self.assertEqual(installer.tauri_platform_keys(), [])
+
     def test_portable_zip_rejects_path_traversal(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
