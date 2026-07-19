@@ -191,6 +191,12 @@ Python 核心并初始化 Wiki。Documents、Web/OpenCLI、Video/yt-dlp+FFmpeg�
 非中文 ASR 都是可独立维护的版本锁定组件，不读取全局 PATH，也不会调用用户机器上的
 npm、pip 或 winget。
 
+Setup 支持选择安装位置：默认在用户目录（C 盘）；选其他盘时，数据实际放在所选目录的
+`home`/`wikis` 子目录，`~/.my-llm-wiki` 与 `~/wikis` 变为 NTFS junction（无需管理员权限），
+所有 skills 与 agent 文档中的路径约定不变。重装系统清空 C 盘后，重跑 Setup 选同一位置
+即可重建 junction 并复用盘上已有的组件与 Wiki 数据。安装开始前 Setup 会按所选组件
+体积预检目标盘剩余空间，并清理历史中断留下的临时目录。
+
 旧 `bootstrap.sh` / `scripts/install.sh` 在 MSYS、MINGW、Cygwin 上会立即停止并指向
 Setup，不再尝试兼容。Setup 的更新、修复、组件 doctor 和卸载都依据
 `~/.my-llm-wiki/setup/install-state.json`；外来目录或无法确认来源的旧 skill 会在写入前

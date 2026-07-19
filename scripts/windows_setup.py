@@ -32,6 +32,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_HOME = "~/.my-llm-wiki"
+DEFAULT_WIKIS = "~/wikis"
 SETUP_DIR = "setup"
 RECEIPT_NAME = "install-state.json"
 SETUP_EXE = "My-LLM-Wiki-Setup.exe"
@@ -209,6 +210,128 @@ def host_rows(payload: Path) -> list[dict]:
             "detected": detect.is_dir(),
         })
     return rows
+
+
+def is_reparse_link(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    isjunction = getattr(os.path, "isjunction", None)
+    return bool(isjunction and isjunction(path))
+
+
+def create_directory_link(link: Path, target: Path) -> None:
+    if os.name == "nt":
+        # Junctions, not symlinks: junction creation needs no privilege and
+        # supports absolute cross-volume targets, which is the whole point.
+        result = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()
+            raise SetupError(f"cannot create junction {link} -> {target}: {detail}")
+    else:
+        os.symlink(target, link, target_is_directory=True)
+
+
+def ensure_data_root(home_link: Path, data_root: Path) -> None:
+    """Anchor the managed home and the wikis root on another drive.
+
+    Every consumer — skills, doctor, the Browser app, agent docs — keeps using
+    the user-profile paths; only the bytes move to ``data_root`` behind NTFS
+    junctions.  Existing real directories are never migrated: Setup stops and
+    leaves them for the user to resolve."""
+    data_root = data_root.expanduser().resolve()
+    pairs = (
+        (home_link, data_root / "home"),
+        (Path(DEFAULT_WIKIS).expanduser(), data_root / "wikis"),
+    )
+    for link, target in pairs:
+        if target == link or link in target.parents:
+            raise SetupError(f"data root {data_root} cannot live inside {link}")
+        target.mkdir(parents=True, exist_ok=True)
+        if link.exists() and link.resolve() == target.resolve():
+            continue
+        if is_reparse_link(link):
+            raise SetupError(
+                f"{link} already links to {link.resolve()}; remove the link or "
+                "choose that location instead"
+            )
+        if link.is_dir():
+            if any(link.iterdir()):
+                raise SetupError(
+                    f"{link} already holds data on the system drive; move it "
+                    "aside manually or keep the default install location"
+                )
+            link.rmdir()
+        elif link.exists():
+            raise SetupError(f"{link} exists and is not a directory")
+        link.parent.mkdir(parents=True, exist_ok=True)
+        create_directory_link(link, target)
+        emit("data-root-linked", link=str(link), target=str(target))
+
+
+STALE_HEX = re.compile(r"[0-9a-f]{32}")
+
+
+def cleanup_stale_workdirs(home: Path) -> None:
+    """Reclaim uuid-tagged hidden work paths that earlier aborted runs left
+    behind (a scanner holding handles makes their cleanup silently fail)."""
+    parents = [
+        home / "suite" / "versions",
+        home / "runtime",
+        home / SETUP_DIR,
+        home / SETUP_DIR / "downloads",
+    ]
+    components = home / "components"
+    if components.is_dir():
+        parents.extend(child / "versions" for child in components.iterdir())
+    removed = []
+    for parent in parents:
+        if not parent.is_dir():
+            continue
+        for entry in parent.iterdir():
+            if not entry.name.startswith(".") or not STALE_HEX.search(entry.name):
+                continue
+            try:
+                if entry.is_dir() and not is_reparse_link(entry):
+                    shutil.rmtree(entry)
+                else:
+                    entry.unlink()
+                removed.append(str(entry))
+            except OSError:
+                continue
+    if removed:
+        emit("stale-workdirs-removed", paths=removed)
+
+
+def preflight_disk_space(home: Path, manifest: dict, components: list[str]) -> None:
+    # zip + staging extract + swap headroom; models compress poorly, so 3x the
+    # archive size is the conservative per-component estimate.
+    required = 300 * 1024 * 1024
+    for component in components:
+        spec = (manifest.get("components") or {}).get(component)
+        if not isinstance(spec, dict):
+            continue
+        version = str(spec.get("version", ""))
+        marker = home / "components" / component / "versions" / version / ".llm-wiki-component.json"
+        if marker.is_file():
+            continue
+        required += int(spec.get("size", 0)) * 3
+    probe = home
+    while not probe.exists() and probe.parent != probe:
+        probe = probe.parent
+    free = shutil.disk_usage(probe).free
+    if free < required:
+        raise SetupError(
+            f"not enough disk space for {home}: about "
+            f"{required // (1024 * 1024)} MiB is needed but only "
+            f"{free // (1024 * 1024)} MiB is free; free up space or choose "
+            "another drive as the install location"
+        )
+    emit("disk-preflight", required=required, free=free)
 
 
 def validate_platform(allow_test_platform: bool = False) -> None:
@@ -781,6 +904,8 @@ def install_flow(
     manifest = embedded_json(payload, "component-manifest.json")
     if lock.get("schema") != 1 or manifest.get("schema") != 1:
         raise SetupError("unsupported Windows Setup manifest")
+    cleanup_stale_workdirs(home)
+    preflight_disk_space(home, manifest, list(dict.fromkeys(components)))
     suite, pack_version = ensure_suite(payload, home)
     runtime = ensure_runtime(payload, home, lock)
     copy_setup_executable(home)
@@ -1091,17 +1216,17 @@ def component_choices(manifest: dict) -> list[dict]:
     return out
 
 
-def launch_gui(home: Path, payload: Path, asset_dir: Path | None) -> int:
+def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
     try:
         import tkinter as tk
-        from tkinter import messagebox
+        from tkinter import filedialog, messagebox
     except ImportError as exc:
         raise SetupError("Windows Setup GUI is unavailable; use the install command") from exc
 
     manifest = embedded_json(payload, "component-manifest.json")
     root = tk.Tk()
     root.title("My LLM Wiki Setup")
-    root.geometry("720x640")
+    root.geometry("720x760")
     tk.Label(root, text="My LLM Wiki Setup", font=("Segoe UI", 18, "bold")).pack(
         anchor="w", padx=24, pady=(20, 4)
     )
@@ -1140,6 +1265,37 @@ def launch_gui(home: Path, payload: Path, asset_dir: Path | None) -> int:
             anchor="w",
         ).pack(fill="x", padx=36, pady=2)
 
+    tk.Label(root, text="Install location", font=("Segoe UI", 11, "bold")).pack(
+        anchor="w", padx=24, pady=(16, 0)
+    )
+    location_var = tk.StringVar(value="default")
+    custom_dir = tk.StringVar(value="")
+    tk.Radiobutton(
+        root,
+        text=f"User profile (default) — {home_link}",
+        variable=location_var,
+        value="default",
+        anchor="w",
+    ).pack(fill="x", padx=36)
+    custom_row = tk.Frame(root)
+    custom_row.pack(fill="x", padx=36)
+    tk.Radiobutton(
+        custom_row,
+        text="Another drive — data lives there, profile paths become junctions:",
+        variable=location_var,
+        value="custom",
+        anchor="w",
+    ).pack(side="left")
+
+    def browse() -> None:
+        chosen = filedialog.askdirectory(title="Choose a folder for My LLM Wiki data")
+        if chosen:
+            custom_dir.set(chosen)
+            location_var.set("custom")
+
+    tk.Button(custom_row, text="Browse…", command=browse).pack(side="left", padx=8)
+    tk.Label(root, textvariable=custom_dir, fg="#555").pack(anchor="w", padx=56)
+
     result = {"code": 2}
     status = tk.StringVar(value="Ready")
     tk.Label(root, textvariable=status, fg="#555").pack(anchor="w", padx=24, pady=(18, 4))
@@ -1150,15 +1306,25 @@ def launch_gui(home: Path, payload: Path, asset_dir: Path | None) -> int:
         if not hosts:
             messagebox.showerror("My LLM Wiki Setup", "Select at least one agent host.")
             return
+        data_root = None
+        if location_var.get() == "custom":
+            if not custom_dir.get():
+                messagebox.showerror(
+                    "My LLM Wiki Setup", "Choose a folder for the custom install location."
+                )
+                return
+            data_root = Path(custom_dir.get())
         status.set("Installing… this can take several minutes for ASR components.")
         install_button.configure(state="disabled")
 
         def worker() -> None:
             try:
+                if data_root is not None:
+                    ensure_data_root(home_link, data_root)
                 code = install_flow(
                     hosts=hosts,
                     components=components,
-                    home=home,
+                    home=home_link.resolve(),
                     payload=payload,
                     asset_dir=asset_dir,
                 )
@@ -1193,6 +1359,12 @@ def launch_gui(home: Path, payload: Path, asset_dir: Path | None) -> int:
 def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--home", type=Path, default=Path(DEFAULT_HOME).expanduser())
+    ap.add_argument(
+        "--data-root",
+        type=Path,
+        default=None,
+        help="keep managed home and wikis on this drive/folder via NTFS junctions",
+    )
     ap.add_argument("--payload", type=Path, default=None, help=argparse.SUPPRESS)
     ap.add_argument("--asset-dir", type=Path, default=None)
     ap.add_argument("--allow-test-platform", action="store_true", help=argparse.SUPPRESS)
@@ -1247,12 +1419,15 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
-        home = args.home.expanduser().resolve()
+        home_link = args.home.expanduser()
+        if args.data_root is not None:
+            ensure_data_root(home_link, args.data_root)
+        home = home_link.resolve()
         payload = payload_dir(args.payload)
         asset_dir = args.asset_dir.resolve() if args.asset_dir else None
         if args.command is None:
             validate_platform(args.allow_test_platform)
-            return launch_gui(home, payload, asset_dir)
+            return launch_gui(home_link, payload, asset_dir)
         if args.command == "hosts":
             rows = host_rows(payload)
             if args.json:

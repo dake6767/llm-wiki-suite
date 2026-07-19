@@ -44,6 +44,17 @@ Windows skills resolve external tools exclusively from the atomic Setup
 receipt at `~/.my-llm-wiki/setup/install-state.json`; they never fall back to
 global `PATH`, an old venv, npm, pip, winget, or a development checkout.
 
+Setup can anchor the managed data on another drive: the user picks an install
+location (GUI selector or `--data-root`), bytes live under that folder's
+`home`/`wikis` subdirectories, and `~/.my-llm-wiki` plus `~/wikis` become NTFS
+junctions to them. The profile-path contract every skill, doctor, and agent
+document relies on is unchanged, so never teach a different path. Rerunning
+Setup with the same location after an OS reinstall relinks the junctions and
+reuses the surviving components and wikis. Setup refuses to migrate an
+existing real profile directory; before installing it also preflights free
+disk space against the selected components and sweeps uuid-tagged leftover
+staging/backup/partial paths from aborted runs.
+
 Setup owns install, update, repair, component maintenance, exact postchecks,
 and uninstall for paths carrying its `install_id`. It may replace a verified
 older official checkout/link or an older Setup-owned copy through the normal
