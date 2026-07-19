@@ -459,7 +459,7 @@ def ensure_suite(payload: Path, home: Path) -> tuple[Path, str]:
             raise SetupError(f"managed suite version directory is corrupt: {root}")
         return root, version
     staging = root.parent / f".{version}.{uuid.uuid4().hex}.staging"
-    notify_progress(phase="Installing skills suite")
+    notify_progress(phase="正在安装技能套件")
     try:
         safe_extract(payload / "suite.zip", staging)
         installed = load_json(staging / "registry" / "skills.json")
@@ -502,7 +502,7 @@ def ensure_runtime(payload: Path, home: Path, lock: dict) -> Path:
             return runtime
     staging = runtime.parent / f".python.{uuid.uuid4().hex}.staging"
     backup = runtime.parent / f".python.backup.{uuid.uuid4().hex}"
-    notify_progress(phase="Installing private Python runtime")
+    notify_progress(phase="正在安装私有 Python 运行时")
     try:
         safe_extract(payload / "python.zip", staging)
         enable_embedded_python(staging)
@@ -584,7 +584,7 @@ def download_component(
         digest = hashlib.sha256()
         total = 0
         emit("component-download", component=component, source=url)
-        notify_progress(phase=f"Downloading {component} ({asset})", component=component)
+        notify_progress(phase=f"正在下载 {component}（{asset}）", component=component)
         try:
             request = urllib.request.Request(url, headers={"User-Agent": "My-LLM-Wiki-Setup"})
             with urllib.request.urlopen(request, timeout=30) as response, temp.open("wb") as sink:
@@ -677,7 +677,7 @@ def postcheck_component(
     skip: bool = False,
 ) -> tuple[dict[str, dict], dict[str, str], dict[str, dict[str, str]]]:
     if not skip:
-        notify_progress(phase=f"Verifying {component}", component=component)
+        notify_progress(phase=f"正在校验 {component}", component=component)
     tools: dict[str, dict] = {}
     profiles: dict[str, str] = {}
     runtime_env: dict[str, dict[str, str]] = {}
@@ -771,7 +771,7 @@ def ensure_component(
         staging = root.parent / f".{version}.{uuid.uuid4().hex}.staging"
         backup = root.parent / f".{version}.{uuid.uuid4().hex}.backup"
         try:
-            notify_progress(phase=f"Extracting {component}", component=component)
+            notify_progress(phase=f"正在解压 {component}", component=component)
             safe_extract(archive, staging)
             (staging / ".llm-wiki-component.json").write_text(
                 json.dumps(expected_marker, indent=2) + "\n", encoding="utf-8"
@@ -838,10 +838,10 @@ def stage_opencli_extension(home: Path, component_state: dict) -> list[str]:
         (json.dumps(pointer, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
     )
     return [
-        "Open chrome://extensions in Chrome",
-        "Toggle on Developer mode",
-        f"Click Load unpacked and select: {extension}",
-        "Run opencli doctor through the managed tool runner",
+        "在 Chrome 地址栏打开 chrome://extensions",
+        "打开右上角的「开发者模式」开关",
+        f"点击「加载已解压的扩展程序」，选择：{extension}",
+        "加载完成后重新运行 doctor 验证（安装器完成页可一键运行）",
     ]
 
 
@@ -1006,6 +1006,40 @@ def installed_browser_executable(home: Path) -> Path | None:
         return None
     target = Path(str(browser_receipt.get("target", "")))
     return target if target.is_file() else None
+
+
+def chrome_executable() -> Path | None:
+    """Locate chrome.exe so the GUI can open chrome://extensions directly;
+    the chrome:// scheme has no shell handler, so a plain startfile cannot."""
+    if os.name != "nt":
+        return None
+    try:
+        import winreg
+
+        for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+            try:
+                with winreg.OpenKey(
+                    hive,
+                    r"SOFTWARE\Microsoft\Windows\CurrentVersion"
+                    r"\App Paths\chrome.exe",
+                ) as key:
+                    value = str(winreg.QueryValueEx(key, None)[0])
+            except OSError:
+                continue
+            if value and Path(value).is_file():
+                return Path(value)
+    except ImportError:
+        pass
+    for base in (
+        os.environ.get("ProgramFiles"),
+        os.environ.get("ProgramFiles(x86)"),
+        os.environ.get("LOCALAPPDATA"),
+    ):
+        if base:
+            candidate = Path(base) / "Google" / "Chrome" / "Application" / "chrome.exe"
+            if candidate.is_file():
+                return candidate
+    return None
 
 
 def browser_bridge_extension_dir(home: Path) -> Path | None:
@@ -1196,16 +1230,16 @@ def install_flow(
                 "install_id": receipt["install_id"],
                 "distribution": "managed-pack",
             }
-            notify_progress(phase="Installing skills into agent hosts")
+            notify_progress(phase="正在把技能安装到 agent 宿主")
             install.apply_plan(config, plan)
             write_receipt(home, receipt)
-            notify_progress(phase="Initializing wiki")
+            notify_progress(phase="正在初始化 wiki")
             initialize.ensure_wiki(
                 config,
                 python_executable=str(runtime / "python.exe"),
             )
         if not skip_postcheck:
-            notify_progress(phase="Running doctor checks")
+            notify_progress(phase="正在运行 doctor 检查")
         doctor_status = 0 if skip_postcheck else run_doctor(runtime, suite, hosts, home)
         if doctor_status not in {0, 3}:
             raise SetupError(f"doctor failed with status {doctor_status}")
@@ -1223,10 +1257,10 @@ def install_flow(
         for index, step in enumerate(steps, start=1):
             print(f"Browser Bridge {index}. {step}")
         if guidance is not None:
-            guidance.append("Browser Bridge (Chrome extension) still needs a manual load:")
+            guidance.append("Browser Bridge（Chrome 扩展）还需要手动加载一次：")
             guidance.extend(f"  {index}. {step}" for index, step in enumerate(steps, start=1))
     if browser:
-        notify_progress(phase="Installing Browser desktop app")
+        notify_progress(phase="正在安装 Browser 桌面应用")
         browser_error = ""
         try:
             install_browser_app(suite, runtime)
@@ -1235,10 +1269,10 @@ def install_flow(
             print(f"Browser install failed: {browser_error}", file=sys.stderr)
         if guidance is not None:
             guidance.append(
-                "Browser desktop app installed; it keeps itself updated from now on."
+                "Browser 桌面应用已安装，此后会自动保持更新。"
                 if not browser_error
-                else "Browser desktop app could not be installed now; rerun Setup "
-                "later or download it from the release page."
+                else "Browser 桌面应用本次未能安装；可稍后重新运行安装器，"
+                "或到 release 页面手动下载。"
             )
         emit("browser-install", ok=not browser_error, error=browser_error)
     if guidance is not None:
@@ -1497,10 +1531,14 @@ def uninstall_hosts(
 def component_choices(manifest: dict) -> list[dict]:
     out = []
     for component, spec in (manifest.get("components") or {}).items():
+        label = spec.get("label", component)
+        description = spec.get("description", "")
         out.append({
             "id": component,
-            "label": spec.get("label", component),
-            "description": spec.get("description", ""),
+            "label": label,
+            "description": description,
+            "label_zh": spec.get("label_zh", label),
+            "description_zh": spec.get("description_zh", description),
             "default": bool(spec.get("default")),
             "size": int(spec.get("size", 0)),
         })
@@ -1517,7 +1555,7 @@ def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
     enable_windows_dpi_awareness()
     manifest = embedded_json(payload, "component-manifest.json")
     root = tk.Tk()
-    root.title("My LLM Wiki Setup")
+    root.title("My LLM Wiki 安装程序")
     icon_file = payload / "setup-icon.png"
     if icon_file.is_file():
         try:
@@ -1555,7 +1593,7 @@ def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
     ttk.Label(header, text="My LLM Wiki Setup", style="Title.TLabel").pack(anchor="w")
     ttk.Label(
         header,
-        text="Windows native install · select every agent host and optional tool component",
+        text="Windows 原生安装 · 选择要接入的 agent 宿主与所需工具组件",
         style="Muted.TLabel",
     ).pack(anchor="w", pady=(px(2), 0))
 
@@ -1566,9 +1604,9 @@ def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
     ttk.Separator(bottom, orient="horizontal").pack(fill="x")
     buttons = ttk.Frame(bottom, padding=(px(28), px(10), px(28), px(12)))
     buttons.pack(fill="x")
-    close_button = ttk.Button(buttons, text="Cancel", command=root.destroy, width=14)
+    close_button = ttk.Button(buttons, text="取消", command=root.destroy, width=14)
     close_button.pack(side="right")
-    install_button = ttk.Button(buttons, text="Install", width=14, default="active")
+    install_button = ttk.Button(buttons, text="安装", width=14, default="active")
     install_button.pack(side="right", padx=(0, px(8)))
 
     content = ttk.Frame(root)
@@ -1604,46 +1642,46 @@ def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
         box.pack(fill="x")
         return box
 
-    hosts_box = section("Agent hosts")
+    hosts_box = section("Agent 宿主")
     host_vars = {}
     for row in host_rows(payload):
         var = tk.BooleanVar(value=bool(row["detected"]))
         host_vars[row["id"]] = var
-        suffix = "detected" if row["detected"] else "not detected"
+        suffix = "已检测到" if row["detected"] else "未检测到"
         ttk.Checkbutton(
             hosts_box,
             text=f"{row['id']} — {row['skills_dir']} ({suffix})",
             variable=var,
         ).pack(anchor="w", padx=(px(8), 0), pady=px(1))
 
-    components_box = section("Tool components")
+    components_box = section("工具组件")
     component_vars = {}
     for row in component_choices(manifest):
         var = tk.BooleanVar(value=row["default"])
         component_vars[row["id"]] = var
         size = f" · {row['size'] / (1024 * 1024):.0f} MiB" if row["size"] else ""
         ttk.Checkbutton(
-            components_box, text=f"{row['label']}{size}", variable=var
+            components_box, text=f"{row['label_zh']}{size}", variable=var
         ).pack(anchor="w", padx=(px(8), 0), pady=(px(3), 0))
-        if row["description"]:
+        if row["description_zh"]:
             ttk.Label(
-                components_box, text=row["description"], style="Muted.TLabel"
+                components_box, text=row["description_zh"], style="Muted.TLabel"
             ).pack(anchor="w", padx=(px(28), 0))
 
-    desktop_box = section("Desktop app")
+    desktop_box = section("桌面应用")
     browser_var = tk.BooleanVar(value=True)
     ttk.Checkbutton(
         desktop_box,
-        text="My LLM Wiki Browser — installs silently, then keeps itself updated",
+        text="My LLM Wiki Browser — 静默安装，此后自动保持更新",
         variable=browser_var,
     ).pack(anchor="w", padx=(px(8), 0), pady=px(1))
 
-    location_box = section("Install location")
+    location_box = section("安装位置")
     location_var = tk.StringVar(value="default")
     custom_dir = tk.StringVar(value="")
     ttk.Radiobutton(
         location_box,
-        text=f"User profile (default) — {home_link}",
+        text=f"用户目录（默认）— {home_link}",
         variable=location_var,
         value="default",
     ).pack(anchor="w", padx=(px(8), 0), pady=px(1))
@@ -1651,18 +1689,18 @@ def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
     custom_row.pack(fill="x", padx=(px(8), 0))
     ttk.Radiobutton(
         custom_row,
-        text="Another drive — data lives there, profile paths become junctions:",
+        text="其他磁盘 — 数据存放在所选位置，用户目录路径经 junction 指向：",
         variable=location_var,
         value="custom",
     ).pack(side="left")
 
     def browse() -> None:
-        chosen = filedialog.askdirectory(title="Choose a folder for My LLM Wiki data")
+        chosen = filedialog.askdirectory(title="选择 My LLM Wiki 的数据目录")
         if chosen:
             custom_dir.set(chosen)
             location_var.set("custom")
 
-    ttk.Button(custom_row, text="Browse…", command=browse).pack(side="left", padx=px(8))
+    ttk.Button(custom_row, text="浏览…", command=browse).pack(side="left", padx=px(8))
     ttk.Label(location_box, textvariable=custom_dir, style="Muted.TLabel").pack(
         anchor="w", padx=(px(28), 0)
     )
@@ -1670,7 +1708,7 @@ def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
     # Page 2: progress and completion, swapped in when the install starts.
     progress_page = ttk.Frame(content, padding=(px(28), px(4), px(28), px(8)))
     result = {"code": 2}
-    status = tk.StringVar(value="Ready")
+    status = tk.StringVar(value="准备就绪")
     ttk.Label(
         progress_page,
         textvariable=status,
@@ -1759,19 +1797,33 @@ def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
         hosts = [name for name, var in host_vars.items() if var.get()]
         components = [name for name, var in component_vars.items() if var.get()]
         if not hosts:
-            messagebox.showerror("My LLM Wiki Setup", "Select at least one agent host.")
+            messagebox.showerror("My LLM Wiki 安装程序", "请至少选择一个 agent 宿主。")
             return
         data_root = None
         if location_var.get() == "custom":
             if not custom_dir.get():
                 messagebox.showerror(
-                    "My LLM Wiki Setup", "Choose a folder for the custom install location."
+                    "My LLM Wiki 安装程序", "请先为自定义安装位置选择一个目录。"
                 )
                 return
             data_root = Path(custom_dir.get())
-        status.set("Installing… this can take several minutes for ASR components.")
+        status.set("正在安装……ASR 组件较大，可能需要几分钟。")
         install_button.configure(state="disabled")
         show_progress_page()
+        show_notes([
+            "My LLM Wiki — 把你看过的网页、视频、文档沉淀成本地知识库。",
+            "",
+            "正在部署：my-llm-wiki 技能套件、私有 Python 运行时，以及你勾选的工具组件。",
+            "· 抓取与整理由你的 agent（Claude Code / Codex / Hermes 等）驱动，",
+            "  wiki 页面全部落在本地磁盘。",
+            "· Browser 桌面应用负责浏览与检索知识库，安装后自动保持更新。",
+            "",
+            "安全说明：",
+            "· 所有数据只保存在本机（用户目录或你选择的磁盘），不会上传到任何服务器。",
+            "· 组件均从项目官方 release 源下载，并逐个通过 SHA-256 校验；",
+            "  Browser 安装包另经 minisign 签名校验。",
+            "· 安装器只写入自己管理的目录，遇到不是它创建的文件会先停下，不会覆盖。",
+        ])
 
         def worker() -> None:
             guidance: list[str] = []
@@ -1791,8 +1843,8 @@ def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
 
                 def finish() -> None:
                     status.set(
-                        "Installation completed."
-                        + (" Some capabilities still need action; see the Setup log." if code == 3 else "")
+                        "安装完成。"
+                        + ("部分能力还需手动操作，见下方说明。" if code == 3 else "")
                     )
                     progress_text.set("")
                     if guidance:
@@ -1804,26 +1856,54 @@ def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
                             insert_at = len(guidance)
                         guidance.insert(
                             insert_at,
-                            "When the manual steps are done, click “Run doctor check” "
-                            "below to verify everything end to end.",
+                            "完成上述手动步骤后，点击下方「重新运行 doctor 检查」"
+                            "做一次端到端验证。",
                         )
-                    show_notes(
-                        guidance
-                        or ["No manual follow-up is needed — you can close this window."]
-                    )
+                    base_lines = list(guidance) or [
+                        "没有需要手动处理的事项，可以关闭本窗口了。"
+                    ]
+                    show_notes(base_lines)
                     extension = browser_bridge_extension_dir(home_link.resolve())
+                    if extension is not None:
+                        def open_chrome_extensions() -> None:
+                            chrome = chrome_executable()
+                            if chrome is None:
+                                messagebox.showinfo(
+                                    "My LLM Wiki 安装程序",
+                                    "未找到 Chrome；请在 Chrome 地址栏手动打开 "
+                                    "chrome://extensions",
+                                )
+                                return
+                            try:
+                                subprocess.Popen(
+                                    [str(chrome), "chrome://extensions/"],
+                                    stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL,
+                                    close_fds=True,
+                                )
+                            except OSError as exc:
+                                messagebox.showerror(
+                                    "My LLM Wiki 安装程序", f"Chrome 启动失败：{exc}"
+                                )
+
+                        ttk.Button(
+                            actions_row,
+                            text="打开 Chrome 扩展设置",
+                            command=open_chrome_extensions,
+                        ).pack(side="left", padx=(0, 8))
                     if extension is not None and hasattr(os, "startfile"):
                         ttk.Button(
                             actions_row,
-                            text="Open extension folder",
+                            text="打开扩展文件夹",
                             command=lambda: os.startfile(extension),
                         ).pack(side="left", padx=(0, 8))
 
-                    doctor_button = ttk.Button(actions_row, text="Run doctor check")
+                    doctor_button = ttk.Button(actions_row, text="重新运行 doctor 检查")
 
                     def run_doctor_click() -> None:
                         doctor_button.configure(state="disabled")
-                        status.set("Running doctor checks… this can take a minute.")
+                        status.set("正在运行 doctor 检查……大约需要一分钟。")
 
                         def doctor_worker() -> None:
                             try:
@@ -1834,13 +1914,20 @@ def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
                             def apply() -> None:
                                 doctor_button.configure(state="normal")
                                 if doctor_code == 0:
-                                    status.set("Doctor: everything checks out.")
+                                    status.set("doctor 检查全部通过。")
                                 elif doctor_code == 3:
-                                    status.set("Doctor: some capabilities still need action; see below.")
+                                    status.set("doctor：部分能力还需处理，见下方输出。")
                                 else:
-                                    status.set(f"Doctor failed (exit {doctor_code}); see below.")
-                                lines = output.splitlines() or ["(no doctor output)"]
-                                show_notes(lines[-60:])
+                                    status.set(f"doctor 检查失败（退出码 {doctor_code}），见下方输出。")
+                                lines = output.splitlines() or ["（doctor 无输出）"]
+                                # 引导文案保留在上方，doctor 结果追加在分隔线之下
+                                show_notes([
+                                    *base_lines,
+                                    "",
+                                    "── doctor 检查结果 ──",
+                                    *lines[-60:],
+                                ])
+                                notes.see("end")
 
                             root.after(0, apply)
 
@@ -1854,7 +1941,7 @@ def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
                     if browser_exe is not None:
                         ttk.Checkbutton(
                             launch_row,
-                            text="Open My LLM Wiki Browser to browse the wiki when Setup closes",
+                            text="关闭安装器后立即打开 My LLM Wiki Browser 浏览知识库",
                             variable=launch_var,
                         ).pack(anchor="w", pady=(4, 0))
 
@@ -1870,29 +1957,25 @@ def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
                                 )
                             except OSError as exc:
                                 messagebox.showerror(
-                                    "My LLM Wiki Setup", f"Browser launch failed: {exc}"
+                                    "My LLM Wiki 安装程序", f"Browser 启动失败：{exc}"
                                 )
                         root.destroy()
 
-                    close_button.configure(text="Close", command=close_setup)
+                    close_button.configure(text="关闭", command=close_setup)
                     root.protocol("WM_DELETE_WINDOW", close_setup)
                     messagebox.showinfo(
-                        "My LLM Wiki Setup",
-                        "Installation completed."
-                        + (
-                            " Review the remaining manual steps in the Setup window before closing."
-                            if guidance
-                            else ""
-                        ),
+                        "My LLM Wiki 安装程序",
+                        "安装完成。"
+                        + ("请在关闭前查看窗口中的后续手动步骤。" if guidance else ""),
                     )
 
                 root.after(0, finish)
             except Exception as exc:  # noqa: BLE001 - surface the full installer failure
                 message = str(exc)
                 root.after(0, lambda message=message: messagebox.showerror(
-                    "My LLM Wiki Setup", message
+                    "My LLM Wiki 安装程序", message
                 ))
-                root.after(0, lambda: status.set("Installation failed; no foreign paths were replaced."))
+                root.after(0, lambda: status.set("安装失败；未改动任何非本安装器管理的文件。"))
                 root.after(0, show_select_page)
                 root.after(0, lambda: install_button.configure(state="normal"))
 

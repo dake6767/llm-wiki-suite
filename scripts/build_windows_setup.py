@@ -428,6 +428,8 @@ def build_manifest(lock: dict, tag: str, assets: dict[str, Path], dest: Path) ->
         components[component] = {
             "label": spec["label"],
             "description": spec["description"],
+            "label_zh": spec.get("label_zh", spec["label"]),
+            "description_zh": spec.get("description_zh", spec["description"]),
             "default": bool(spec.get("default")),
             "version": component_version(component, spec),
             "asset": path.name,
