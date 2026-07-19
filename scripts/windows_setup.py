@@ -326,6 +326,7 @@ def create_directory_link(link: Path, target: Path) -> None:
             ["cmd", "/c", "mklink", "/J", str(link), str(target)],
             capture_output=True,
             text=True,
+            errors="replace",
             check=False,
             creationflags=hidden_console_flags(),
         )
@@ -912,6 +913,10 @@ def install_browser_app(suite: Path, runtime: Path) -> None:
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
+        # The child runs in UTF-8 mode; decoding with the parent's locale
+        # codec (GBK on Chinese Windows) kills the reader threads.
+        encoding="utf-8",
+        errors="replace",
         timeout=1800,
         check=False,
         env={**os.environ, "PYTHONUTF8": "1"},
@@ -969,6 +974,8 @@ def run_doctor_capture(home: Path) -> tuple[int, str]:
         ),
         stdin=subprocess.DEVNULL,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
         timeout=300,
         check=False,
@@ -1013,6 +1020,8 @@ def run_doctor(runtime: Path, suite: Path, hosts: list[str], home: Path) -> int:
         doctor_command(runtime, suite, hosts),
         stdin=subprocess.DEVNULL,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
         timeout=180,
         check=False,

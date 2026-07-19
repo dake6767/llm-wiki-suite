@@ -241,6 +241,16 @@ def build_suite_payload(dest: Path) -> None:
                     "__pycache__", "*.pyc", "test_*.py", "reports", "data", ".DS_Store"
                 ),
             )
+        # install-browser.py reads the Tauri updater pubkey from the repo's
+        # tauri.conf.json; the installed suite has no apps/ tree, so stage
+        # that one file at its expected relative path.
+        tauri_config = (
+            ROOT / "apps" / "my-llm-wiki-browser" / "desktop" / "src-tauri"
+            / "tauri.conf.json"
+        )
+        staged_config = stage / tauri_config.relative_to(ROOT)
+        staged_config.parent.mkdir(parents=True)
+        shutil.copy2(tauri_config, staged_config)
         write_zip(stage, dest)
 
 

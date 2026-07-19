@@ -53,6 +53,16 @@ class BuildWindowsSetupTests(unittest.TestCase):
             with self.assertRaisesRegex(builder.BuildError, "unsafe zip member"):
                 builder.safe_extract(archive, root / "out")
 
+    def test_suite_payload_carries_tauri_updater_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "suite.zip"
+            builder.build_suite_payload(dest)
+            with zipfile.ZipFile(dest) as bundle:
+                names = set(bundle.namelist())
+        self.assertIn(
+            "apps/my-llm-wiki-browser/desktop/src-tauri/tauri.conf.json", names
+        )
+
     def test_executable_is_windowed_with_branded_icon(self) -> None:
         self.assertTrue(builder.SETUP_ICON_ICO.is_file())
         self.assertTrue(builder.SETUP_ICON_PNG.is_file())
