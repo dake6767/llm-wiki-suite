@@ -273,6 +273,32 @@ class WindowsSetupTests(unittest.TestCase):
             self.assertIn("--host", argv)
             self.assertIn("claude", argv)
 
+    def test_installed_browser_executable_follows_receipts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            home.mkdir()
+            self.assertIsNone(windows_setup.installed_browser_executable(home))
+            suite = home / "suite" / "versions" / "1.0"
+            (suite / "registry").mkdir(parents=True)
+            browser_receipt = Path(tmp) / "browser-receipt.json"
+            (suite / "registry" / "bootstrap.json").write_text(json.dumps({
+                "browser": {"install_receipt": {"path": str(browser_receipt)}},
+            }), encoding="utf-8")
+            windows_setup.write_receipt(home, {
+                "schema": 1,
+                "platform": "windows",
+                "home": str(home),
+                "suite": str(suite),
+            })
+            self.assertIsNone(windows_setup.installed_browser_executable(home))
+            exe = Path(tmp) / "Browser" / "browser.exe"
+            exe.parent.mkdir()
+            exe.write_bytes(b"MZ")
+            browser_receipt.write_text(
+                json.dumps({"target": str(exe)}), encoding="utf-8"
+            )
+            self.assertEqual(windows_setup.installed_browser_executable(home), exe)
+
     def test_browser_bridge_extension_dir_reads_receipt(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
@@ -363,6 +389,7 @@ class WindowsSetupTests(unittest.TestCase):
             root = Path(tmp)
             payload, target, wiki = self.make_payload(root)
             home = root / "managed-home"
+            guidance: list[str] = []
             status = windows_setup.install_flow(
                 hosts=["codex"],
                 components=[],
@@ -371,8 +398,11 @@ class WindowsSetupTests(unittest.TestCase):
                 asset_dir=None,
                 allow_test_platform=True,
                 skip_postcheck=True,
+                guidance=guidance,
             )
             self.assertEqual(status, 0)
+            self.assertTrue(any("知识库 root" in line for line in guidance))
+            self.assertTrue(any("my-llm-wiki 技能" in line for line in guidance))
             receipt = windows_setup.read_receipt(home)
             self.assertEqual(receipt["hosts"], ["codex"])
             self.assertEqual(receipt["components"], {})

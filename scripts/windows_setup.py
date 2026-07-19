@@ -898,6 +898,22 @@ def run_doctor_capture(home: Path) -> tuple[int, str]:
     return result.returncode, output.strip()
 
 
+def installed_browser_executable(home: Path) -> Path | None:
+    """Resolve the Browser exe from the install receipt its installer wrote."""
+    receipt = read_receipt(home)
+    if receipt is None:
+        return None
+    suite = Path(str(receipt.get("suite", "")))
+    try:
+        config = load_json(suite / "registry" / "bootstrap.json")
+        pointer = config["browser"]["install_receipt"]["path"]
+        browser_receipt = load_json(Path(str(pointer)).expanduser())
+    except (SetupError, KeyError, TypeError):
+        return None
+    target = Path(str(browser_receipt.get("target", "")))
+    return target if target.is_file() else None
+
+
 def browser_bridge_extension_dir(home: Path) -> Path | None:
     receipt = read_receipt(home)
     row = ((receipt or {}).get("components") or {}).get("web")
@@ -1128,6 +1144,19 @@ def install_flow(
                 "later or download it from the release page."
             )
         emit("browser-install", ok=not browser_error, error=browser_error)
+    if guidance is not None:
+        # Mirror the Browser FirstCaptureGuide copy so the first prompt the
+        # user types matches what the app itself teaches.
+        wiki_root = Path(
+            str(config.get("default_wiki_root", "~/wikis/my-llm-wiki"))
+        ).expanduser()
+        guidance.extend([
+            "",
+            "第一次使用：在你的 agent（Claude Code / Codex / Hermes 等）里发送：",
+            "  使用 my-llm-wiki 技能，把下面这篇内容抓取沉淀到我的知识库，并直接整理成 wiki 页面：",
+            "  <把这一行换成你想收藏的链接>",
+            f"  知识库 root：{wiki_root}",
+        ])
     emit(
         "installed",
         hosts=hosts,
@@ -1436,6 +1465,8 @@ def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
     notes.pack(fill="both", expand=True, padx=24, pady=(8, 0))
     actions_row = tk.Frame(root)
     actions_row.pack(anchor="w", padx=24, pady=(6, 0))
+    launch_row = tk.Frame(root)
+    launch_row.pack(anchor="w", padx=24)
 
     speed_state = {"time": 0.0, "received": 0, "rate": 0.0}
 
@@ -1516,9 +1547,16 @@ def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
                     )
                     progress_text.set("")
                     if guidance:
-                        guidance.append(
+                        # Keep verification advice with the manual steps, ahead
+                        # of the first-capture prompt block.
+                        try:
+                            insert_at = guidance.index("")
+                        except ValueError:
+                            insert_at = len(guidance)
+                        guidance.insert(
+                            insert_at,
                             "When the manual steps are done, click “Run doctor check” "
-                            "below to verify everything end to end."
+                            "below to verify everything end to end.",
                         )
                     show_notes(
                         guidance
@@ -1561,7 +1599,35 @@ def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
 
                     doctor_button.configure(command=run_doctor_click)
                     doctor_button.pack(side="left")
-                    close_button.configure(text="Close")
+
+                    browser_exe = installed_browser_executable(home_link.resolve())
+                    launch_var = tk.BooleanVar(value=True)
+                    if browser_exe is not None:
+                        tk.Checkbutton(
+                            launch_row,
+                            text="Open My LLM Wiki Browser to browse the wiki when Setup closes",
+                            variable=launch_var,
+                            anchor="w",
+                        ).pack(fill="x", pady=(4, 0))
+
+                    def close_setup() -> None:
+                        if browser_exe is not None and launch_var.get():
+                            try:
+                                subprocess.Popen(
+                                    [str(browser_exe)],
+                                    stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL,
+                                    close_fds=True,
+                                )
+                            except OSError as exc:
+                                messagebox.showerror(
+                                    "My LLM Wiki Setup", f"Browser launch failed: {exc}"
+                                )
+                        root.destroy()
+
+                    close_button.configure(text="Close", command=close_setup)
+                    root.protocol("WM_DELETE_WINDOW", close_setup)
                     messagebox.showinfo(
                         "My LLM Wiki Setup",
                         "Installation completed."
