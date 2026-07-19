@@ -437,14 +437,49 @@ def preflight_disk_space(home: Path, manifest: dict, components: list[str]) -> N
     emit("disk-preflight", required=required, free=free)
 
 
+def x64_emulation_on_arm64() -> bool:
+    """True when this x64 build runs under Windows-on-ARM x64 emulation.
+
+    CPython 3.12's ``platform.machine()`` reports the *native* machine, so an
+    emulated x64 process on ARM64 Windows still sees ``ARM64``.  The Setup
+    payload is x64-only, which Windows 11 runs through its x64 emulator, so
+    that combination is supported; a genuinely non-x64, non-emulated process
+    (a native ARM64 build) is not."""
+    if os.environ.get("PROCESSOR_ARCHITEW6432", "").lower() == "arm64":
+        return True
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+
+        process_machine = ctypes.c_ushort()
+        native_machine = ctypes.c_ushort()
+        kernel32 = ctypes.windll.kernel32
+        if not kernel32.IsWow64Process2(
+            kernel32.GetCurrentProcess(),
+            ctypes.byref(process_machine),
+            ctypes.byref(native_machine),
+        ):
+            return False
+        return native_machine.value == 0xAA64  # IMAGE_FILE_MACHINE_ARM64
+    except Exception:  # noqa: BLE001 - best-effort platform probe
+        return False
+
+
 def validate_platform(allow_test_platform: bool = False) -> None:
     if platform.system().lower() != "windows" and not allow_test_platform:
         raise SetupError(
             "My-LLM-Wiki-Setup.exe is Windows-only; macOS and Linux keep bootstrap.sh v4"
         )
+    if allow_test_platform:
+        return
     machine = platform.machine().lower()
-    if not allow_test_platform and machine not in {"amd64", "x86_64", "x64"}:
-        raise SetupError(f"unsupported Windows architecture: {platform.machine()}")
+    if machine in {"amd64", "x86_64", "x64"}:
+        return
+    if x64_emulation_on_arm64():
+        emit("x64-emulation", machine=platform.machine())
+        return
+    raise SetupError(f"unsupported Windows architecture: {platform.machine()}")
 
 
 def ensure_suite(payload: Path, home: Path) -> tuple[Path, str]:
@@ -1987,6 +2022,26 @@ def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
     return int(result["code"])
 
 
+def show_fatal_error(message: str) -> None:
+    """Surface a fatal pre-GUI error in a dialog.
+
+    A double-clicked GUI launch owns only a hidden console, so a SetupError
+    raised before ``launch_gui`` (platform gate, payload verification) would
+    otherwise flash a console window and vanish without readable output."""
+    if os.name != "nt" or not getattr(sys, "frozen", False):
+        return
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror("My LLM Wiki 安装程序", message)
+        root.destroy()
+    except Exception:  # noqa: BLE001 - the stderr print still happens
+        pass
+
+
 def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--home", type=Path, default=Path(DEFAULT_HOME).expanduser())
@@ -2136,9 +2191,13 @@ def main(argv: list[str] | None = None) -> int:
             )
         raise SetupError(f"unsupported command: {args.command}")
     except SetupError as exc:
+        if args.command is None:
+            show_fatal_error(str(exc))
         print(f"windows-setup: {exc}", file=sys.stderr)
         return 2
     except (OSError, subprocess.SubprocessError) as exc:
+        if args.command is None:
+            show_fatal_error(f"operation failed: {exc}")
         print(f"windows-setup: operation failed: {exc}", file=sys.stderr)
         return 1
 

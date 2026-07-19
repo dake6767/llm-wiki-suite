@@ -549,5 +549,46 @@ class WindowedExecutableHelperTests(unittest.TestCase):
         self.assertEqual(row["label_zh"], "示例")
 
 
+class PlatformValidationTests(unittest.TestCase):
+    def test_emulation_probe_ignores_non_arm64_wow64_env(self) -> None:
+        with unittest.mock.patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(windows_setup.x64_emulation_on_arm64())
+        with unittest.mock.patch.dict(os.environ, {"PROCESSOR_ARCHITEW6432": "AMD64"}):
+            self.assertFalse(windows_setup.x64_emulation_on_arm64())
+
+    def test_emulation_probe_accepts_arm64_wow64_env(self) -> None:
+        with unittest.mock.patch.dict(os.environ, {"PROCESSOR_ARCHITEW6432": "ARM64"}):
+            self.assertTrue(windows_setup.x64_emulation_on_arm64())
+
+    def test_validate_platform_accepts_x64_emulation_on_arm64(self) -> None:
+        with unittest.mock.patch.object(
+            windows_setup.platform, "system", return_value="Windows"
+        ), unittest.mock.patch.object(
+            windows_setup.platform, "machine", return_value="ARM64"
+        ), unittest.mock.patch.dict(
+            os.environ, {"PROCESSOR_ARCHITEW6432": "ARM64"}
+        ):
+            windows_setup.validate_platform()
+
+    def test_validate_platform_rejects_native_arm64(self) -> None:
+        with unittest.mock.patch.object(
+            windows_setup.platform, "system", return_value="Windows"
+        ), unittest.mock.patch.object(
+            windows_setup.platform, "machine", return_value="ARM64"
+        ), unittest.mock.patch.dict(
+            os.environ, {}, clear=True
+        ):
+            with self.assertRaisesRegex(windows_setup.SetupError, "ARM64"):
+                windows_setup.validate_platform()
+
+    def test_validate_platform_still_accepts_x64(self) -> None:
+        with unittest.mock.patch.object(
+            windows_setup.platform, "system", return_value="Windows"
+        ), unittest.mock.patch.object(
+            windows_setup.platform, "machine", return_value="AMD64"
+        ):
+            windows_setup.validate_platform()
+
+
 if __name__ == "__main__":
     unittest.main()

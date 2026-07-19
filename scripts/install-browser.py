@@ -168,6 +168,40 @@ def infer_repo() -> str | None:
     return None
 
 
+def x64_emulation_on_arm64() -> bool:
+    """True when this x64 Python runs under Windows-on-ARM x64 emulation.
+
+    CPython 3.12's ``platform.machine()`` reports the *native* machine, so an
+    emulated x64 process on ARM64 Windows still sees ``ARM64``.  The Browser
+    release ships x64 Windows artifacts only, which Windows 11 runs through
+    its x64 emulator, so the emulated case must select the x64 assets."""
+    if os.environ.get("PROCESSOR_ARCHITEW6432", "").lower() == "arm64":
+        return True
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+
+        process_machine = ctypes.c_ushort()
+        native_machine = ctypes.c_ushort()
+        kernel32 = ctypes.windll.kernel32
+        if not kernel32.IsWow64Process2(
+            kernel32.GetCurrentProcess(),
+            ctypes.byref(process_machine),
+            ctypes.byref(native_machine),
+        ):
+            return False
+        return native_machine.value == 0xAA64  # IMAGE_FILE_MACHINE_ARM64
+    except Exception:  # noqa: BLE001 - best-effort platform probe
+        return False
+
+
+def windows_x64_capable(machine: str) -> bool:
+    if machine in {"amd64", "x86_64", "x64"}:
+        return True
+    return machine == "arm64" and x64_emulation_on_arm64()
+
+
 def platform_keys() -> list[str]:
     system = platform.system().lower()
     machine = platform.machine().lower()
@@ -176,7 +210,7 @@ def platform_keys() -> list[str]:
             return ["darwin-arm64", "darwin-universal"]
         return ["darwin-x64", "darwin-universal"]
     if system == "windows":
-        return ["windows-x64"] if machine in {"amd64", "x86_64", "x64"} else []
+        return ["windows-x64"] if windows_x64_capable(machine) else []
     if system == "linux":
         return ["linux-x64"] if machine in {"amd64", "x86_64", "x64"} else []
     return []
@@ -237,7 +271,7 @@ def tauri_platform_keys() -> list[str]:
         # NSIS is the closest equivalent to GitHub's setup.exe; MSI is a
         # fallback when a release omitted NSIS.
         return (["windows-x86_64-nsis", "windows-x86_64", "windows-x86_64-msi"]
-                if machine in {"amd64", "x86_64", "x64"} else [])
+                if windows_x64_capable(machine) else [])
     if system == "linux":
         return (["linux-x86_64-appimage", "linux-x86_64", "linux-x86_64-deb", "linux-x86_64-rpm"]
                 if machine in {"amd64", "x86_64", "x64"} else [])
