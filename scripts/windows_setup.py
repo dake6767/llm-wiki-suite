@@ -874,6 +874,39 @@ def doctor_command(runtime: Path, suite: Path, hosts: list[str]) -> list[str]:
     return command
 
 
+def run_doctor_capture(home: Path) -> tuple[int, str]:
+    """Re-run the full doctor from the receipt, returning output for the GUI."""
+    receipt = read_receipt(home)
+    if receipt is None:
+        return 2, "Setup receipt is missing; run the install first."
+    result = subprocess.run(
+        doctor_command(
+            Path(receipt["runtime"]), Path(receipt["suite"]), list(receipt.get("hosts", []))
+        ),
+        stdin=subprocess.DEVNULL,
+        text=True,
+        capture_output=True,
+        timeout=300,
+        check=False,
+        env={
+            **os.environ,
+            "PYTHONUTF8": "1",
+            "LLM_WIKI_SETUP_RECEIPT": str(receipt_path(home)),
+        },
+    )
+    output = (result.stdout or "") + (f"\n{result.stderr}" if result.stderr else "")
+    return result.returncode, output.strip()
+
+
+def browser_bridge_extension_dir(home: Path) -> Path | None:
+    receipt = read_receipt(home)
+    row = ((receipt or {}).get("components") or {}).get("web")
+    if not isinstance(row, dict):
+        return None
+    extension = Path(str(row.get("path", ""))) / "extension"
+    return extension if extension.is_dir() else None
+
+
 def run_doctor(runtime: Path, suite: Path, hosts: list[str], home: Path) -> int:
     result = subprocess.run(
         doctor_command(runtime, suite, hosts),
@@ -1311,7 +1344,7 @@ def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
     manifest = embedded_json(payload, "component-manifest.json")
     root = tk.Tk()
     root.title("My LLM Wiki Setup")
-    root.geometry("720x760")
+    root.geometry("720x800")
     tk.Label(root, text="My LLM Wiki Setup", font=("Segoe UI", 18, "bold")).pack(
         anchor="w", padx=24, pady=(20, 4)
     )
@@ -1401,6 +1434,8 @@ def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
     tk.Label(root, textvariable=progress_text, fg="#555").pack(anchor="w", padx=24)
     notes = tk.Text(root, height=6, wrap="word", state="disabled", relief="flat", bg="#f5f5f5")
     notes.pack(fill="both", expand=True, padx=24, pady=(8, 0))
+    actions_row = tk.Frame(root)
+    actions_row.pack(anchor="w", padx=24, pady=(6, 0))
 
     speed_state = {"time": 0.0, "received": 0, "rate": 0.0}
 
@@ -1480,10 +1515,52 @@ def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
                         + (" Some capabilities still need action; see the Setup log." if code == 3 else "")
                     )
                     progress_text.set("")
+                    if guidance:
+                        guidance.append(
+                            "When the manual steps are done, click “Run doctor check” "
+                            "below to verify everything end to end."
+                        )
                     show_notes(
                         guidance
                         or ["No manual follow-up is needed — you can close this window."]
                     )
+                    extension = browser_bridge_extension_dir(home_link.resolve())
+                    if extension is not None and hasattr(os, "startfile"):
+                        tk.Button(
+                            actions_row,
+                            text="Open extension folder",
+                            command=lambda: os.startfile(extension),
+                        ).pack(side="left", padx=(0, 8))
+
+                    doctor_button = tk.Button(actions_row, text="Run doctor check")
+
+                    def run_doctor_click() -> None:
+                        doctor_button.configure(state="disabled")
+                        status.set("Running doctor checks… this can take a minute.")
+
+                        def doctor_worker() -> None:
+                            try:
+                                doctor_code, output = run_doctor_capture(home_link.resolve())
+                            except Exception as exc:  # noqa: BLE001 - show any doctor failure
+                                doctor_code, output = 2, str(exc)
+
+                            def apply() -> None:
+                                doctor_button.configure(state="normal")
+                                if doctor_code == 0:
+                                    status.set("Doctor: everything checks out.")
+                                elif doctor_code == 3:
+                                    status.set("Doctor: some capabilities still need action; see below.")
+                                else:
+                                    status.set(f"Doctor failed (exit {doctor_code}); see below.")
+                                lines = output.splitlines() or ["(no doctor output)"]
+                                show_notes(lines[-60:])
+
+                            root.after(0, apply)
+
+                        threading.Thread(target=doctor_worker, daemon=True).start()
+
+                    doctor_button.configure(command=run_doctor_click)
+                    doctor_button.pack(side="left")
                     close_button.configure(text="Close")
                     messagebox.showinfo(
                         "My LLM Wiki Setup",

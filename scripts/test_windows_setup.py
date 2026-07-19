@@ -245,6 +245,51 @@ class WindowsSetupTests(unittest.TestCase):
             ):
                 windows_setup.preflight_disk_space(home, manifest, ["video"])
 
+    def test_run_doctor_capture_uses_receipt_and_returns_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            self.assertEqual(
+                windows_setup.run_doctor_capture(home),
+                (2, "Setup receipt is missing; run the install first."),
+            )
+            receipt = {
+                "schema": 1,
+                "platform": "windows",
+                "home": str(home),
+                "suite": str(home / "suite" / "versions" / "1.0"),
+                "runtime": str(home / "runtime" / "python"),
+                "hosts": ["claude"],
+            }
+            windows_setup.write_receipt(home, receipt)
+            with unittest.mock.patch.object(windows_setup.subprocess, "run") as run:
+                run.return_value = unittest.mock.Mock(
+                    returncode=3, stdout="doctor says\n", stderr="warn\n"
+                )
+                code, output = windows_setup.run_doctor_capture(home)
+            self.assertEqual(code, 3)
+            self.assertIn("doctor says", output)
+            self.assertIn("warn", output)
+            argv = run.call_args[0][0]
+            self.assertIn("--host", argv)
+            self.assertIn("claude", argv)
+
+    def test_browser_bridge_extension_dir_reads_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            self.assertIsNone(windows_setup.browser_bridge_extension_dir(home))
+            component = home / "components" / "web" / "versions" / "1.0"
+            (component / "extension").mkdir(parents=True)
+            windows_setup.write_receipt(home, {
+                "schema": 1,
+                "platform": "windows",
+                "home": str(home),
+                "components": {"web": {"path": str(component)}},
+            })
+            self.assertEqual(
+                windows_setup.browser_bridge_extension_dir(home),
+                component / "extension",
+            )
+
     def test_install_browser_app_runs_suite_installer_silently(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             suite = Path(tmp) / "suite"
