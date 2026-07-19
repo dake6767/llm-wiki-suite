@@ -245,6 +245,46 @@ class WindowsSetupTests(unittest.TestCase):
             ):
                 windows_setup.preflight_disk_space(home, manifest, ["video"])
 
+    def test_download_component_reports_progress(self) -> None:
+        data = b"payload-bytes" * 1024
+        digest = hashlib.sha256(data).hexdigest()
+
+        class FakeResponse:
+            def __init__(self) -> None:
+                self.headers = {"Content-Length": str(len(data))}
+                self._chunks = [data]
+
+            def read(self, _size: int) -> bytes:
+                return self._chunks.pop(0) if self._chunks else b""
+
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, *args) -> bool:
+                return False
+
+        seen: list[dict] = []
+        spec = {"asset": "pack.zip", "sha256": digest}
+        manifest = {"release_tag": "v1", "sources": ["https://example.invalid/{tag}/{asset}"]}
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            windows_setup.set_progress_hook(seen.append)
+            try:
+                with unittest.mock.patch.object(
+                    windows_setup.urllib.request, "urlopen", return_value=FakeResponse()
+                ):
+                    cache = windows_setup.download_component(
+                        "video", spec, manifest, home, None
+                    )
+            finally:
+                windows_setup.set_progress_hook(None)
+            self.assertEqual(cache.read_bytes(), data)
+        phases = [info["phase"] for info in seen if "phase" in info]
+        self.assertTrue(any("Downloading video" in phase for phase in phases))
+        finals = [info for info in seen if info.get("received") == len(data)]
+        self.assertTrue(finals)
+        self.assertEqual(finals[-1]["total"], len(data))
+
     def test_payload_manifest_rejects_tampering(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
