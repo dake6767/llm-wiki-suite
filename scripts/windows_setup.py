@@ -129,12 +129,33 @@ def safe_extract(archive: Path, destination: Path) -> None:
         raise SetupError(f"invalid zip archive: {archive}") from exc
 
 
+def replace_with_retries(source: Path, target: Path) -> None:
+    """os.replace with backoff: antivirus and indexer scans hold handles inside
+    freshly written trees, and Windows then fails the rename with WinError 5."""
+    delay = 0.2
+    deadline = time.monotonic() + 30.0
+    while True:
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError as exc:
+            if time.monotonic() >= deadline:
+                raise SetupError(
+                    f"cannot move {source} to {target} ({exc}); another program "
+                    "(likely antivirus or a sync client) is still holding the "
+                    "path — close it or exclude the install directory, then "
+                    "rerun Setup"
+                ) from exc
+            time.sleep(delay)
+            delay = min(delay * 2, 5.0)
+
+
 def atomic_write(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
     try:
         temp.write_bytes(data)
-        os.replace(temp, path)
+        replace_with_retries(temp, path)
     finally:
         temp.unlink(missing_ok=True)
 
@@ -218,7 +239,7 @@ def ensure_suite(payload: Path, home: Path) -> tuple[Path, str]:
         if installed.get("pack_version") != version:
             raise SetupError("extracted suite pack_version mismatch")
         root.parent.mkdir(parents=True, exist_ok=True)
-        os.replace(staging, root)
+        replace_with_retries(staging, root)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     emit("suite-ready", version=version, path=str(root))
@@ -267,12 +288,12 @@ def ensure_runtime(payload: Path, home: Path, lock: dict) -> Path:
         )
         runtime.parent.mkdir(parents=True, exist_ok=True)
         if runtime.exists():
-            os.replace(runtime, backup)
-        os.replace(staging, runtime)
+            replace_with_retries(runtime, backup)
+        replace_with_retries(staging, runtime)
         shutil.rmtree(backup, ignore_errors=True)
     except Exception:
         if backup.exists() and not runtime.exists():
-            os.replace(backup, runtime)
+            replace_with_retries(backup, runtime)
         raise
     finally:
         shutil.rmtree(staging, ignore_errors=True)
@@ -293,7 +314,7 @@ def copy_setup_executable(home: Path) -> Path | None:
         pass
     temp = destination.parent / f".{destination.name}.{uuid.uuid4().hex}"
     shutil.copy2(source, temp)
-    os.replace(temp, destination)
+    replace_with_retries(temp, destination)
     return destination
 
 
@@ -351,7 +372,7 @@ def download_component(
                 raise SetupError(
                     f"component hash mismatch: expected {expected}, got {digest.hexdigest()}"
                 )
-            os.replace(temp, cache)
+            replace_with_retries(temp, cache)
             return cache
         except (OSError, urllib.error.URLError, SetupError) as exc:
             failures.append(f"{url}: {exc}")
@@ -513,12 +534,12 @@ def ensure_component(
             )
             root.parent.mkdir(parents=True, exist_ok=True)
             if root.exists():
-                os.replace(root, backup)
-            os.replace(staging, root)
+                replace_with_retries(root, backup)
+            replace_with_retries(staging, root)
             shutil.rmtree(backup, ignore_errors=True)
         except Exception:
             if backup.exists() and not root.exists():
-                os.replace(backup, root)
+                replace_with_retries(backup, root)
             raise
         finally:
             shutil.rmtree(staging, ignore_errors=True)

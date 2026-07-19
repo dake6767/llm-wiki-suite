@@ -9,6 +9,7 @@ import shutil
 import stat
 import tempfile
 import unittest
+import unittest.mock
 import zipfile
 from pathlib import Path
 
@@ -113,6 +114,45 @@ class WindowsSetupTests(unittest.TestCase):
             with self.assertRaisesRegex(windows_setup.SetupError, "unsafe zip member"):
                 windows_setup.safe_extract(archive, root / "out")
             self.assertFalse((root / "escape.txt").exists())
+
+    def test_replace_with_retries_survives_transient_locks(self) -> None:
+        calls = {"count": 0}
+        real_replace = windows_setup.os.replace
+
+        def flaky(source, target):
+            calls["count"] += 1
+            if calls["count"] < 3:
+                raise PermissionError(5, "Access is denied")
+            real_replace(source, target)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "staging").mkdir()
+            with unittest.mock.patch.object(windows_setup.os, "replace", flaky), \
+                    unittest.mock.patch.object(windows_setup.time, "sleep"):
+                windows_setup.replace_with_retries(root / "staging", root / "final")
+            self.assertEqual(calls["count"], 3)
+            self.assertTrue((root / "final").is_dir())
+
+    def test_replace_with_retries_gives_up_with_guidance(self) -> None:
+        def locked(source, target):
+            raise PermissionError(5, "Access is denied")
+
+        clock = {"now": 0.0}
+
+        def tick(seconds):
+            clock["now"] += seconds
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "staging").mkdir()
+            with unittest.mock.patch.object(windows_setup.os, "replace", locked), \
+                    unittest.mock.patch.object(windows_setup.time, "sleep", tick), \
+                    unittest.mock.patch.object(
+                        windows_setup.time, "monotonic", lambda: clock["now"]
+                    ):
+                with self.assertRaisesRegex(windows_setup.SetupError, "antivirus"):
+                    windows_setup.replace_with_retries(root / "staging", root / "final")
 
     def test_payload_manifest_rejects_tampering(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
