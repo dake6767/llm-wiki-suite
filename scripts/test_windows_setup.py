@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import stat
 import subprocess
@@ -516,6 +517,23 @@ class WindowsSetupTests(unittest.TestCase):
                 "python_profiles": {},
             })
             self.assertEqual(windows_setup.run_managed_tool("yt-dlp", [], home), 7)
+
+
+class WindowedExecutableHelperTests(unittest.TestCase):
+    def test_hidden_console_flags_match_platform(self) -> None:
+        flags = windows_setup.hidden_console_flags()
+        if os.name != "nt":
+            self.assertEqual(flags, 0)
+        else:
+            self.assertIn(flags, (0, subprocess.CREATE_NO_WINDOW))
+
+    def test_attach_parent_console_keeps_usable_streams(self) -> None:
+        before = (sys.stdout, sys.stderr, sys.stdin)
+        windows_setup.attach_parent_console()
+        self.assertEqual((sys.stdout, sys.stderr, sys.stdin), before)
+
+    def test_dpi_awareness_is_noop_off_windows(self) -> None:
+        windows_setup.enable_windows_dpi_awareness()
 
 
 if __name__ == "__main__":

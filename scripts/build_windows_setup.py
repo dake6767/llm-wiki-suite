@@ -26,6 +26,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 LOCK = ROOT / "registry" / "windows-toolchain.lock.json"
+BROWSER_ICONS = ROOT / "apps" / "my-llm-wiki-browser" / "desktop" / "src-tauri" / "icons"
+SETUP_ICON_ICO = BROWSER_ICONS / "icon.ico"
+SETUP_ICON_PNG = BROWSER_ICONS / "64x64.png"
 MAX_DOWNLOAD = 2 * 1024 * 1024 * 1024
 # ``windows_setup.py`` loads suite installer modules from the extracted payload
 # at runtime, so PyInstaller cannot discover standard-library imports that are
@@ -238,6 +241,16 @@ def build_suite_payload(dest: Path) -> None:
                     "__pycache__", "*.pyc", "test_*.py", "reports", "data", ".DS_Store"
                 ),
             )
+        # install-browser.py reads the Tauri updater pubkey from the repo's
+        # tauri.conf.json; the installed suite has no apps/ tree, so stage
+        # that one file at its expected relative path.
+        tauri_config = (
+            ROOT / "apps" / "my-llm-wiki-browser" / "desktop" / "src-tauri"
+            / "tauri.conf.json"
+        )
+        staged_config = stage / tauri_config.relative_to(ROOT)
+        staged_config.parent.mkdir(parents=True)
+        shutil.copy2(tauri_config, staged_config)
         write_zip(stage, dest)
 
 
@@ -448,7 +461,13 @@ def build_executable(payload: Path, dist: Path, work: Path, version: str) -> Pat
     subprocess.run(
         [
             sys.executable, "-m", "PyInstaller",
+            # Console subsystem so shells wait and exit codes propagate (a
+            # windowed exe makes PowerShell's `& exe` return immediately with
+            # no $LASTEXITCODE).  The bootloader hides the console only when
+            # the process owns it, i.e. a double-clicked GUI launch.
             "--noconfirm", "--clean", "--onefile", "--console",
+            "--hide-console", "hide-early",
+            "--icon", str(SETUP_ICON_ICO),
             "--name", "My-LLM-Wiki-Setup",
             "--hidden-import", "tkinter",
             "--hidden-import", "tkinter.messagebox",
@@ -531,6 +550,7 @@ def main(argv: list[str] | None = None) -> int:
         shutil.copy2(python_zip, payload / "python.zip")
         shutil.copy2(LOCK, payload / "windows-toolchain.lock.json")
         build_manifest(lock, args.release_tag, assets, payload / "component-manifest.json")
+        shutil.copy2(SETUP_ICON_PNG, payload / "setup-icon.png")
         payload_files = [
             "suite.zip",
             "python.zip",

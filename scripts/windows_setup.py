@@ -74,6 +74,88 @@ def notify_progress(**info) -> None:
         pass
 
 
+def hidden_console_flags() -> int:
+    """Child-process creation flags for console-subsystem children.
+
+    The frozen exe is a console app whose bootloader hides the console it owns
+    (double-clicked GUI launch); children then inherit that hidden console and
+    stay invisible.  This guard covers the residual case where Setup has no
+    console at all: without CREATE_NO_WINDOW each console child (python.exe,
+    cmd.exe) would pop up its own window.  Inside a visible console (CLI use)
+    it returns 0 so children keep inheriting it."""
+    if os.name != "nt":
+        return 0
+    try:
+        import ctypes
+
+        if ctypes.windll.kernel32.GetConsoleWindow():
+            return 0
+    except Exception:  # noqa: BLE001 - fall back to inherited behaviour
+        return 0
+    return getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def attach_parent_console() -> None:
+    """Reconnect std streams if the exe ever runs without a console.
+
+    The console build normally always has one (possibly hidden), making this a
+    no-op; it is a safety net so CLI output cannot silently vanish if the exe
+    is embedded or repackaged without a console.  Piped or redirected streams
+    are already usable and are left untouched."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        if kernel32.GetConsoleWindow():
+            return
+    except Exception:  # noqa: BLE001 - console plumbing is best effort
+        return
+
+    def usable(stream) -> bool:
+        try:
+            return stream is not None and stream.fileno() >= 0
+        except (OSError, ValueError, AttributeError):
+            return False
+
+    if usable(sys.stdout) and usable(sys.stderr):
+        return
+    if not kernel32.AttachConsole(0xFFFFFFFF):  # ATTACH_PARENT_PROCESS
+        return
+    try:
+        if not usable(sys.stdout):
+            sys.stdout = open(  # noqa: SIM115 - lives for the process
+                "CONOUT$", "w", buffering=1, encoding="utf-8", errors="replace"
+            )
+        if not usable(sys.stderr):
+            sys.stderr = open(  # noqa: SIM115 - lives for the process
+                "CONOUT$", "w", buffering=1, encoding="utf-8", errors="replace"
+            )
+        if not usable(sys.stdin):
+            sys.stdin = open("CONIN$", "r", encoding="utf-8", errors="replace")  # noqa: SIM115
+    except OSError:
+        pass
+
+
+def enable_windows_dpi_awareness() -> None:
+    """Opt in to DPI awareness before Tk starts.
+
+    Without this, Windows bitmap-stretches the whole window on scaled displays:
+    text is blurry and the fixed pixel geometry no longer fits the content."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        except (AttributeError, OSError):
+            ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:  # noqa: BLE001 - purely cosmetic
+        return
+
+
 def payload_dir(explicit: Path | None = None) -> Path:
     if explicit is not None:
         root = explicit.resolve()
@@ -246,7 +328,9 @@ def create_directory_link(link: Path, target: Path) -> None:
             ["cmd", "/c", "mklink", "/J", str(link), str(target)],
             capture_output=True,
             text=True,
+            errors="replace",
             check=False,
+            creationflags=hidden_console_flags(),
         )
         if result.returncode != 0:
             detail = (result.stderr or result.stdout or "").strip()
@@ -614,6 +698,7 @@ def postcheck_component(
                 stderr=subprocess.DEVNULL,
                 timeout=60,
                 check=False,
+                creationflags=hidden_console_flags(),
             )
             if result.returncode != 0:
                 raise SetupError(
@@ -638,6 +723,7 @@ def postcheck_component(
                 stderr=subprocess.DEVNULL,
                 timeout=120,
                 check=False,
+                creationflags=hidden_console_flags(),
             )
             if result.returncode != 0:
                 raise SetupError(
@@ -829,9 +915,14 @@ def install_browser_app(suite: Path, runtime: Path) -> None:
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
+        # The child runs in UTF-8 mode; decoding with the parent's locale
+        # codec (GBK on Chinese Windows) kills the reader threads.
+        encoding="utf-8",
+        errors="replace",
         timeout=1800,
         check=False,
         env={**os.environ, "PYTHONUTF8": "1"},
+        creationflags=hidden_console_flags(),
     )
     if result.stdout:
         print(result.stdout, end="")
@@ -885,9 +976,12 @@ def run_doctor_capture(home: Path) -> tuple[int, str]:
         ),
         stdin=subprocess.DEVNULL,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
         timeout=300,
         check=False,
+        creationflags=hidden_console_flags(),
         env={
             **os.environ,
             "PYTHONUTF8": "1",
@@ -928,9 +1022,12 @@ def run_doctor(runtime: Path, suite: Path, hosts: list[str], home: Path) -> int:
         doctor_command(runtime, suite, hosts),
         stdin=subprocess.DEVNULL,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
         timeout=180,
         check=False,
+        creationflags=hidden_console_flags(),
         env={
             **os.environ,
             "PYTHONUTF8": "1",
@@ -1296,7 +1393,9 @@ def run_managed_tool(name: str, values: list[str], home: Path) -> int:
     if receipt is None:
         raise SetupError("Windows Setup receipt is missing")
     command = [*managed_argv(receipt, name), *_remainder(values)]
-    return subprocess.run(command, check=False).returncode
+    return subprocess.run(
+        command, check=False, creationflags=hidden_console_flags()
+    ).returncode
 
 
 def run_managed_python(profile: str, values: list[str], home: Path) -> int:
@@ -1320,7 +1419,9 @@ def run_managed_python(profile: str, values: list[str], home: Path) -> int:
             if isinstance(key, str) and isinstance(value, str)
         })
     command = python_file_command(prefix[0], [*prefix[1:], *_remainder(values)])
-    return subprocess.run(command, env=env, check=False).returncode
+    return subprocess.run(
+        command, env=env, check=False, creationflags=hidden_console_flags()
+    ).returncode
 
 
 def uninstall_hosts(
@@ -1413,79 +1514,146 @@ def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
     except ImportError as exc:
         raise SetupError("Windows Setup GUI is unavailable; use the install command") from exc
 
+    enable_windows_dpi_awareness()
     manifest = embedded_json(payload, "component-manifest.json")
     root = tk.Tk()
     root.title("My LLM Wiki Setup")
-    root.geometry("720x800")
-    tk.Label(root, text="My LLM Wiki Setup", font=("Segoe UI", 18, "bold")).pack(
-        anchor="w", padx=24, pady=(20, 4)
-    )
-    tk.Label(
-        root,
-        text="Windows native install · select every agent host and optional tool component",
-        font=("Segoe UI", 10),
-    ).pack(anchor="w", padx=24, pady=(0, 16))
+    icon_file = payload / "setup-icon.png"
+    if icon_file.is_file():
+        try:
+            icon = tk.PhotoImage(file=str(icon_file))
+            root.iconphoto(True, icon)
+        except tk.TclError:
+            pass
 
-    tk.Label(root, text="Agent hosts", font=("Segoe UI", 11, "bold")).pack(anchor="w", padx=24)
+    style = ttk.Style(root)
+    if "vista" in style.theme_names():
+        style.theme_use("vista")
+    style.configure("Title.TLabel", font=("Segoe UI", 18, "bold"))
+    style.configure("Section.TLabel", font=("Segoe UI", 10, "bold"))
+    style.configure("Muted.TLabel", foreground="#606060")
+    style.configure("Status.TLabel", font=("Segoe UI", 10, "bold"))
+    root.option_add("*Font", "{Segoe UI} 10")
+
+    # Tk reports scaling in pixels per point; 96 DPI equals factor 1.0.  The
+    # fixed geometry must grow with it or scaled displays clip the window.
+    try:
+        dpi_factor = float(root.tk.call("tk", "scaling")) * 72.0 / 96.0
+    except tk.TclError:
+        dpi_factor = 1.0
+
+    def px(value: int) -> int:
+        return int(round(value * dpi_factor))
+
+    width = px(760)
+    height = min(px(780), max(px(560), root.winfo_screenheight() - px(120)))
+    root.geometry(f"{width}x{height}")
+    root.minsize(px(680), px(540))
+
+    header = ttk.Frame(root, padding=(px(28), px(18), px(28), px(10)))
+    header.pack(fill="x")
+    ttk.Label(header, text="My LLM Wiki Setup", style="Title.TLabel").pack(anchor="w")
+    ttk.Label(
+        header,
+        text="Windows native install · select every agent host and optional tool component",
+        style="Muted.TLabel",
+    ).pack(anchor="w", pady=(px(2), 0))
+
+    # The bottom bar packs before the content so the action buttons stay
+    # visible no matter how short the window is.
+    bottom = ttk.Frame(root)
+    bottom.pack(side="bottom", fill="x")
+    ttk.Separator(bottom, orient="horizontal").pack(fill="x")
+    buttons = ttk.Frame(bottom, padding=(px(28), px(10), px(28), px(12)))
+    buttons.pack(fill="x")
+    close_button = ttk.Button(buttons, text="Cancel", command=root.destroy, width=14)
+    close_button.pack(side="right")
+    install_button = ttk.Button(buttons, text="Install", width=14, default="active")
+    install_button.pack(side="right", padx=(0, px(8)))
+
+    content = ttk.Frame(root)
+    content.pack(fill="both", expand=True)
+
+    # Page 1: selections, scrollable so short displays still reach everything.
+    select_page = ttk.Frame(content)
+    select_page.pack(fill="both", expand=True)
+    canvas = tk.Canvas(select_page, highlightthickness=0, borderwidth=0)
+    scrollbar = ttk.Scrollbar(select_page, orient="vertical", command=canvas.yview)
+    canvas.configure(yscrollcommand=scrollbar.set)
+    scrollbar.pack(side="right", fill="y")
+    canvas.pack(side="left", fill="both", expand=True)
+    form = ttk.Frame(canvas, padding=(px(28), 0, px(20), px(12)))
+    form_window = canvas.create_window((0, 0), window=form, anchor="nw")
+    form.bind(
+        "<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all"))
+    )
+    canvas.bind(
+        "<Configure>", lambda e: canvas.itemconfigure(form_window, width=e.width)
+    )
+
+    def on_mousewheel(event) -> None:
+        canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
+
+    canvas.bind_all("<MouseWheel>", on_mousewheel)
+
+    def section(title: str) -> ttk.Frame:
+        ttk.Label(form, text=title, style="Section.TLabel").pack(
+            anchor="w", pady=(px(12), px(4))
+        )
+        box = ttk.Frame(form)
+        box.pack(fill="x")
+        return box
+
+    hosts_box = section("Agent hosts")
     host_vars = {}
     for row in host_rows(payload):
-        var = tk.BooleanVar(value=False)
+        var = tk.BooleanVar(value=bool(row["detected"]))
         host_vars[row["id"]] = var
         suffix = "detected" if row["detected"] else "not detected"
-        tk.Checkbutton(
-            root,
+        ttk.Checkbutton(
+            hosts_box,
             text=f"{row['id']} — {row['skills_dir']} ({suffix})",
             variable=var,
-            anchor="w",
-        ).pack(fill="x", padx=36)
+        ).pack(anchor="w", padx=(px(8), 0), pady=px(1))
 
-    tk.Label(root, text="Tool components", font=("Segoe UI", 11, "bold")).pack(
-        anchor="w", padx=24, pady=(16, 0)
-    )
+    components_box = section("Tool components")
     component_vars = {}
     for row in component_choices(manifest):
         var = tk.BooleanVar(value=row["default"])
         component_vars[row["id"]] = var
         size = f" · {row['size'] / (1024 * 1024):.0f} MiB" if row["size"] else ""
-        tk.Checkbutton(
-            root,
-            text=f"{row['label']}{size}\n    {row['description']}",
-            variable=var,
-            justify="left",
-            anchor="w",
-        ).pack(fill="x", padx=36, pady=2)
+        ttk.Checkbutton(
+            components_box, text=f"{row['label']}{size}", variable=var
+        ).pack(anchor="w", padx=(px(8), 0), pady=(px(3), 0))
+        if row["description"]:
+            ttk.Label(
+                components_box, text=row["description"], style="Muted.TLabel"
+            ).pack(anchor="w", padx=(px(28), 0))
 
-    tk.Label(root, text="Desktop app", font=("Segoe UI", 11, "bold")).pack(
-        anchor="w", padx=24, pady=(16, 0)
-    )
+    desktop_box = section("Desktop app")
     browser_var = tk.BooleanVar(value=True)
-    tk.Checkbutton(
-        root,
+    ttk.Checkbutton(
+        desktop_box,
         text="My LLM Wiki Browser — installs silently, then keeps itself updated",
         variable=browser_var,
-        anchor="w",
-    ).pack(fill="x", padx=36)
+    ).pack(anchor="w", padx=(px(8), 0), pady=px(1))
 
-    tk.Label(root, text="Install location", font=("Segoe UI", 11, "bold")).pack(
-        anchor="w", padx=24, pady=(16, 0)
-    )
+    location_box = section("Install location")
     location_var = tk.StringVar(value="default")
     custom_dir = tk.StringVar(value="")
-    tk.Radiobutton(
-        root,
+    ttk.Radiobutton(
+        location_box,
         text=f"User profile (default) — {home_link}",
         variable=location_var,
         value="default",
-        anchor="w",
-    ).pack(fill="x", padx=36)
-    custom_row = tk.Frame(root)
-    custom_row.pack(fill="x", padx=36)
-    tk.Radiobutton(
+    ).pack(anchor="w", padx=(px(8), 0), pady=px(1))
+    custom_row = ttk.Frame(location_box)
+    custom_row.pack(fill="x", padx=(px(8), 0))
+    ttk.Radiobutton(
         custom_row,
         text="Another drive — data lives there, profile paths become junctions:",
         variable=location_var,
         value="custom",
-        anchor="w",
     ).pack(side="left")
 
     def browse() -> None:
@@ -1494,22 +1662,59 @@ def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
             custom_dir.set(chosen)
             location_var.set("custom")
 
-    tk.Button(custom_row, text="Browse…", command=browse).pack(side="left", padx=8)
-    tk.Label(root, textvariable=custom_dir, fg="#555").pack(anchor="w", padx=56)
+    ttk.Button(custom_row, text="Browse…", command=browse).pack(side="left", padx=px(8))
+    ttk.Label(location_box, textvariable=custom_dir, style="Muted.TLabel").pack(
+        anchor="w", padx=(px(28), 0)
+    )
 
+    # Page 2: progress and completion, swapped in when the install starts.
+    progress_page = ttk.Frame(content, padding=(px(28), px(4), px(28), px(8)))
     result = {"code": 2}
     status = tk.StringVar(value="Ready")
-    tk.Label(root, textvariable=status, fg="#555").pack(anchor="w", padx=24, pady=(18, 4))
-    progress_bar = ttk.Progressbar(root, mode="determinate", maximum=100, value=0)
-    progress_bar.pack(fill="x", padx=24, pady=(0, 2))
+    ttk.Label(
+        progress_page,
+        textvariable=status,
+        style="Status.TLabel",
+        wraplength=px(660),
+        justify="left",
+    ).pack(anchor="w", pady=(px(6), px(6)))
+    progress_bar = ttk.Progressbar(progress_page, mode="determinate", maximum=100, value=0)
+    progress_bar.pack(fill="x")
     progress_text = tk.StringVar(value="")
-    tk.Label(root, textvariable=progress_text, fg="#555").pack(anchor="w", padx=24)
-    notes = tk.Text(root, height=6, wrap="word", state="disabled", relief="flat", bg="#f5f5f5")
-    notes.pack(fill="both", expand=True, padx=24, pady=(8, 0))
-    actions_row = tk.Frame(root)
-    actions_row.pack(anchor="w", padx=24, pady=(6, 0))
-    launch_row = tk.Frame(root)
-    launch_row.pack(anchor="w", padx=24)
+    ttk.Label(progress_page, textvariable=progress_text, style="Muted.TLabel").pack(
+        anchor="w", pady=(px(2), px(6))
+    )
+    notes_frame = ttk.Frame(progress_page, relief="solid", borderwidth=1)
+    notes_frame.pack(fill="both", expand=True, pady=(px(4), 0))
+    notes_scroll = ttk.Scrollbar(notes_frame, orient="vertical")
+    notes = tk.Text(
+        notes_frame,
+        height=6,
+        wrap="word",
+        state="disabled",
+        relief="flat",
+        borderwidth=0,
+        padx=px(10),
+        pady=px(8),
+        yscrollcommand=notes_scroll.set,
+    )
+    notes_scroll.configure(command=notes.yview)
+    notes_scroll.pack(side="right", fill="y")
+    notes.pack(side="left", fill="both", expand=True)
+    actions_row = ttk.Frame(progress_page)
+    actions_row.pack(anchor="w", pady=(px(8), 0))
+    launch_row = ttk.Frame(progress_page)
+    launch_row.pack(anchor="w")
+
+    def show_progress_page() -> None:
+        canvas.unbind_all("<MouseWheel>")
+        select_page.pack_forget()
+        progress_page.pack(fill="both", expand=True)
+
+    def show_select_page() -> None:
+        progress_page.pack_forget()
+        select_page.pack(fill="both", expand=True)
+        canvas.bind_all("<MouseWheel>", on_mousewheel)
 
     speed_state = {"time": 0.0, "received": 0, "rate": 0.0}
 
@@ -1566,6 +1771,7 @@ def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
             data_root = Path(custom_dir.get())
         status.set("Installing… this can take several minutes for ASR components.")
         install_button.configure(state="disabled")
+        show_progress_page()
 
         def worker() -> None:
             guidance: list[str] = []
@@ -1607,13 +1813,13 @@ def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
                     )
                     extension = browser_bridge_extension_dir(home_link.resolve())
                     if extension is not None and hasattr(os, "startfile"):
-                        tk.Button(
+                        ttk.Button(
                             actions_row,
                             text="Open extension folder",
                             command=lambda: os.startfile(extension),
                         ).pack(side="left", padx=(0, 8))
 
-                    doctor_button = tk.Button(actions_row, text="Run doctor check")
+                    doctor_button = ttk.Button(actions_row, text="Run doctor check")
 
                     def run_doctor_click() -> None:
                         doctor_button.configure(state="disabled")
@@ -1646,12 +1852,11 @@ def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
                     browser_exe = installed_browser_executable(home_link.resolve())
                     launch_var = tk.BooleanVar(value=True)
                     if browser_exe is not None:
-                        tk.Checkbutton(
+                        ttk.Checkbutton(
                             launch_row,
                             text="Open My LLM Wiki Browser to browse the wiki when Setup closes",
                             variable=launch_var,
-                            anchor="w",
-                        ).pack(fill="x", pady=(4, 0))
+                        ).pack(anchor="w", pady=(4, 0))
 
                     def close_setup() -> None:
                         if browser_exe is not None and launch_var.get():
@@ -1688,14 +1893,12 @@ def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
                     "My LLM Wiki Setup", message
                 ))
                 root.after(0, lambda: status.set("Installation failed; no foreign paths were replaced."))
+                root.after(0, show_select_page)
                 root.after(0, lambda: install_button.configure(state="normal"))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    install_button = tk.Button(root, text="Install", command=run_install, width=18)
-    install_button.pack(side="left", padx=(24, 8), pady=12)
-    close_button = tk.Button(root, text="Cancel", command=root.destroy, width=18)
-    close_button.pack(side="left", padx=8, pady=12)
+    install_button.configure(command=run_install)
     root.mainloop()
     set_progress_hook(None)
     return int(result["code"])
@@ -1767,6 +1970,7 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    attach_parent_console()
     args = parser().parse_args(argv)
     try:
         home_link = args.home.expanduser()
