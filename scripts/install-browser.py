@@ -168,13 +168,43 @@ def infer_repo() -> str | None:
     return None
 
 
+IMAGE_FILE_MACHINE_AMD64 = 0x8664
+IMAGE_FILE_MACHINE_ARM64 = 0xAA64
+
+
+def pe_machine(path: str) -> int | None:
+    """Machine field of a PE image header, or None when unreadable/not PE."""
+    try:
+        with open(path, "rb") as fh:
+            if fh.read(2) != b"MZ":
+                return None
+            fh.seek(0x3C)
+            offset = int.from_bytes(fh.read(4), "little")
+            fh.seek(offset)
+            if fh.read(4) != b"PE\0\0":
+                return None
+            return int.from_bytes(fh.read(2), "little")
+    except OSError:
+        return None
+
+
+def running_x64_build() -> bool:
+    """True when the interpreter executing this script is an x64 PE.
+
+    The managed runtime is x64-only; if it executes at all, the machine runs
+    x64 code (natively or through Windows-on-ARM emulation), so the x64
+    Browser artifacts install fine.  Primary ARM64 signal: a 2026-07-19
+    field report showed both PROCESSOR_ARCHITEW6432 and IsWow64Process2
+    missing the emulation on a real ARM64 Win11 device."""
+    return os.name == "nt" and pe_machine(sys.executable) == IMAGE_FILE_MACHINE_AMD64
+
+
 def x64_emulation_on_arm64() -> bool:
     """True when this x64 Python runs under Windows-on-ARM x64 emulation.
 
     CPython 3.12's ``platform.machine()`` reports the *native* machine, so an
-    emulated x64 process on ARM64 Windows still sees ``ARM64``.  The Browser
-    release ships x64 Windows artifacts only, which Windows 11 runs through
-    its x64 emulator, so the emulated case must select the x64 assets."""
+    emulated x64 process on ARM64 Windows still sees ``ARM64``.  Secondary
+    signal behind ``running_x64_build`` for non-x64 interpreters."""
     if os.environ.get("PROCESSOR_ARCHITEW6432", "").lower() == "arm64":
         return True
     if os.name != "nt":
@@ -182,16 +212,23 @@ def x64_emulation_on_arm64() -> bool:
     try:
         import ctypes
 
+        kernel32 = ctypes.windll.kernel32
+        kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+        kernel32.IsWow64Process2.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_ushort),
+            ctypes.POINTER(ctypes.c_ushort),
+        ]
+        kernel32.IsWow64Process2.restype = ctypes.c_int
         process_machine = ctypes.c_ushort()
         native_machine = ctypes.c_ushort()
-        kernel32 = ctypes.windll.kernel32
         if not kernel32.IsWow64Process2(
             kernel32.GetCurrentProcess(),
             ctypes.byref(process_machine),
             ctypes.byref(native_machine),
         ):
             return False
-        return native_machine.value == 0xAA64  # IMAGE_FILE_MACHINE_ARM64
+        return native_machine.value == IMAGE_FILE_MACHINE_ARM64
     except Exception:  # noqa: BLE001 - best-effort platform probe
         return False
 
@@ -199,7 +236,9 @@ def x64_emulation_on_arm64() -> bool:
 def windows_x64_capable(machine: str) -> bool:
     if machine in {"amd64", "x86_64", "x64"}:
         return True
-    return machine == "arm64" and x64_emulation_on_arm64()
+    if machine != "arm64":
+        return False
+    return running_x64_build() or x64_emulation_on_arm64()
 
 
 def platform_keys() -> list[str]:

@@ -314,9 +314,20 @@ class McpRegistrationTests(unittest.TestCase):
                 ["windows-x86_64-nsis", "windows-x86_64", "windows-x86_64-msi"],
             )
 
+    def test_windows_arm64_x64_interpreter_selects_x64_assets(self):
+        # Real-device case: both WOW64 signals miss the emulation, but the
+        # interpreter binary itself is an x64 PE, which proves x64 runs.
+        with mock.patch.object(installer.platform, "system", return_value="Windows"), \
+             mock.patch.object(installer.platform, "machine", return_value="ARM64"), \
+             mock.patch.object(installer, "running_x64_build", return_value=True), \
+             mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(installer.platform_keys(), ["windows-x64"])
+
     def test_windows_native_arm64_has_no_assets(self):
         with mock.patch.object(installer.platform, "system", return_value="Windows"), \
              mock.patch.object(installer.platform, "machine", return_value="ARM64"), \
+             mock.patch.object(installer, "running_x64_build", return_value=False), \
+             mock.patch.object(installer, "x64_emulation_on_arm64", return_value=False), \
              mock.patch.dict(os.environ, {}, clear=True):
             self.assertEqual(installer.platform_keys(), [])
             self.assertEqual(installer.tauri_platform_keys(), [])
