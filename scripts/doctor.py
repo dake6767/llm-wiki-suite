@@ -42,6 +42,7 @@ import opencli_extension as extension_stager  # noqa: E402
 
 sys.path.insert(0, str(REPO_ROOT / "skills" / "my-llm-wiki" / "scripts"))
 import preflight as capture_preflight  # noqa: E402
+import tool_runtime  # noqa: E402
 
 # install-browser.py owns the MCP registration recipes (build_mcp_commands);
 # import it under a module-safe name so doctor reuses the same resolution.
@@ -416,6 +417,23 @@ def check_toolchain(bootstrap: dict, selection: dict) -> dict:
     return report
 
 
+def _opencli_installed() -> bool:
+    """Whether the opencli CLI is invocable on this machine.
+
+    Goes through the shared tool-runtime resolution instead of a bare
+    ``shutil.which``: on Windows the CLI is a Setup-managed component
+    (``node.exe`` + bundled ``main.js``) that is deliberately never on PATH,
+    so a PATH probe would report "not installed" even right after a
+    successful Setup run. On macOS/Linux the resolution is exactly
+    ``shutil.which``, so behaviour there is unchanged.
+    """
+    try:
+        tool_runtime.resolve_command_argv("opencli")
+    except tool_runtime.ToolRuntimeError:
+        return False
+    return True
+
+
 def check_opencli_extension(dest: Path | None = None) -> dict:
     """Browser Bridge staging state for opencli.
 
@@ -423,7 +441,7 @@ def check_opencli_extension(dest: Path | None = None) -> dict:
     staged folder, and only `opencli doctor` can confirm the live bridge — so
     a missing staging is a warn (an unmet offer), never action-required.
     """
-    if not shutil.which("opencli"):
+    if not _opencli_installed():
         return {
             "status": "skip",
             "detail": "opencli not installed; Browser Bridge extension not applicable",
@@ -432,24 +450,39 @@ def check_opencli_extension(dest: Path | None = None) -> dict:
         dest if dest is not None else Path(extension_stager.DEFAULT_DEST).expanduser()
     )
     if staged["status"] == "staged":
+        # The live-bridge verifier is the opencli CLI's own doctor; on Windows
+        # that CLI is only reachable through the Setup runner, never PATH.
+        verify = (
+            "My-LLM-Wiki-Setup.exe tools run opencli -- doctor"
+            if tool_runtime.is_windows()
+            else "`opencli doctor`"
+        )
         return {
             "status": "ok",
             "detail": (
                 f"Browser Bridge staged v{staged['version']};"
-                " `opencli doctor` verifies the live bridge"
+                f" {verify} verifies the live bridge"
             ),
             "version": staged["version"],
             "path": staged["path"],
         }
-    return {
-        "status": "warn",
-        "detail": (
+    if tool_runtime.is_windows():
+        detail = (
+            "opencli is installed (Windows Setup managed) but its Browser Bridge"
+            " extension is not staged; re-run My-LLM-Wiki-Setup.exe to repair the"
+            " web component, then load the staged folder via chrome://extensions"
+        )
+    else:
+        detail = (
             "opencli is installed but its Browser Bridge extension is not staged;"
             " re-present the required AGENTS.md §6 extension sequence: stage via"
             " `python3 scripts/opencli_extension.py`, relay its manual"
             " chrome://extensions load steps, ask whether loading is done"
             " (skippable), then verify with `opencli doctor`"
-        ),
+        )
+    return {
+        "status": "warn",
+        "detail": detail,
     }
 
 

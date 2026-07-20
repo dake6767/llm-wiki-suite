@@ -299,6 +299,33 @@ class DoctorComponentTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["version"], "1.0.22")
 
+    def test_windows_managed_opencli_counts_as_installed(self) -> None:
+        # Windows Setup keeps opencli off PATH (managed node.exe + main.js
+        # resolved via the Setup receipt), so the gate must not rely on
+        # shutil.which alone.
+        with mock.patch.object(self.doctor.shutil, "which", return_value=None), \
+                mock.patch.object(
+                    self.doctor.tool_runtime, "is_windows", return_value=True
+                ), \
+                mock.patch.object(
+                    self.doctor.tool_runtime,
+                    "resolve_command_argv",
+                    return_value=["C:/managed/node.exe", "C:/managed/main.js"],
+                ):
+            result = self.doctor.check_opencli_extension(self.dest)
+        self.assertEqual(result["status"], "warn")
+        self.assertIn("My-LLM-Wiki-Setup.exe", result["detail"])
+
+    def test_windows_receipt_without_opencli_still_skips(self) -> None:
+        with mock.patch.object(self.doctor.shutil, "which", return_value=None), \
+                mock.patch.object(
+                    self.doctor.tool_runtime,
+                    "resolve_command_argv",
+                    side_effect=self.doctor.tool_runtime.ToolRuntimeError("missing"),
+                ):
+            result = self.doctor.check_opencli_extension(self.dest)
+        self.assertEqual(result["status"], "skip")
+
     def test_component_is_part_of_the_doctor_report(self) -> None:
         ok = {"status": "ok", "detail": "ok", "root": "/tmp/suite", "count": 1}
         skills = {
