@@ -95,6 +95,46 @@ def hidden_console_flags() -> int:
     return getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
+def inherited_std_streams() -> dict[str, object]:
+    """Explicit std-stream arguments for children that must write to our streams.
+
+    subprocess only sets ``STARTF_USESTDHANDLES`` when at least one stream is
+    passed explicitly.  With all three left as ``None`` *and* CREATE_NO_WINDOW
+    in the creation flags, Windows gives the child a fresh invisible console
+    and its stdout/stderr go there instead of to our pipes — silently
+    discarded.  Field report 2026-07-20: run from Git Bash (whose shell owns no
+    console, so the CREATE_NO_WINDOW guard engages) every ``python run`` /
+    ``tools run`` child ran and wrote its files but printed nothing, leaving
+    failures undiagnosable.  Naming the streams pins the child to ours; a
+    stream with no real descriptor (double-clicked GUI launch) is left out so
+    subprocess keeps its default for that one."""
+    streams: dict[str, object] = {}
+    for name in ("stdin", "stdout", "stderr"):
+        stream = getattr(sys, name, None)
+        try:
+            if stream is not None and stream.fileno() >= 0:
+                streams[name] = stream
+        except (OSError, ValueError, AttributeError):
+            continue
+    return streams
+
+
+def run_passthrough(command: list[str], **kwargs) -> int:
+    """Run *command* with our own stdin/stdout/stderr and return its exit code."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()  # keep our buffered text ahead of the child's writes
+        except (OSError, ValueError, AttributeError):
+            pass
+    return subprocess.run(
+        command,
+        check=False,
+        creationflags=hidden_console_flags(),
+        **inherited_std_streams(),
+        **kwargs,
+    ).returncode
+
+
 def attach_parent_console() -> None:
     """Reconnect std streams if the exe ever runs without a console.
 
@@ -1551,14 +1591,41 @@ def python_file_command(executable: str, values: list[str]) -> list[str]:
     return [executable, "-c", _FILE_FORM_BOOTSTRAP, script, *values[1:]]
 
 
+def list_managed_tools(home: Path, *, as_json: bool = False) -> int:
+    """Report the receipt's managed tools and Python profiles.
+
+    Without this the only way to see what ``tools run`` accepts was to read the
+    receipt or browse the components directory by hand."""
+    receipt = read_receipt(home)
+    if receipt is None:
+        raise SetupError("Windows Setup receipt is missing")
+    tools = []
+    for name in sorted((receipt.get("tools") or {})):
+        try:
+            argv = managed_argv(receipt, name)
+        except SetupError as exc:
+            tools.append({"name": name, "runnable": False, "detail": str(exc)})
+        else:
+            tools.append({"name": name, "runnable": True, "argv": argv})
+    profiles = sorted((receipt.get("python_profiles") or {}))
+    if as_json:
+        print(json.dumps({"tools": tools, "python_profiles": profiles},
+                         ensure_ascii=False, indent=2))
+        return 0
+    for tool in tools:
+        mark = "ok  " if tool["runnable"] else "MISS"
+        print(f"{mark} {tool['name']}: {tool.get('argv', [tool.get('detail')])[0]}")
+    for profile in profiles:
+        print(f"ok   python --profile {profile}")
+    return 0
+
+
 def run_managed_tool(name: str, values: list[str], home: Path) -> int:
     receipt = read_receipt(home)
     if receipt is None:
         raise SetupError("Windows Setup receipt is missing")
     command = [*managed_argv(receipt, name), *_remainder(values)]
-    return subprocess.run(
-        command, check=False, creationflags=hidden_console_flags()
-    ).returncode
+    return run_passthrough(command)
 
 
 def run_managed_python(profile: str, values: list[str], home: Path) -> int:
@@ -1582,9 +1649,7 @@ def run_managed_python(profile: str, values: list[str], home: Path) -> int:
             if isinstance(key, str) and isinstance(value, str)
         })
     command = python_file_command(prefix[0], [*prefix[1:], *_remainder(values)])
-    return subprocess.run(
-        command, env=env, check=False, creationflags=hidden_console_flags()
-    ).returncode
+    return run_passthrough(command, env=env)
 
 
 def uninstall_hosts(
@@ -2181,6 +2246,8 @@ def parser() -> argparse.ArgumentParser:
     tool_run = tool_sub.add_parser("run")
     tool_run.add_argument("tool")
     tool_run.add_argument("args", nargs=argparse.REMAINDER)
+    tool_list = tool_sub.add_parser("list", help="show which managed tools are runnable")
+    tool_list.add_argument("--json", action="store_true")
 
     python = sub.add_parser("python", help="run a receipt-managed Python profile")
     python_sub = python.add_subparsers(dest="python_command", required=True)
@@ -2266,6 +2333,8 @@ def main(argv: list[str] | None = None) -> int:
             return doctor_components(selected, home, payload, skip=args.skip_postcheck)
         if args.command == "tools":
             validate_platform(args.allow_test_platform)
+            if args.tool_command == "list":
+                return list_managed_tools(home, as_json=args.json)
             return run_managed_tool(args.tool, args.args, home)
         if args.command == "python":
             validate_platform(args.allow_test_platform)

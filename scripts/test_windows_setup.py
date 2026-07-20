@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import io
 import json
 import os
 import shutil
@@ -518,6 +520,85 @@ class WindowsSetupTests(unittest.TestCase):
                 "python_profiles": {},
             })
             self.assertEqual(windows_setup.run_managed_tool("yt-dlp", [], home), 7)
+
+
+class PassthroughStreamTests(unittest.TestCase):
+    """The child's output must reach our streams, not a fresh hidden console."""
+
+    def test_streams_are_named_explicitly_so_startf_usestdhandles_is_set(self) -> None:
+        # subprocess only sets STARTF_USESTDHANDLES when a stream is passed
+        # explicitly; leaving all three None alongside CREATE_NO_WINDOW sends
+        # the child's output to a new invisible console instead of our pipes.
+        with tempfile.TemporaryFile() as handle:
+            with unittest.mock.patch.object(windows_setup.sys, "stdout", handle), \
+                 unittest.mock.patch.object(windows_setup.sys, "stderr", handle), \
+                 unittest.mock.patch.object(windows_setup.sys, "stdin", handle):
+                streams = windows_setup.inherited_std_streams()
+        self.assertEqual(set(streams), {"stdin", "stdout", "stderr"})
+
+    def test_streams_without_descriptors_are_skipped(self) -> None:
+        # A double-clicked GUI launch has no real descriptors; subprocess must
+        # keep its default for those rather than be handed an unusable object.
+        with unittest.mock.patch.object(windows_setup.sys, "stdout", io.StringIO()), \
+             unittest.mock.patch.object(windows_setup.sys, "stderr", None), \
+             unittest.mock.patch.object(windows_setup.sys, "stdin", None):
+            self.assertEqual(windows_setup.inherited_std_streams(), {})
+
+    def test_child_output_reaches_our_stream(self) -> None:
+        with tempfile.TemporaryFile("w+") as handle:
+            with unittest.mock.patch.object(windows_setup.sys, "stdout", handle):
+                code = windows_setup.run_passthrough(
+                    [sys.executable, "-c", "print('child-said-this')"]
+                )
+            handle.seek(0)
+            self.assertEqual(code, 0)
+            self.assertIn("child-said-this", handle.read())
+
+    def test_our_buffered_output_is_flushed_before_the_child_writes(self) -> None:
+        with tempfile.TemporaryFile("w+") as handle:
+            with unittest.mock.patch.object(windows_setup.sys, "stdout", handle):
+                handle.write("parent-first\n")
+                windows_setup.run_passthrough(
+                    [sys.executable, "-c", "print('child-second')"]
+                )
+            handle.seek(0)
+            body = handle.read()
+        self.assertLess(body.index("parent-first"), body.index("child-second"))
+
+
+class ManagedToolListingTests(unittest.TestCase):
+    def receipt_home(self, tmp: str) -> Path:
+        home = Path(tmp) / "home"
+        tool = home / "components" / "video" / "yt-dlp.exe"
+        tool.parent.mkdir(parents=True)
+        tool.write_text("", encoding="utf-8")
+        windows_setup.write_receipt(home, {
+            "schema": 1,
+            "platform": "windows",
+            "home": str(home.resolve()),
+            "tools": {"yt-dlp": {"argv": [str(tool)]}, "gone": {"argv": ["missing.exe"]}},
+            "python_profiles": {"core": str(tool)},
+        })
+        return home
+
+    def test_list_reports_runnable_tools_and_profiles(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = self.receipt_home(tmp)
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                self.assertEqual(
+                    windows_setup.list_managed_tools(home, as_json=True), 0
+                )
+            payload = json.loads(buffer.getvalue())
+        self.assertEqual(payload["python_profiles"], ["core"])
+        by_name = {row["name"]: row for row in payload["tools"]}
+        self.assertTrue(by_name["yt-dlp"]["runnable"])
+        self.assertFalse(by_name["gone"]["runnable"])
+
+    def test_missing_receipt_is_an_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(windows_setup.SetupError):
+                windows_setup.list_managed_tools(Path(tmp) / "absent")
 
 
 class WindowedExecutableHelperTests(unittest.TestCase):
