@@ -223,7 +223,8 @@ Choose in this order:
 5. If nothing resolves, initialize; if several candidates remain ambiguous, ask.
 
 List candidates with `python3 <skill>/scripts/wikis.py list`. When auto-routing,
-pass `--wiki` explicitly to normalization and state the choice briefly. Read both
+pass `--wiki` explicitly to normalization and state the choice briefly; it takes
+either a wiki root path or a registered name from that list. Read both
 `references/routing.md` and `references/routing-pitfalls.md` when classification
 is non-trivial.
 
@@ -257,7 +258,7 @@ Commit only a verified temp capture through the deterministic core:
 
 ```bash
 python3 <skill>/scripts/normalize_raw.py \
-  --from <temp-adapter-folder> --wiki <resolved-wiki> \
+  --from <temp-adapter-folder> --wiki <resolved-wiki-path-or-name> \
   --source-type <wechat|web|xiaohongshu|doc|x|video|note> \
   --source-url "<original-url>" --original-id "<stable-id>" \
   --captured-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
