@@ -27,12 +27,14 @@ Two input shapes are supported:
                     composed from web read text + `twitter download` media).
 
 Wiki resolution (which repo to write into), highest priority first:
-  --wiki <path>  >  nearest ancestor of CWD that is a wiki  >  $LLM_WIKI_DEFAULT
-  >  registry default (wikis.py)  >  the sole registered wiki
-A directory is a wiki when it has `schema.md` + a `wiki/` dir (the app's own
-rule) or a `.llm-wiki/project.json`. The agent normally passes --wiki explicitly
-after classifying by topic (SKILL.md §1); the registry fallbacks are a safety
-net so a single-wiki / default setup just works.
+  --wiki <path|name>  >  nearest ancestor of CWD that is a wiki
+  >  $LLM_WIKI_DEFAULT  >  registry default (wikis.py)  >  the sole registered wiki
+--wiki takes either a path or a registered wiki name (as shown by `wikis.py
+list`); a path always wins, so a name is only looked up when no such directory
+exists. A directory is a wiki when it has `schema.md` + a `wiki/` dir (the app's
+own rule) or a `.llm-wiki/project.json`. The agent normally passes --wiki
+explicitly after classifying by topic (SKILL.md §1); the registry fallbacks are
+a safety net so a single-wiki / default setup just works.
 
 Prints a YAML summary (dest path, asset count, video flags) to stdout.
 """
@@ -137,12 +139,39 @@ def _is_wiki_root(d: Path) -> bool:
     return False
 
 
+def _name_hint(explicit: str) -> str:
+    """Point a bare name at the registry instead of leaving a CWD-relative path.
+
+    Passing a registered name is the natural mistake when the caller has one in
+    hand (`--wiki my-llm-wiki`), and without this the message only shows where
+    the name got resolved against the CWD, which reads like a path bug."""
+    if wikis is None or os.sep in explicit or (os.altsep and os.altsep in explicit):
+        return ""
+    names = wikis.registered_names()
+    if not names:
+        return ""
+    return (f"\n(no registered wiki is named {explicit!r} either; "
+            f"registered names: {', '.join(sorted(names))})")
+
+
 def resolve_wiki(explicit: str | None) -> Path:
     if explicit:
+        # A path always wins, so every existing caller behaves exactly as
+        # before; the registry lookup only runs where the old code would have
+        # exited. That ordering also means a directory can never be hijacked by
+        # a registered wiki that happens to share its name.
         p = native_path(explicit).resolve()
-        if not p.exists():
-            sys.exit(f"error: --wiki path does not exist: {p}")
-        return p
+        if p.exists():
+            return p
+        named = wikis.resolve_name(explicit) if wikis is not None else None
+        if named is not None:
+            if not named.is_dir():
+                sys.exit(
+                    f"error: --wiki {explicit!r} is registered at {named}, "
+                    "which no longer exists. Re-register it with scripts/wikis.py."
+                )
+            return named.resolve()
+        sys.exit(f"error: --wiki path does not exist: {p}" + _name_hint(explicit))
     cur = Path.cwd().resolve()
     for cand in [cur, *cur.parents]:
         if _is_wiki_root(cand):
@@ -527,7 +556,9 @@ def main() -> None:
     g.add_argument("--from", dest="from_dir", help="opencli output folder (md + images/)")
     g.add_argument("--md", help="path to a markdown file you assembled")
     ap.add_argument("--assets", help="media folder for the --md case")
-    ap.add_argument("--wiki", help="target wiki root (else resolved from CWD / $LLM_WIKI_DEFAULT)")
+    ap.add_argument("--wiki", metavar="PATH_OR_NAME",
+                    help="target wiki: a root path or a registered name "
+                         "(else resolved from CWD / $LLM_WIKI_DEFAULT)")
     ap.add_argument("--source-type", required=True,
                     help="wechat | x | xiaohongshu | web | ... (becomes the raw/sources/<type>/ bucket)")
     ap.add_argument("--source-url", default="", help="canonical original URL")

@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -141,6 +143,97 @@ class NormalizeRawIdentityTests(unittest.TestCase):
             len(list((self.wiki / "raw" / "sources" / "x").glob("*.md"))),
             2,
         )
+
+
+class WikiByNameTests(unittest.TestCase):
+    """--wiki accepts a registered name, not just a path."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        # resolve(): the script reports resolved destinations, and macOS temp
+        # dirs live behind the /var -> /private/var symlink.
+        self.root = Path(self.temp.name).resolve()
+        self.wiki = self.root / "wikis" / "my-llm-wiki"
+        (self.wiki / "wiki").mkdir(parents=True)
+        (self.wiki / "schema.md").write_text("# schema\n", encoding="utf-8")
+        self.capture = self.root / "capture.md"
+        self.capture.write_text(
+            "# Adapter title\n\n" + ("Substantial captured body. " * 30),
+            encoding="utf-8",
+        )
+        self.registry = self.root / "wikis.json"
+        self.write_registry([{"path": str(self.wiki), "name": "my-llm-wiki"}])
+        # Run from a dir that is not a wiki and holds no same-named child, so a
+        # name can only resolve through the registry.
+        self.cwd = self.root / "elsewhere"
+        self.cwd.mkdir()
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def write_registry(self, entries: list[dict]) -> None:
+        self.registry.write_text(
+            json.dumps({"version": 1, "wikis": entries}), encoding="utf-8"
+        )
+
+    def run_normalize(self, wiki_arg: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                sys.executable, str(SCRIPT),
+                "--md", str(self.capture),
+                "--wiki", wiki_arg,
+                "--source-type", "web",
+                "--source-url", "https://example.com/a",
+                "--original-id", "abc123",
+                "--title", "Named wiki",
+                "--captured-at", "2026-07-20T10:00:00Z",
+            ],
+            capture_output=True, text=True, cwd=str(self.cwd),
+            env={**os.environ, "LLM_WIKI_REGISTRY": str(self.registry)},
+        )
+
+    def test_registered_name_resolves_to_its_path(self) -> None:
+        proc = self.run_normalize("my-llm-wiki")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        summary = parse_summary(proc.stdout)
+        self.assertTrue(Path(summary["dest"]).is_relative_to(self.wiki))
+
+    def test_name_match_is_case_insensitive(self) -> None:
+        proc = self.run_normalize("My-LLM-Wiki")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_existing_path_wins_over_a_same_named_registry_entry(self) -> None:
+        # A directory named like a registered wiki must never be hijacked.
+        decoy = self.cwd / "my-llm-wiki"
+        (decoy / "wiki").mkdir(parents=True)
+        (decoy / "schema.md").write_text("# schema\n", encoding="utf-8")
+        proc = self.run_normalize("my-llm-wiki")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        summary = parse_summary(proc.stdout)
+        self.assertTrue(Path(summary["dest"]).is_relative_to(decoy))
+
+    def test_ambiguous_name_is_refused_rather_than_guessed(self) -> None:
+        other = self.root / "wikis" / "other"
+        (other / "wiki").mkdir(parents=True)
+        (other / "schema.md").write_text("# schema\n", encoding="utf-8")
+        self.write_registry([
+            {"path": str(self.wiki), "name": "dup"},
+            {"path": str(other), "name": "dup"},
+        ])
+        proc = self.run_normalize("dup")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("does not exist", proc.stderr)
+
+    def test_registered_name_whose_directory_vanished_says_so(self) -> None:
+        self.write_registry([{"path": str(self.root / "gone"), "name": "ghost"}])
+        proc = self.run_normalize("ghost")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("registered at", proc.stderr)
+
+    def test_unknown_bare_name_lists_the_registered_ones(self) -> None:
+        proc = self.run_normalize("typo-wiki")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("my-llm-wiki", proc.stderr)
 
 
 if __name__ == "__main__":

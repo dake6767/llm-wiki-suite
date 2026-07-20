@@ -156,6 +156,32 @@ def default_path() -> Path | None:
     return None
 
 
+def resolve_name(name: str) -> Path | None:
+    """Registered path for a wiki *name*, or None when nothing matches it.
+
+    Exact match wins; failing that a unique case-insensitive match is accepted,
+    since the name is something a person types and the registry is shared with
+    case-insensitive filesystems. A name shared by several entries resolves to
+    None rather than guessing which wiki the caller meant. The path is returned
+    as registered — callers decide what a registered-but-missing dir means."""
+    entries = [w for w in load().get("wikis", []) if isinstance(w, dict) and w.get("path")]
+    exact = [w for w in entries if w.get("name") == name]
+    if len(exact) == 1:
+        return Path(exact[0]["path"])
+    if not exact:
+        folded = [w for w in entries
+                  if str(w.get("name", "")).casefold() == name.casefold()]
+        if len(folded) == 1:
+            return Path(folded[0]["path"])
+    return None
+
+
+def registered_names() -> list[str]:
+    """Every registered wiki name, for building "did you mean" messages."""
+    return [str(w["name"]) for w in load().get("wikis", [])
+            if isinstance(w, dict) and w.get("name")]
+
+
 def registered_paths(existing_only: bool = True) -> list[Path]:
     out = []
     for w in load().get("wikis", []):
