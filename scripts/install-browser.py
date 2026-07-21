@@ -33,7 +33,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 from typing import Callable
-from urllib.parse import unquote, urlparse, urlunparse
+from urllib.parse import unquote, urlencode, urlparse, urlunparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from install_state import LockUnavailable, advisory_lock, remove_path  # noqa: E402
@@ -1045,6 +1045,130 @@ def maybe_launch_installed(config: dict, path: Path, dry_run: bool) -> None:
     startfile(str(target))
 
 
+def resolve_first_run_port(first_run: dict) -> int:
+    """Resolve the loopback port exactly like the app and doctor do."""
+    pref = first_run.get("port_pref_file")
+    if pref:
+        try:
+            value = int(expand(pref).read_text(encoding="utf-8").strip())
+            if value >= 1024:
+                return value
+        except (OSError, ValueError):
+            pass
+    env_value = os.environ.get(first_run.get("port_env", "LLM_WIKI_PORT"), "").strip()
+    if env_value.isdigit() and int(env_value) >= 1024:
+        return int(env_value)
+    return int(first_run.get("default_port", 8800))
+
+
+def read_first_run_token(first_run: dict) -> str:
+    """The master token the app persists on first launch; empty when absent."""
+    token_file = first_run.get("token_file")
+    if not token_file:
+        return ""
+    try:
+        return expand(token_file).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def wait_for_browser_ready(first_run: dict, port: int) -> bool:
+    """Poll the health endpoint until the launched app answers, or time out.
+
+    Liveness is the whole question: an auth-gated 401/403 proves the server is
+    up just as well as a 200, because the token may not be readable yet.
+    """
+    host = first_run.get("host", "127.0.0.1")
+    health_path = first_run.get("health_path")
+    if not health_path:
+        return False
+    url = f"http://{host}:{port}{health_path}"
+    deadline = time.monotonic() + float(first_run.get("ready_timeout_seconds", 60))
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    while True:
+        try:
+            with opener.open(url, timeout=2):  # noqa: S310 - fixed loopback URL
+                return True
+        except urllib.error.HTTPError as exc:
+            if exc.code in (401, 403):
+                return True
+        except (urllib.error.URLError, OSError, ValueError):
+            pass
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(1)
+
+
+def first_run_url(first_run: dict, port: int, token: str) -> str:
+    base = f"http://{first_run.get('host', '127.0.0.1')}:{port}/"
+    if not token:
+        return base
+    return base + "?" + urlencode({"token": token})
+
+
+def open_in_system_browser(url: str) -> None:
+    system = platform.system().lower()
+    if system == "darwin":
+        subprocess.run(
+            ["open", url], stdin=subprocess.DEVNULL, timeout=10, check=True
+        )
+        return
+    if system == "linux":
+        opener = shutil.which("xdg-open")
+        if not opener:
+            raise RuntimeError("xdg-open is unavailable; open the URL manually")
+        subprocess.Popen(
+            [opener, url],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return
+    if system != "windows":
+        raise RuntimeError(f"unsupported platform for opening a URL: {system}")
+    startfile = getattr(os, "startfile", None)
+    if startfile is None:
+        raise OSError("Windows os.startfile is unavailable")
+    startfile(url)
+
+
+def open_first_run_page(config: dict, dry_run: bool) -> bool:
+    """Open the freshly launched Browser's local page in the system browser.
+
+    Best-effort by contract: the installation is already complete and its
+    receipt written, so a browser that will not open is reported and never
+    downgrades the install result. The token is read only after the server
+    answers, because the app writes it during that same first launch.
+    """
+    first_run = config.get("first_run") or {}
+    port = resolve_first_run_port(first_run)
+    if dry_run:
+        print(f"[dry-run] wait for http://{first_run.get('host', '127.0.0.1')}:{port}"
+              f"{first_run.get('health_path', '')} then open it in the system browser")
+        return True
+    if not wait_for_browser_ready(first_run, port):
+        print(
+            f"Browser is installed, but its local server did not answer on port {port} "
+            "in time; open the app yourself to finish the first run.",
+            file=sys.stderr,
+        )
+        return False
+    url = first_run_url(first_run, port, read_first_run_token(first_run))
+    try:
+        open_in_system_browser(url)
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        # Never print the tokened URL to stderr; the port is enough to recover.
+        print(
+            f"Browser is running on port {port}, but the system browser could not "
+            f"be opened: {exc}",
+            file=sys.stderr,
+        )
+        return False
+    print(f"opened: http://{first_run.get('host', '127.0.0.1')}:{port}/")
+    return True
+
+
 def prepare_linux_artifact(path: Path, dry_run: bool) -> Path:
     if platform.system().lower() != "linux":
         raise RuntimeError(f"unsupported Browser artifact: {path.name}")
@@ -1478,6 +1602,8 @@ def perform_browser_install(config: dict, args: argparse.Namespace) -> int:
                     file=sys.stderr,
                 )
                 return 3
+            if getattr(args, "open_web", False):
+                open_first_run_page(config, args.dry_run)
         return 0
     except (
         OSError,
@@ -1536,6 +1662,15 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--open-web",
+        action="store_true",
+        help=(
+            "Implies --open: after launching Browser, wait for its loopback "
+            "server and open the local page in the system browser. Best-effort; "
+            "it never changes the installation result."
+        ),
+    )
+    parser.add_argument(
         "--fallback-source",
         action="store_true",
         help="Build from source if release download is unavailable.",
@@ -1567,6 +1702,8 @@ def main() -> int:
         help="Named MCP host from registry/bootstrap.json; repeatable.",
     )
     args = parser.parse_args()
+    if args.open_web:
+        args.open = True
 
     try:
         config = load_bootstrap()

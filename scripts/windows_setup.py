@@ -1075,12 +1075,16 @@ def install_browser_app(suite: Path, runtime: Path) -> None:
     """Run the suite's release-first Browser installer silently.
 
     The NSIS build carries the Tauri updater, so after this one managed
-    install the app keeps itself current; Setup never owns Browser updates."""
+    install the app keeps itself current; Setup never owns Browser updates.
+
+    `--open-web` launches the app and opens its local page once the loopback
+    server answers, so the user sees their wiki without a second step. It is
+    best-effort inside the installer and cannot fail this call."""
     script = suite / "scripts" / "install-browser.py"
     if not script.is_file():
         raise SetupError(f"suite has no Browser installer: {script}")
     result = subprocess.run(
-        [str(runtime / "python.exe"), str(script), "--windows-silent"],
+        [str(runtime / "python.exe"), str(script), "--windows-silent", "--open-web"],
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,

@@ -212,6 +212,9 @@
     "port_env": "LLM_WIKI_PORT",
     "default_port": 8800,
     "health_path": "/api/v1/healthz",
-    "_note": "Browser port is resolved like the app itself: port_pref_file > $LLM_WIKI_PORT > default_port. Health probe only needs liveness; 401/403 proves the server is up."
+    "token_file": "~/.my-llm-wiki/connector/token",
+    "ready_timeout_seconds": 60,
+    "_note": "Browser port is resolved like the app itself: port_pref_file > $LLM_WIKI_PORT > default_port. Health probe only needs liveness; 401/403 proves the server is up.",
+    "_open_note": "First-run open waits up to ready_timeout_seconds for the launched app's loopback server, then opens http://host:port/?token=<token_file> in the system browser. The app writes token_file on first launch, so it is read after the server answers, never before."
   }
 }

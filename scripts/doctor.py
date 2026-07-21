@@ -417,6 +417,53 @@ def check_toolchain(bootstrap: dict, selection: dict) -> dict:
     return report
 
 
+def browser_recommendation(browser: dict) -> dict | None:
+    """Browser as one more row of the capture-toolchain consent list.
+
+    The reading app is offered in the same breath as markitdown and SenseVoice
+    instead of a separate post-doctor question: it is a recommended install a
+    user can decline row by row, and an install that already left a receipt
+    produces no row at all. Windows never sees this row — there the Setup UI
+    owns the Browser choice.
+    """
+    if tool_runtime.is_windows():
+        return None
+    # A live loopback server is proof of a Browser, receipt or not: a dev build
+    # or a hand-installed app writes no receipt, and recommending an install
+    # over the top of a running app would be nonsense.
+    if (browser.get("install") or {}).get("ok") or browser.get("status") == "ok":
+        return None
+    return {
+        "tool": "browser",
+        "priority": "recommended",
+        "profiles": ["read.browse"],
+        "reasons": [
+            "reading, full-text search and sharing for the wiki you just "
+            "initialized; wiki_ops.py local-search is the fallback"
+        ],
+        "install": {
+            "route": "release",
+            "reason": "release-first download; htmlgo mirror, GitHub fallback",
+            "steps": [[
+                sys.executable,
+                str(REPO_ROOT / "scripts" / "install-browser.py"),
+                "--open-web",
+            ]],
+            "env": {},
+            "runtime_env": {},
+            "unavailable_runtime": [],
+            "step_timeout_seconds": 900,
+            "postcheck": [
+                sys.executable,
+                str(REPO_ROOT / "scripts" / "doctor.py"),
+                "--browser-only",
+            ],
+            "postcheck_timeout_seconds": 30,
+        },
+        "home": "https://github.com/dake6767/llm-wiki-suite",
+    }
+
+
 def _opencli_installed() -> bool:
     """Whether the opencli CLI is invocable on this machine.
 
@@ -539,6 +586,13 @@ def build_report(
         if check_mcp_state:
             components["mcp"] = check_mcp(bootstrap, browser, selected_hosts)
         components["toolchain"] = check_toolchain(bootstrap, selection)
+        # Browser rides the same consent list as the capture tools, so the
+        # agent asks about it once, alongside markitdown and SenseVoice.
+        recommendation = browser_recommendation(browser)
+        if recommendation is not None:
+            components["toolchain"].setdefault("recommendations", []).append(
+                recommendation
+            )
         components["opencli_extension"] = check_opencli_extension()
     except (OSError, ValueError, TypeError, KeyError) as exc:
         return {"fatal": f"doctor check failed: {exc}"}
@@ -618,46 +672,48 @@ def render_human(report: dict) -> str:
                          + (f" via {detail}" if detail else ""))
             if info.get("asr"):
                 lines.append(f"        asr routing: {info['asr']}")
-        for rec in tc.get("recommendations", []):
-            reasons = "; ".join(rec.get("reasons", []))
-            lines.append(f"     → {rec['tool']} [{rec['priority']}]: {reasons}")
-            if rec.get("install"):
-                recipe = rec["install"]
-                lines.append(f"       route: {recipe.get('route', 'unavailable')}")
-                if recipe.get("reason"):
-                    lines.append(f"       reason: {recipe['reason']}")
-                if recipe.get("env"):
-                    lines.append(
-                        "       env: " + json.dumps(recipe["env"], ensure_ascii=False)
-                    )
-                if recipe.get("runtime_env"):
-                    lines.append(
-                        "       runtime env: "
-                        + json.dumps(recipe["runtime_env"], ensure_ascii=False)
-                    )
-                if recipe.get("unavailable_runtime"):
-                    lines.append(
-                        "       unavailable runtime ecosystems: "
-                        + ", ".join(recipe["unavailable_runtime"])
-                    )
-                for step in recipe.get("steps", []):
-                    lines.append(
-                        "       argv: " + json.dumps(step, ensure_ascii=False)
-                    )
+    # Recommendations print for every toolchain status: a skipped or failed
+    # capture probe must not swallow the Browser row appended to this list.
+    for rec in tc.get("recommendations", []):
+        reasons = "; ".join(rec.get("reasons", []))
+        lines.append(f"     → {rec['tool']} [{rec['priority']}]: {reasons}")
+        if rec.get("install"):
+            recipe = rec["install"]
+            lines.append(f"       route: {recipe.get('route', 'unavailable')}")
+            if recipe.get("reason"):
+                lines.append(f"       reason: {recipe['reason']}")
+            if recipe.get("env"):
                 lines.append(
-                    f"       step timeout: {recipe['step_timeout_seconds']}s"
+                    "       env: " + json.dumps(recipe["env"], ensure_ascii=False)
                 )
-                if recipe.get("postcheck"):
-                    lines.append(
-                        "       postcheck: "
-                        + json.dumps(recipe["postcheck"], ensure_ascii=False)
-                    )
-                    lines.append(
-                        "       postcheck timeout: "
-                        f"{recipe['postcheck_timeout_seconds']}s"
-                    )
-                if rec.get("home"):
-                    lines.append(f"       home: {rec['home']}")
+            if recipe.get("runtime_env"):
+                lines.append(
+                    "       runtime env: "
+                    + json.dumps(recipe["runtime_env"], ensure_ascii=False)
+                )
+            if recipe.get("unavailable_runtime"):
+                lines.append(
+                    "       unavailable runtime ecosystems: "
+                    + ", ".join(recipe["unavailable_runtime"])
+                )
+            for step in recipe.get("steps", []):
+                lines.append(
+                    "       argv: " + json.dumps(step, ensure_ascii=False)
+                )
+            lines.append(
+                f"       step timeout: {recipe['step_timeout_seconds']}s"
+            )
+            if recipe.get("postcheck"):
+                lines.append(
+                    "       postcheck: "
+                    + json.dumps(recipe["postcheck"], ensure_ascii=False)
+                )
+                lines.append(
+                    "       postcheck timeout: "
+                    f"{recipe['postcheck_timeout_seconds']}s"
+                )
+            if rec.get("home"):
+                lines.append(f"       home: {rec['home']}")
 
     oe = c.get("opencli_extension")
     if oe:
@@ -676,6 +732,32 @@ def render_human(report: dict) -> str:
     return "\n".join(lines)
 
 
+def browser_only_main(json_output: bool) -> int:
+    """Postcheck for the Browser recommendation row: install state only.
+
+    It deliberately takes no host: the row is offered before any host-scoped
+    question, and "not running yet" is not a failure for a just-installed app.
+    """
+    bootstrap = load_json(BOOTSTRAP)
+    if isinstance(bootstrap, Exception):
+        print(f"✗ doctor cannot run: cannot read {BOOTSTRAP}: {bootstrap}", file=sys.stderr)
+        return 2
+    browser = check_browser(bootstrap)
+    installed = (
+        bool((browser.get("install") or {}).get("ok"))
+        or browser.get("status") == "ok"
+    )
+    report = {
+        "state": "ready" if installed else "failed",
+        "components": {"browser": browser},
+    }
+    if json_output:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        print(f"{_ICON[browser['status']]} browser      {browser['detail']}")
+    return 0 if installed else 1
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Suite-level health check for llm-wiki-suite.")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
@@ -692,6 +774,11 @@ def main() -> int:
     )
     ap.add_argument("--all-hosts", action="store_true", help="inspect every configured host")
     ap.add_argument(
+        "--browser-only",
+        action="store_true",
+        help="check only Browser install and reachability; needs no host selection",
+    )
+    ap.add_argument(
         "--check-mcp",
         action="store_true",
         help="inspect MCP registration as an explicit post-install diagnostic",
@@ -700,6 +787,8 @@ def main() -> int:
 
     if args.host and args.all_hosts:
         ap.error("--host and --all-hosts cannot be used together")
+    if args.browser_only:
+        return browser_only_main(json_output=args.json)
     report = build_report(
         args.skills,
         args.host,

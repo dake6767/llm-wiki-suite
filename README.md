@@ -173,9 +173,10 @@ agent：
 
 agent 会显式复用你指定的 checkout，或安装到稳定目录 `~/.my-llm-wiki/suite`；随后按固定顺序
 同步 skills、初始化或复用首个 Wiki、再运行 doctor。Wiki 初始化是基础安装的必做步骤，不会停在
-doctor 后留给用户处理。doctor 完成后，agent 会用宿主原生单选控件询问“继续安装 Browser”或
-“暂不安装”，不会让你手动输入确认文字；选择继续后才从 `wiki.htmlgo.to` 获取 Release
-（GitHub 仅作回退）。抓取工具仍需独立确认。完成后另发一条真实 URL 或自己的 note，即可开始
+doctor 后留给用户处理。doctor 完成后，agent 会用宿主原生控件一次性征求工具链安装同意——
+markitdown、SenseVoice 这些采集工具，以及推荐安装的 Browser 都在同一份清单里，逐行可选，
+不会让你手动输入确认文字。同意 Browser 后才从 `wiki.htmlgo.to` 获取 Release（GitHub 仅作回退），
+装完自动启动应用并打开本机页面。完成后另发一条真实 URL 或自己的 note，即可开始
 首次 `capture → RAW → Wiki`。
 
 ### Windows 原生安装
@@ -192,7 +193,8 @@ Python 核心并初始化 Wiki。Documents、Web/OpenCLI、Video/yt-dlp+FFmpeg�
 npm、pip 或 winget。
 
 Setup 也可勾选桌面端 Browser：它下载官方 NSIS 安装包（经 minisign 签名校验、走 Worker
-镜像路由）并静默安装；装好后由应用内置的 Tauri updater 自行保持更新，Setup 不接管
+镜像路由）并静默安装，随后自动启动应用并在系统浏览器打开本机 Wiki 页面，装完即可看到内容；
+之后由应用内置的 Tauri updater 自行保持更新，Setup 不接管
 Browser 的后续升级。该项失败不影响 skills/组件安装，可稍后重跑 Setup 补装。
 
 Setup 支持选择安装位置：默认在用户目录（C 盘）；选其他盘时，数据实际放在所选目录的
@@ -262,16 +264,26 @@ bash bootstrap.sh --host workbuddy --update           # clean checkout 上执行
 
 ### 安装 Browser
 
-基础安装完成 doctor 后，agent 必须通过宿主原生单选控件提供“继续安装 Browser”和
-“暂不安装”两个选择。它不会把这个选择做成 shell 提示，也不会要求用户键入 `yes/no`；宿主
-无法提供原生选择控件时默认跳过 Browser。
+在 macOS / Linux 上，Browser 不再是 doctor 之后单独的一问：doctor 会把它作为
+`browser [recommended]` 一行放进 markitdown、SenseVoice 那份采集工具链清单，agent 用同一个
+宿主原生控件一次性征求同意，这一行和其他行一样可以单独跳过。已经装好或已在运行的
+Browser 不会出现这一行。它不会把这个选择做成 shell 提示，也不会要求用户键入 `yes/no`；宿主
+无法提供原生选择控件时默认跳过 Browser。Windows 上这一行不出现——那里由 Setup 界面负责勾选。
 
 Browser 默认优先下载项目自有 htmlgo Release；元数据或资产下载失败时会继续回退到与当前
 操作系统/架构精确匹配的 GitHub Release。源码构建只在显式传入 `--fallback-source` 时运行：
 
 ```bash
-python3 scripts/install-browser.py --open
+python3 scripts/install-browser.py --open-web
 ```
+
+`--open-web` 隐含 `--open`：同步安装完成后启动 Browser，等待应用的本机服务就绪（上限
+`first_run.ready_timeout_seconds`），再用系统浏览器打开 `http://127.0.0.1:<端口>/?token=<token>`，
+让用户立刻看到自己的 Wiki。端口按应用自身的顺序解析（`~/.my-llm-wiki/connector/server-port` →
+`$LLM_WIKI_PORT` → 默认 8800），不写死；token 取自 `~/.my-llm-wiki/connector/token`，由应用在
+这次首启中写入，所以只在服务应答之后才读——不带 token 直开本机地址会是 401。两步都是
+best-effort：服务迟迟不应答或系统浏览器打不开只会被报告，不影响安装结果与回执。不想开页面时
+用 `--open`，无人值守安装则两个都不传。
 
 脚本会优先读取项目自有的 [htmlgo Release manifest](https://wiki.htmlgo.to/_update/latest.json)，
 它为大陆网络提供 Browser 安装包；GitHub Release 仅作为回退。仅当 htmlgo 不可用时，脚本才用
@@ -290,7 +302,7 @@ setup.exe/MSI 不写“已安装”回执，也不宣称 Browser 已安装完成
 macOS 必须真正安装 `.app`，Linux 必须得到可执行 AppImage；单纯下载 DMG/deb/rpm 不会被
 报告为安装成功。
 
-初始安装完成 Browser 选择后结束；Windows 原生安装器一旦启动就交还给用户，不再跟踪。
+初始安装在工具链清单（含 Browser 一行）征询完成后结束；Windows 原生安装器一旦启动就交还给用户，不再跟踪。
 整个流程不提议或配置 MCP，也不会修改任何 agent 的 MCP 配置。
 
 ### 检查安装
