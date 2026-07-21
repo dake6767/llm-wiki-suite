@@ -173,6 +173,18 @@ def python_env(stage: Path) -> dict[str, str]:
     return env
 
 
+def npm_lock_entry(package_lock: dict, package_name: str) -> dict:
+    suffix = f"node_modules/{package_name}"
+    matches = [
+        value
+        for key, value in (package_lock.get("packages") or {}).items()
+        if key.replace("\\", "/").rstrip("/").endswith(suffix)
+    ]
+    if len(matches) != 1:
+        raise BuildError(f"npm lock has {len(matches)} entries for {package_name}")
+    return matches[0]
+
+
 def component_version(component: str, spec: dict) -> str:
     if component == "web":
         return f"{spec['opencli']['version']}+ext.{spec['extension']['version']}"
@@ -246,7 +258,7 @@ def build_web(spec: dict, work: Path) -> Path:
         (opencli / "node_modules" / "@jackwener" / "opencli" / "package.json").read_text(encoding="utf-8")
     )
     package_lock = json.loads((opencli / "package-lock.json").read_text(encoding="utf-8"))
-    locked = (package_lock.get("packages") or {}).get("node_modules/@jackwener/opencli", {})
+    locked = npm_lock_entry(package_lock, "@jackwener/opencli")
     if package.get("version") != spec["opencli"]["version"] or locked.get("integrity") != spec["opencli"]["integrity"]:
         raise BuildError("OpenCLI package differs from lock")
     main = opencli / "node_modules" / "@jackwener" / "opencli" / "dist" / "src" / "main.js"

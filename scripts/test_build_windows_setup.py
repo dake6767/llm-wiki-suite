@@ -100,6 +100,19 @@ class BuildWindowsSetupTests(unittest.TestCase):
             self.assertIn(str(report), argv)
             self.assertIn("example==1.0", argv)
 
+    def test_npm_lock_entry_accepts_windows_prefix_relative_key(self) -> None:
+        lock = {
+            "packages": {
+                "..\\..\\stage\\node_modules\\@jackwener\\opencli": {
+                    "integrity": "sha512-example"
+                }
+            }
+        }
+        self.assertEqual(
+            builder.npm_lock_entry(lock, "@jackwener/opencli")["integrity"],
+            "sha512-example",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

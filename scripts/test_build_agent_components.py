@@ -51,6 +51,20 @@ class AgentComponentBuilderTests(unittest.TestCase):
             self.assertIn(str(stage / "site"), argv)
             self.assertIn(str(stage / "pip-report.json"), argv)
 
+    def test_npm_lock_entry_accepts_prefix_relative_key(self) -> None:
+        integrity = "sha512-example"
+        lock = {
+            "packages": {
+                "../../../tmp/web/opencli/node_modules/@jackwener/opencli": {
+                    "version": "1.8.6",
+                    "integrity": integrity,
+                }
+            }
+        }
+        self.assertEqual(
+            builder.npm_lock_entry(lock, "@jackwener/opencli")["integrity"], integrity
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -165,6 +165,18 @@ def validate_lock(data: dict) -> None:
         raise BuildError("OpenCLI npm integrity is not locked")
 
 
+def npm_lock_entry(package_lock: dict, package_name: str) -> dict:
+    suffix = f"node_modules/{package_name}"
+    matches = [
+        value
+        for key, value in (package_lock.get("packages") or {}).items()
+        if key.replace("\\", "/").rstrip("/").endswith(suffix)
+    ]
+    if len(matches) != 1:
+        raise BuildError(f"npm lock has {len(matches)} entries for {package_name}")
+    return matches[0]
+
+
 def enable_embedded_site(runtime: Path) -> None:
     pth_files = list(runtime.glob("python*._pth"))
     if len(pth_files) != 1:
@@ -312,9 +324,7 @@ def build_web(lock: dict, downloads: Path, work: Path, dist: Path) -> Path:
     if package_json.get("version") != spec["opencli"]["version"]:
         raise BuildError("npm installed a different OpenCLI version")
     package_lock = json.loads((opencli / "package-lock.json").read_text(encoding="utf-8"))
-    locked_opencli = (package_lock.get("packages") or {}).get(
-        "node_modules/@jackwener/opencli", {}
-    )
+    locked_opencli = npm_lock_entry(package_lock, "@jackwener/opencli")
     if locked_opencli.get("integrity") != spec["opencli"]["integrity"]:
         raise BuildError("npm OpenCLI integrity differs from the committed lock")
     opencli_version = checked_output([
