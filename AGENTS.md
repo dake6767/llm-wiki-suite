@@ -48,12 +48,13 @@ receipt at `~/.my-llm-wiki/setup/install-state.json`; they never fall back to
 global `PATH`, an old venv, npm, pip, winget, or a development checkout.
 
 Setup can optionally install the Browser desktop app: it runs the suite's
-release-first `install-browser.py` with `--windows-silent`, which downloads
-the NSIS installer through the usual mirror-first sources, verifies its
-minisign signature, installs silently per-user, and confirms the uninstall
-registration. The installed app then updates itself through the Tauri
-updater; Setup never owns Browser upgrades, and a Browser failure never
-fails the core install.
+release-first `install-browser.py` with `--windows-silent --open-web`, which
+downloads the NSIS installer through the usual mirror-first sources, verifies
+its minisign signature, installs silently per-user, confirms the uninstall
+registration, then launches the app and opens its local page so the user sees
+the wiki without a second step (§7). The installed app then updates itself
+through the Tauri updater; Setup never owns Browser upgrades, and a Browser
+failure — including a page that will not open — never fails the core install.
 
 Setup can anchor the managed data on another drive: the user picks an install
 location (GUI selector or `--data-root`), bytes live under that folder's
@@ -273,7 +274,17 @@ is a web page). Count your rows against the report before presenting — a
 consent list that omits any reported row is invalid. Relay the doctor
 `tools:` inventory line alongside it, so tools that are already installed
 are visibly satisfied rather than silently absent, and append the Browser
-Bridge extension row described below to this same list. After consent,
+Bridge extension row described below to this same list.
+
+On macOS/Linux this list is also where the Browser desktop app is offered.
+Doctor emits a `browser [recommended]` row whenever no Browser is installed
+and none is running, and it is presented and consented exactly like
+`markitdown` or `sensevoice` — one row among the others, individually
+skippable, never a separate follow-up question after doctor. Its argv is
+`install-browser.py --open-web` (§7), and its postcheck is
+`doctor.py --browser-only`. A running Browser or an existing install
+receipt produces no row at all. Windows never shows this row: the Setup UI
+owns that choice (§0). After consent,
 execute each reported
 argv array directly with an argv-capable runner, apply only its reported `env`,
 enforce its exact `step_timeout_seconds`, and run its `postcheck` with
@@ -342,23 +353,33 @@ examples must pass `python3 scripts/check_approval_safety.py`.
 
 ## 7. Browser Installation
 
-Browser is optional and is offered only after the required Wiki initialization
-and doctor have completed. Present a host-native single-select control, using
-the same structured interaction style as agent-host selection, with exactly
-these choices:
-
-- **Continue and install Browser** — run the release-first installer below.
-- **Skip Browser** — finish the skills-only installation.
-
-Do not ask the user to type `yes`, `no`, or any other confirmation text. The
-bootstrap remains non-interactive and does not contain this choice. If the host
-cannot render a native selection control, leave Browser skipped and explain
-that the optional choice was unavailable; do not replace it with a free-text
-prompt. Run the installer only after the user selects the install choice:
+Browser is optional and remains consent-gated. On macOS/Linux it is no longer
+a separate question after doctor: it is the `browser [recommended]` row of the
+§6 toolchain consent list, chosen in the same control and the same breath as
+the capture tools. Present that list with a host-native control, and never ask
+the user to type `yes`, `no`, or any other confirmation text. The bootstrap
+remains non-interactive and does not contain this choice. If the host cannot
+render a native selection control, leave Browser skipped and explain that the
+optional choice was unavailable; do not replace it with a free-text prompt. Run
+the installer only after the user consents to that row:
 
 ```bash
-python3 scripts/install-browser.py --open
+python3 scripts/install-browser.py --open-web
 ```
+
+`--open-web` implies `--open`: after a synchronous install it launches Browser,
+waits up to `first_run.ready_timeout_seconds` for the app's loopback server,
+then opens `http://127.0.0.1:<port>/?token=<token>` in the system browser so
+the user sees their wiki immediately. The port is resolved exactly as the app
+resolves it (`first_run.port_pref_file` → `$LLM_WIKI_PORT` →
+`first_run.default_port`, currently 8800) — never hardcode a port. The token
+comes from `first_run.token_file`, written by the app during that same first
+launch, which is why it is read only after the server answers; a bare loopback
+URL without it is HTTP 401. Both steps are best-effort: a server that never
+answers or a system browser that will not open is reported and never changes
+the installation result or the receipt. Never print the tokened URL to a log or
+transcript. Use plain `--open` when a page should not be opened, and neither
+flag for an unattended install.
 
 The installer tries the project-owned htmlgo Tauri manifest first. A source is
 successful only after its asset finishes downloading; metadata success followed
@@ -408,7 +429,8 @@ does not inspect, propose, or mention MCP. A missing explicit target, foreign
 link, stale/mutated copy, missing required skill, or invalid registry reference
 is an error. Browser absence is only a warning when skills-only use was selected.
 
-For an installation-only request, complete the Browser choice above, then offer:
+For an installation-only request, complete the §6 consent list — Browser
+included — then offer:
 
 > Send me one article, webpage, video, or note you want to preserve. I will save
 > it to RAW, compile it into your wiki, and show where to view it.

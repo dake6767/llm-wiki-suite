@@ -374,6 +374,8 @@ class WindowsSetupTests(unittest.TestCase):
                 self.assertEqual(argv[0], str(runtime / "python.exe"))
                 self.assertEqual(argv[1], str(script))
                 self.assertIn("--windows-silent", argv)
+                # Setup ends by showing the wiki, not by leaving the app closed.
+                self.assertIn("--open-web", argv)
                 run.return_value = unittest.mock.Mock(returncode=1, stdout="", stderr="boom")
                 with self.assertRaisesRegex(windows_setup.SetupError, "exited with 1"):
                     windows_setup.install_browser_app(suite, runtime)

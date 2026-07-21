@@ -143,5 +143,63 @@ class DoctorMcpScopeTests(unittest.TestCase):
         check_mcp.assert_called_once()
 
 
+class BrowserRecommendationTests(unittest.TestCase):
+    """Browser is one row of the capture-toolchain consent list (AGENTS.md §6)."""
+
+    MISSING = {"status": "warn", "detail": "not reachable", "install": {"ok": False}}
+
+    def _report(self, browser, toolchain=None):
+        ok = {"status": "ok", "detail": "ok"}
+        skills = {"status": "ok", "skills": [], "existing_targets": [],
+                  "target_scope": "explicit"}
+        toolchain = toolchain if toolchain is not None else {
+            "status": "ok", "capabilities": {}, "recommendations": [],
+        }
+        repo_home = {"status": "ok", "detail": "ok", "root": str(ROOT)}
+        with mock.patch.object(doctor.tool_runtime, "is_windows", return_value=False), \
+             mock.patch.object(doctor, "check_repo_home", return_value=repo_home), \
+             mock.patch.object(doctor, "check_skills", return_value=skills), \
+             mock.patch.object(doctor, "check_wiki", return_value=ok), \
+             mock.patch.object(doctor, "check_browser", return_value=browser), \
+             mock.patch.object(doctor, "check_toolchain", return_value=toolchain), \
+             mock.patch.object(doctor, "check_opencli_extension", return_value=ok):
+            return doctor.build_report(hosts=["codex"])
+
+    def _rows(self, report):
+        return [r["tool"] for r in report["components"]["toolchain"]["recommendations"]]
+
+    def test_missing_browser_is_recommended_in_the_toolchain_list(self):
+        report = self._report(self.MISSING)
+        self.assertIn("browser", self._rows(report))
+        row = next(r for r in report["components"]["toolchain"]["recommendations"]
+                   if r["tool"] == "browser")
+        self.assertEqual(row["priority"], "recommended")
+        # The recipe must be a directly executable argv, like every other row.
+        self.assertIn("--open-web", row["install"]["steps"][0])
+
+    def test_a_receipted_install_produces_no_row(self):
+        report = self._report({"status": "warn", "detail": "not running",
+                               "install": {"ok": True}})
+        self.assertNotIn("browser", self._rows(report))
+
+    def test_a_running_server_without_a_receipt_produces_no_row(self):
+        report = self._report({"status": "ok", "detail": "up", "install": {"ok": False}})
+        self.assertNotIn("browser", self._rows(report))
+
+    def test_windows_never_shows_the_row_because_setup_owns_that_choice(self):
+        with mock.patch.object(doctor.tool_runtime, "is_windows", return_value=True):
+            self.assertIsNone(doctor.browser_recommendation(self.MISSING))
+
+    def test_row_survives_a_skipped_capture_probe(self):
+        report = self._report(
+            self.MISSING,
+            toolchain={"status": "skip", "capabilities": {},
+                       "detail": "selected skills declare no capture profiles"},
+        )
+        self.assertIn("browser", self._rows(report))
+        # It must also reach the human report, which prints skip on one line.
+        self.assertIn("browser [recommended]", doctor.render_human(report))
+
+
 if __name__ == "__main__":
     unittest.main()

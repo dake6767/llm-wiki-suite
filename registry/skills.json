@@ -1,8 +1,8 @@
 {
   "version": 3,
-  "pack_version": "1.0.13",
-  "pack_notes": "Windows 改用 My-LLM-Wiki-Setup.exe 管理私有运行时与工具组件；macOS/Linux 保持 v4 bootstrap 流程。继续包含 ffmpeg 大陆网络 self-probing 修复。",
-  "updated_at": "2026-07-18",
+  "pack_version": "1.0.14",
+  "pack_notes": "macOS/Linux 把 Browser 并入采集工具链的同一份推荐清单（doctor 新增 browser 行与 --browser-only 自检）；安装完成后自动启动应用并打开本机 Wiki 页面，Windows Setup 同样自动打开。",
+  "updated_at": "2026-07-21",
   "skills": [
     {
       "slug": "cn-mirrors",
