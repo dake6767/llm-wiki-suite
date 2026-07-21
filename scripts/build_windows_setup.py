@@ -489,7 +489,7 @@ def build_executable(payload: Path, dist: Path, work: Path, version: str) -> Pat
     executable = dist / "My-LLM-Wiki-Setup.exe"
     if not executable.is_file():
         raise BuildError(f"PyInstaller did not create {executable}")
-    checked_output([str(executable), "hosts", "--json"], timeout=120)
+    checked_output([str(executable), "inspect", "--json"], timeout=120)
     return executable
 
 
