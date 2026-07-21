@@ -1,6 +1,6 @@
 {
-  "version": 4,
-  "updated_at": "2026-07-16",
+  "version": 5,
+  "updated_at": "2026-07-21",
   "python": {
     "minimum": "3.10"
   },
@@ -22,6 +22,17 @@
       "url": "https://gitee.com/dake6767/llm-wiki-suite/raw/main/bootstrap.sh"
     }
   ],
+  "agent_installer": {
+    "protocol": 5,
+    "entrypoint": "scripts/agent_install.py",
+    "release_tag": "v1.0.33",
+    "component_lock": "registry/agent-components.lock.json",
+    "component_manifest_asset": "My-LLM-Wiki-Agent-Components_{platform}_{arch}.json",
+    "release_sources": [
+      "https://wiki.htmlgo.to/_update/dl/{tag}/{asset}",
+      "https://github.com/dake6767/llm-wiki-suite/releases/download/{tag}/{asset}"
+    ]
+  },
   "windows_setup": {
     "required": true,
     "architecture": "x86_64",
@@ -29,7 +40,9 @@
     "release_page": "https://github.com/dake6767/llm-wiki-suite/releases/latest",
     "download_url": "https://github.com/dake6767/llm-wiki-suite/releases/latest/download/My-LLM-Wiki-Setup.exe",
     "project_mirror_template": "https://wiki.htmlgo.to/_update/dl/{tag}/{asset}",
-    "legacy_bootstrap": "unsupported"
+    "legacy_bootstrap": "unsupported",
+    "agent_entrypoint": "inspect-plan-apply",
+    "gui": "optional-recovery"
   },
   "default_repo_home": "~/.my-llm-wiki/suite",
   "connector_dir": "~/.my-llm-wiki/connector",
@@ -53,7 +66,7 @@
   },
   "default_wiki_root": "~/wikis/my-llm-wiki",
   "capture_toolchain": {
-    "_note": "Single machine-readable catalog for capture capability profiles, tool probes, install commands, and mainland-China variants. Skills declare profile ids in registry/skills.json; preflight.py evaluates only the requested profiles. Tool installation is always opt-in.",
+    "_note": "Single machine-readable catalog for capture capability profiles and receipt-only tool probes. Skills declare profile ids in registry/skills.json; preflight.py evaluates only requested profiles and maps missing tools back to Protocol 5 managed components.",
     "catalog": "skills/my-llm-wiki/references/toolchain.json"
   },
   "mcp": {

@@ -339,7 +339,7 @@ def atomic_write(path: Path, data: bytes) -> None:
 
 
 def receipt_path(home: Path) -> Path:
-    return home / SETUP_DIR / RECEIPT_NAME
+    return home / RECEIPT_NAME
 
 
 def read_receipt(home: Path) -> dict | None:
@@ -347,7 +347,11 @@ def read_receipt(home: Path) -> dict | None:
     if not path.is_file():
         return None
     value = load_json(path)
-    if value.get("schema") != 1 or value.get("platform") != "windows":
+    if (
+        value.get("schema") != 1
+        or value.get("protocol") != 5
+        or value.get("platform") != "windows"
+    ):
         raise SetupError(f"unsupported Setup receipt: {path}")
     declared_home = value.get("home")
     if not isinstance(declared_home, str) or not declared_home:
@@ -1041,7 +1045,7 @@ def owned_or_legacy_destination(path: Path, home: Path) -> bool:
             value = json.loads(manifest.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return False
-        if value.get("installer") == "windows-setup":
+        if value.get("installer") == "agent-install-protocol-5":
             return True
         source = value.get("source_repo")
         if isinstance(source, str) and source and official_checkout(Path(source)):
@@ -1065,7 +1069,7 @@ def setup_copy_matches(path: Path, install_id: str) -> bool:
         return False
     return (
         value.get("schema") == 1
-        and value.get("installer") == "windows-setup"
+        and value.get("installer") == "agent-install-protocol-5"
         and value.get("distribution") == "managed-pack"
         and value.get("install_id") == install_id
     )
@@ -1168,7 +1172,7 @@ def run_doctor_capture(home: Path) -> tuple[int, str]:
         env={
             **os.environ,
             "PYTHONUTF8": "1",
-            "LLM_WIKI_SETUP_RECEIPT": str(receipt_path(home)),
+            "LLM_WIKI_INSTALL_RECEIPT": str(receipt_path(home)),
         },
     )
     output = (result.stdout or "") + (f"\n{result.stderr}" if result.stderr else "")
@@ -1254,7 +1258,7 @@ def run_doctor(
         env={
             **os.environ,
             "PYTHONUTF8": "1",
-            "LLM_WIKI_SETUP_RECEIPT": str(receipt_path(home)),
+            "LLM_WIKI_INSTALL_RECEIPT": str(receipt_path(home)),
         },
     )
     if result.stdout:
@@ -1291,6 +1295,7 @@ def build_receipt(
     install_id = old.get("install_id") if old else None
     return {
         "schema": 1,
+        "protocol": 5,
         "install_id": install_id or uuid.uuid4().hex,
         "installer_version": manifest.get("setup_version", lock.get("setup_version")),
         "platform": "windows",
@@ -1330,6 +1335,7 @@ def install_flow(
     skip_postcheck: bool = False,
     guidance: list[str] | None = None,
     browser: bool = False,
+    requested_skills: list[str] | None = None,
 ) -> int:
     validate_platform(allow_test_platform)
     rows = {row["id"]: row for row in host_rows(payload)}
@@ -1404,7 +1410,7 @@ def install_flow(
     try:
         with install.install_lock(config):
             plan = install.build_plan(
-                config, registry, hosts, custom_targets, [], "copy", True
+                config, registry, hosts, custom_targets, requested_skills or [], "copy", True
             )
             # A digest-current generic v4 copy is not current for the Windows
             # hard-cutover contract. Every selected copy must carry this
@@ -1427,12 +1433,15 @@ def install_flow(
                     + ", ".join(foreign)
                 )
             plan["copy_manifest"] = {
-                "installer": "windows-setup",
+                "protocol": 5,
+                "installer": "agent-install-protocol-5",
                 "install_id": receipt["install_id"],
                 "distribution": "managed-pack",
             }
             notify_progress(phase="正在把技能安装到 agent 宿主")
             install.apply_plan(config, plan)
+            receipt["skills"] = plan["selection"]
+            receipt["skill_actions"] = plan["actions"]
             write_receipt(home, receipt)
             notify_progress(phase="正在初始化 wiki")
             initialize.ensure_wiki(
@@ -1662,7 +1671,13 @@ def run_managed_tool(name: str, values: list[str], home: Path) -> int:
     receipt = read_receipt(home)
     if receipt is None:
         raise SetupError("Windows Setup receipt is missing")
-    command = [*managed_argv(receipt, name), *_remainder(values)]
+    tool_args = _remainder(values)
+    if name == "yt-dlp" and "--ffmpeg-location" not in tool_args:
+        ffmpeg = managed_argv(receipt, "ffmpeg")
+        if len(ffmpeg) != 1:
+            raise SetupError("managed FFmpeg path is not directly executable")
+        tool_args = ["--ffmpeg-location", ffmpeg[0], *tool_args]
+    command = [*managed_argv(receipt, name), *tool_args]
     return run_passthrough(command)
 
 
@@ -1678,7 +1693,7 @@ def run_managed_python(profile: str, values: list[str], home: Path) -> int:
         {**receipt, "tools": {"python": {"argv": [executable]}}}, "python"
     )
     env = os.environ.copy()
-    env["LLM_WIKI_SETUP_RECEIPT"] = str(receipt_path(home))
+    env["LLM_WIKI_INSTALL_RECEIPT"] = str(receipt_path(home))
     values_by_profile = (receipt.get("runtime_env") or {}).get(profile, {})
     if isinstance(values_by_profile, dict):
         env.update({
@@ -1746,7 +1761,7 @@ def uninstall_hosts(
             except (OSError, json.JSONDecodeError):
                 continue
             if (
-                manifest.get("installer") == "windows-setup"
+                manifest.get("installer") == "agent-install-protocol-5"
                 and manifest.get("install_id") == receipt.get("install_id")
             ):
                 install.remove_path(destination)
@@ -1808,6 +1823,428 @@ def component_choices(manifest: dict) -> list[dict]:
             "size": int(spec.get("size", 0)),
         })
     return out
+
+
+P5_SELECTION_KEYS = {
+    "schema", "inspection_id", "hosts", "custom_targets", "skills", "mode",
+    "replace_destinations", "components", "browser", "host_configuration",
+    "failure_policy",
+}
+
+
+def canonical_digest(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def protocol_plan_hash(plan: dict) -> str:
+    value = dict(plan)
+    value.pop("plan_hash", None)
+    return canonical_digest(value)
+
+
+def active_skill_slugs(registry: dict, requested: list[str]) -> list[str]:
+    rows = {
+        row["slug"]: row
+        for row in registry.get("skills", [])
+        if isinstance(row, dict) and row.get("lifecycle") == "active"
+    }
+    if requested:
+        unknown = sorted(set(requested) - set(rows))
+        if unknown:
+            raise SetupError("unknown skill(s): " + ", ".join(unknown))
+        queue = list(requested)
+    else:
+        queue = list(rows)
+    selected = []
+    while queue:
+        slug = queue.pop(0)
+        if slug in selected:
+            continue
+        selected.append(slug)
+        row = rows[slug]
+        for dependency in [*(row.get("requires") or []), *(row.get("bundles") or [])]:
+            if dependency not in rows:
+                raise SetupError(f"skill {slug} references unavailable dependency {dependency}")
+            queue.append(dependency)
+    return sorted(selected)
+
+
+def _windows_skill_state(path: Path, receipt: dict | None, pack_version: str) -> str:
+    if not (path.exists() or is_reparse_link(path)):
+        return "create"
+    if receipt and receipt.get("pack_version") == pack_version and setup_copy_matches(
+        path, str(receipt.get("install_id", ""))
+    ):
+        try:
+            marker = json.loads((path / ".llm-wiki-install.json").read_text(encoding="utf-8"))
+            digest = hashlib.sha256()
+            ignored = {".git", "__pycache__", ".DS_Store", "data", "reports", ".llm-wiki-install.json"}
+            for child in sorted(path.rglob("*"), key=lambda row: row.as_posix()):
+                relative = child.relative_to(path)
+                if any(part in ignored for part in relative.parts):
+                    continue
+                label = relative.as_posix().encode("utf-8")
+                if child.is_file():
+                    digest.update(b"F\0" + label + b"\0")
+                    with child.open("rb") as handle:
+                        for block in iter(lambda: handle.read(1024 * 1024), b""):
+                            digest.update(block)
+                    digest.update(b"\0")
+                elif child.is_dir():
+                    digest.update(b"D\0" + label + b"\0")
+            if digest.hexdigest() == marker.get("source_digest"):
+                return "current"
+        except (OSError, json.JSONDecodeError):
+            pass
+    return "replace"
+
+
+def protocol_inspection(home: Path, payload: Path, requested: list[str] | None = None) -> dict:
+    bootstrap = read_suite_registry_from_zip(payload, "registry/bootstrap.json")
+    registry = read_suite_registry_from_zip(payload, "registry/skills.json")
+    manifest = embedded_json(payload, "component-manifest.json")
+    receipt = read_receipt(home)
+    slugs = active_skill_slugs(registry, requested or [])
+    hosts = []
+    for host in host_rows(payload):
+        actions = []
+        for slug in slugs:
+            destination = Path(host["skills_dir"]) / slug
+            actions.append({
+                "slug": slug,
+                "destination": str(destination),
+                "state": _windows_skill_state(destination, receipt, str(registry.get("pack_version", ""))),
+            })
+        hosts.append({
+            **host,
+            "selected_by_default": False,
+            "actions": actions,
+            "conflicts": [row["destination"] for row in actions if row["state"] == "replace"],
+        })
+    components = []
+    installed = (receipt or {}).get("components") or {}
+    for row in component_choices(manifest):
+        components.append({
+            **row,
+            "status": "satisfied" if row["id"] in installed else "installable",
+            "installed": row["id"] in installed,
+            "unattended": True,
+            "managed": True,
+            "blockers": [],
+        })
+    value = {
+        "schema": 1,
+        "protocol": 5,
+        "inspection_id": "",
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "platform": {"os": "windows", "arch": "x86_64"},
+        "source": {
+            "pack_version": registry.get("pack_version"),
+            "setup_version": manifest.get("setup_version"),
+            "release_tag": manifest.get("release_tag"),
+        },
+        "requested_skills": requested or [],
+        "resolved_skills": slugs,
+        "hosts": hosts,
+        "components": components,
+        "browser": {"status": "optional", "installable": True},
+        "network": {"route": "release-mirror-first"},
+        "wiki": {"root": str(Path(DEFAULT_WIKIS).expanduser() / "my-llm-wiki")},
+        "warnings": [],
+        "blockers": [],
+    }
+    identity = dict(value)
+    identity.pop("inspection_id")
+    value["inspection_id"] = canonical_digest(identity)
+    return value
+
+
+def validate_protocol_selection(selection: dict, inspection: dict) -> dict:
+    unknown = sorted(set(selection) - P5_SELECTION_KEYS)
+    if unknown:
+        raise SetupError("selection contains unknown field(s): " + ", ".join(unknown))
+    if selection.get("schema") != 1 or selection.get("inspection_id") != inspection.get("inspection_id"):
+        raise SetupError("selection does not belong to this inspection")
+    def values(name: str) -> list[str]:
+        rows = selection.get(name, [])
+        if not isinstance(rows, list) or any(not isinstance(row, str) or not row for row in rows):
+            raise SetupError(f"selection.{name} must be a string list")
+        return list(dict.fromkeys(rows))
+    hosts = values("hosts")
+    customs = values("custom_targets")
+    skills = values("skills")
+    components = values("components")
+    replacements = [str(Path(row).expanduser().absolute()) for row in values("replace_destinations")]
+    known_hosts = {row["id"] for row in inspection["hosts"]}
+    if set(hosts) - known_hosts:
+        raise SetupError("selection contains an unknown host")
+    if not hosts and not customs:
+        raise SetupError("select at least one host or custom target")
+    known_components = {row["id"] for row in inspection["components"]}
+    if set(components) - known_components:
+        raise SetupError("selection contains an unknown component")
+    if selection.get("mode") != "copy":
+        raise SetupError("Protocol 5 Windows installation requires copy mode")
+    browser = selection.get("browser")
+    if not isinstance(browser, bool):
+        raise SetupError("selection.browser must be boolean")
+    host_configuration = selection.get("host_configuration") or {}
+    if host_configuration.get("hermes_hardening"):
+        raise SetupError("Hermes config hardening is not supported by the Windows adapter")
+    policy = selection.get("failure_policy") or {}
+    if policy.get("optional_components", "continue") not in {"continue", "stop"}:
+        raise SetupError("invalid optional component failure policy")
+    if policy.get("browser", "continue") != "continue":
+        raise SetupError("Browser failure policy must be continue")
+    return {
+        "schema": 1,
+        "inspection_id": inspection["inspection_id"],
+        "hosts": hosts,
+        "custom_targets": customs,
+        "skills": skills,
+        "mode": "copy",
+        "replace_destinations": sorted(replacements),
+        "components": components,
+        "browser": browser,
+        "host_configuration": {"hermes_hardening": False},
+        "failure_policy": {
+            "optional_components": policy.get("optional_components", "continue"),
+            "browser": "continue",
+        },
+    }
+
+
+def protocol_plan(home: Path, payload: Path, inspection: dict, raw_selection: dict) -> dict:
+    selection = validate_protocol_selection(raw_selection, inspection)
+    registry = read_suite_registry_from_zip(payload, "registry/skills.json")
+    resolved = active_skill_slugs(registry, selection["skills"])
+    host_map = {row["id"]: row for row in inspection["hosts"]}
+    actions = []
+    for host in selection["hosts"]:
+        actions.extend(row for row in host_map[host]["actions"] if row["slug"] in resolved)
+    receipt = read_receipt(home)
+    for target in selection["custom_targets"]:
+        for slug in resolved:
+            destination = Path(target).expanduser() / slug
+            actions.append({
+                "slug": slug,
+                "destination": str(destination),
+                "state": _windows_skill_state(destination, receipt, str(registry.get("pack_version", ""))),
+            })
+    conflicts = {str(Path(row["destination"]).absolute()) for row in actions if row["state"] == "replace"}
+    authority = set(selection["replace_destinations"])
+    if conflicts != authority:
+        missing = sorted(conflicts - authority)
+        unused = sorted(authority - conflicts)
+        raise SetupError(
+            "replacement authority must exactly match current conflicts"
+            + (f"; missing: {', '.join(missing)}" if missing else "")
+            + (f"; unused: {', '.join(unused)}" if unused else "")
+        )
+    manifest = embedded_json(payload, "component-manifest.json")
+    component_map = manifest.get("components") or {}
+    plan = {
+        "schema": 1,
+        "protocol": 5,
+        "plan_id": str(uuid.uuid4()),
+        "install_id": (receipt or {}).get("install_id") or uuid.uuid4().hex,
+        "plan_hash": "",
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "inspection_id": inspection["inspection_id"],
+        "platform": {"os": "windows", "arch": "x86_64"},
+        "home": str(home),
+        "source": inspection["source"],
+        "selection": selection,
+        "skills": {"resolved": resolved, "actions": actions},
+        "components": [dict(component_map[row], id=row) for row in selection["components"]],
+        "browser": {"selected": selection["browser"]},
+        "expected_manual_actions": (
+            [{"id": "opencli-browser-bridge-load", "component": "web", "state": "pending-after-install"}]
+            if "web" in selection["components"] else []
+        ),
+    }
+    plan["plan_hash"] = protocol_plan_hash(plan)
+    return plan
+
+
+def validate_windows_plan(plan: dict, home: Path, payload: Path) -> None:
+    if plan.get("schema") != 1 or plan.get("protocol") != 5:
+        raise SetupError("unsupported Protocol 5 plan")
+    if plan.get("plan_hash") != protocol_plan_hash(plan):
+        raise SetupError("plan hash mismatch")
+    if plan.get("platform") != {"os": "windows", "arch": "x86_64"}:
+        raise SetupError("plan belongs to another platform")
+    if Path(str(plan.get("home", ""))).resolve() != home.resolve():
+        raise SetupError("plan belongs to another managed home")
+    current = protocol_inspection(home, payload, plan["selection"].get("skills") or [])
+    host_map = {row["id"]: row for row in current["hosts"]}
+    observed = []
+    resolved = set(plan["skills"]["resolved"])
+    for host in plan["selection"]["hosts"]:
+        observed.extend(row for row in host_map[host]["actions"] if row["slug"] in resolved)
+    receipt = read_receipt(home)
+    pack = str(current["source"].get("pack_version", ""))
+    for target in plan["selection"]["custom_targets"]:
+        for slug in sorted(resolved):
+            destination = Path(target).expanduser() / slug
+            observed.append({
+                "slug": slug,
+                "destination": str(destination),
+                "state": _windows_skill_state(destination, receipt, pack),
+            })
+    frozen = [{key: row[key] for key in ("slug", "destination", "state")} for row in plan["skills"]["actions"]]
+    actual = [{key: row[key] for key in ("slug", "destination", "state")} for row in observed]
+    if frozen != actual:
+        raise SetupError("skill destinations changed after planning; no writes made")
+
+
+def apply_windows_protocol_plan(
+    plan: dict,
+    home: Path,
+    payload: Path,
+    asset_dir: Path | None,
+    *,
+    allow_test_platform: bool,
+    skip_postcheck: bool,
+) -> tuple[dict, Path]:
+    validate_windows_plan(plan, home, payload)
+    session_id = str(uuid.uuid4())
+    root = home / "install-sessions" / session_id
+    root.mkdir(parents=True)
+    atomic_write(root / "plan.json", (json.dumps(plan, ensure_ascii=False, indent=2) + "\n").encode())
+    journal = {
+        "schema": 1, "protocol": 5, "session_id": session_id,
+        "plan_id": plan["plan_id"], "plan_hash": plan["plan_hash"],
+        "state": "applying", "phase": "core", "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+    atomic_write(root / "journal.json", (json.dumps(journal, ensure_ascii=False, indent=2) + "\n").encode())
+    try:
+        status = install_flow(
+            hosts=plan["selection"]["hosts"],
+            custom_targets=plan["selection"]["custom_targets"],
+            components=plan["selection"]["components"],
+            home=home,
+            payload=payload,
+            asset_dir=asset_dir,
+            allow_test_platform=allow_test_platform,
+            skip_postcheck=skip_postcheck,
+            browser=plan["selection"]["browser"],
+            requested_skills=plan["selection"]["skills"],
+        )
+        receipt = read_receipt(home)
+        if receipt:
+            receipt["active_session_id"] = session_id
+            receipt["plan_id"] = plan["plan_id"]
+            receipt["plan_hash"] = plan["plan_hash"]
+            write_receipt(home, receipt)
+        state = "action-required" if status == 3 else "complete"
+        result = {
+            "schema": 1, "protocol": 5, "session_id": session_id,
+            "plan_id": plan["plan_id"], "plan_hash": plan["plan_hash"],
+            "state": state, "started_at": journal["started_at"],
+            "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "manual_actions": plan["expected_manual_actions"] if status == 3 else [],
+        }
+    except Exception as exc:
+        result = {
+            "schema": 1, "protocol": 5, "session_id": session_id,
+            "plan_id": plan.get("plan_id"), "plan_hash": plan.get("plan_hash"),
+            "state": "failed", "started_at": journal["started_at"],
+            "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "error": str(exc),
+        }
+    atomic_write(root / "result.json", (json.dumps(result, ensure_ascii=False, indent=2) + "\n").encode())
+    journal.update(state=result["state"], phase="finished", finished_at=result["finished_at"])
+    atomic_write(root / "journal.json", (json.dumps(journal, ensure_ascii=False, indent=2) + "\n").encode())
+    return result, root / "result.json"
+
+
+def protocol_repair_plan(home: Path, payload: Path, selection_path: Path | None) -> dict:
+    receipt = read_receipt(home)
+    if not receipt:
+        raise SetupError("no Protocol 5 installation exists to repair")
+    requested = sorted({
+        row.get("slug") for row in receipt.get("skill_actions", [])
+        if isinstance(row, dict) and isinstance(row.get("slug"), str)
+    })
+    inspection = protocol_inspection(home, payload, requested)
+    if selection_path:
+        selection = load_json(selection_path)
+        selection["inspection_id"] = inspection["inspection_id"]
+    else:
+        selection = {
+            "schema": 1,
+            "inspection_id": inspection["inspection_id"],
+            "hosts": receipt.get("hosts", []),
+            "custom_targets": receipt.get("custom_targets", []),
+            "skills": requested,
+            "mode": "copy",
+            "replace_destinations": [],
+            "components": sorted((receipt.get("components") or {}).keys()),
+            "browser": False,
+            "host_configuration": {"hermes_hardening": False},
+            "failure_policy": {"optional_components": "continue", "browser": "continue"},
+        }
+    owned = {
+        str(Path(row["destination"]).absolute())
+        for row in receipt.get("skill_actions", [])
+        if isinstance(row, dict)
+        and row.get("destination")
+        and setup_copy_matches(Path(row["destination"]), str(receipt.get("install_id", "")))
+    }
+    conflicts = set()
+    selected_hosts = set(selection.get("hosts") or [])
+    resolved = set(active_skill_slugs(
+        read_suite_registry_from_zip(payload, "registry/skills.json"),
+        selection.get("skills") or [],
+    ))
+    for host in inspection["hosts"]:
+        if host["id"] in selected_hosts:
+            conflicts.update(
+                str(Path(row["destination"]).absolute())
+                for row in host["actions"]
+                if row["slug"] in resolved and row["state"] == "replace"
+            )
+    for target in selection.get("custom_targets") or []:
+        for slug in resolved:
+            destination = Path(target).expanduser() / slug
+            if _windows_skill_state(destination, receipt, str(receipt.get("pack_version", ""))) == "replace":
+                conflicts.add(str(destination.absolute()))
+    selection["replace_destinations"] = sorted(conflicts & owned)
+    return protocol_plan(home, payload, inspection, selection)
+
+
+def uninstall_windows_components(home: Path, selected: set[str]) -> list[str]:
+    receipt = read_receipt(home)
+    if not receipt:
+        raise SetupError("Windows Setup receipt is missing")
+    unknown = sorted(selected - set((receipt.get("components") or {}).keys()))
+    if unknown:
+        raise SetupError("component(s) are not installed: " + ", ".join(unknown))
+    removed = []
+    component_roots = []
+    for component in selected:
+        row = receipt["components"].pop(component)
+        path = Path(str(row.get("path", ""))).resolve()
+        expected_parent = (home / "components" / component).resolve()
+        if expected_parent not in path.parents:
+            raise SetupError(f"component path escapes managed home: {path}")
+        component_roots.append(path)
+    for path in component_roots:
+        if path.is_dir():
+            shutil.rmtree(long_path(path))
+            removed.append(str(path))
+    receipt["tools"] = {
+        name: row
+        for name, row in (receipt.get("tools") or {}).items()
+        if not any(str(path).lower() in " ".join(row.get("argv") or []).lower() for path in component_roots)
+    }
+    for component in selected:
+        (receipt.get("python_profiles") or {}).pop(component, None)
+        (receipt.get("runtime_env") or {}).pop(component, None)
+    write_receipt(home, receipt)
+    return removed
 
 
 def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
@@ -2324,38 +2761,24 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--skip-postcheck", action="store_true", help=argparse.SUPPRESS)
     sub = ap.add_subparsers(dest="command")
 
-    hosts = sub.add_parser("hosts", help="list supported agent hosts")
-    hosts.add_argument("--json", action="store_true")
+    inspect = sub.add_parser("inspect", help="read-only Protocol 5 machine inspection")
+    inspect.add_argument("--skills", nargs="*")
+    inspect.add_argument("--out", type=Path)
+    inspect.add_argument("--json", action="store_true")
 
-    plan = sub.add_parser("plan", help="render an offline install plan")
-    plan.add_argument("--host", action="append", default=[])
-    plan.add_argument("--custom-target", action="append", default=[])
-    plan.add_argument("--component", action="append", default=[])
-    plan.add_argument("--all-tools", action="store_true")
+    plan = sub.add_parser("plan", help="freeze one Protocol 5 selection")
+    plan.add_argument("--inspection", type=Path, required=True)
+    plan.add_argument("--selection", type=Path, required=True)
+    plan.add_argument("--out", type=Path)
+    plan.add_argument("--json", action="store_true")
 
-    install = sub.add_parser("install", help="install/update/repair core and selected components")
-    install.add_argument("--host", action="append", default=[])
-    install.add_argument(
-        "--custom-target",
-        action="append",
-        default=[],
-        metavar="DIR",
-        help="install into an explicit skills directory not named by any registry host",
-    )
-    install.add_argument("--component", action="append", default=[])
-    install.add_argument("--all-tools", action="store_true")
-    install.add_argument(
-        "--browser",
-        action="store_true",
-        help="also install the Browser desktop app silently (auto-updates itself)",
-    )
+    apply = sub.add_parser("apply", help="apply a frozen plan without prompts")
+    apply.add_argument("--plan", type=Path, required=True)
+    apply.add_argument("--json-events", action="store_true")
 
-    components = sub.add_parser("components", help="maintain installed tool components")
-    component_sub = components.add_subparsers(dest="component_command", required=True)
-    component_install = component_sub.add_parser("install")
-    component_install.add_argument("--component", action="append", required=True)
-    component_doctor = component_sub.add_parser("doctor")
-    component_doctor.add_argument("--component", action="append", required=True)
+    repair = sub.add_parser("repair", help="repair the receipt-owned selection")
+    repair.add_argument("--selection", type=Path)
+    repair.add_argument("--json-events", action="store_true")
 
     tools = sub.add_parser("tools", help="run a receipt-managed external tool")
     tool_sub = tools.add_subparsers(dest="tool_command", required=True)
@@ -2372,16 +2795,13 @@ def parser() -> argparse.ArgumentParser:
     python_run.add_argument("args", nargs=argparse.REMAINDER)
 
     status = sub.add_parser("status", help="show managed installation state")
+    status.add_argument("--session")
     status.add_argument("--json", action="store_true")
 
     uninstall = sub.add_parser("uninstall", help="remove Setup-owned agent skill copies")
-    uninstall.add_argument("--host", action="append", default=[])
-    uninstall.add_argument("--custom-target", action="append", default=[], metavar="DIR")
-    uninstall.add_argument(
-        "--purge",
-        action="store_true",
-        help="after removing every host, remove managed suite/runtime/components; preserve Wikis",
-    )
+    uninstall.add_argument("--selection", type=Path)
+    uninstall.add_argument("--all", action="store_true")
+    uninstall.add_argument("--json", action="store_true")
     return ap
 
 
@@ -2398,58 +2818,36 @@ def main(argv: list[str] | None = None) -> int:
         if args.command is None:
             validate_platform(args.allow_test_platform)
             return launch_gui(home_link, payload, asset_dir)
-        if args.command == "hosts":
-            rows = host_rows(payload)
-            if args.json:
-                print(json.dumps({"hosts": rows}, ensure_ascii=False, indent=2))
-            else:
-                for row in rows:
-                    print(
-                        f"{row['id']}: {row['skills_dir']} "
-                        f"({'detected' if row['detected'] else 'not detected'})"
-                    )
+        if args.command == "inspect":
+            result = protocol_inspection(home, payload, args.skills)
+            if args.out:
+                atomic_write(args.out, (json.dumps(result, ensure_ascii=False, indent=2) + "\n").encode())
+            print(json.dumps(result, ensure_ascii=False, indent=2))
             return 0
-        manifest = embedded_json(payload, "component-manifest.json")
-        all_components = list((manifest.get("components") or {}).keys())
         if args.command == "plan":
-            selected = all_components if args.all_tools else list(dict.fromkeys(args.component))
-            print(json.dumps({
-                "status": "planned",
-                "platform": "windows",
-                "hosts": args.host,
-                "custom_targets": args.custom_target,
-                "components": [
-                    row for row in component_choices(manifest) if row["id"] in selected
-                ],
-                "home": str(home),
-                "foreign_conflicts": "stop-before-write",
-            }, ensure_ascii=False, indent=2))
+            result = protocol_plan(
+                home, payload, load_json(args.inspection), load_json(args.selection)
+            )
+            if args.out:
+                atomic_write(args.out, (json.dumps(result, ensure_ascii=False, indent=2) + "\n").encode())
+            print(json.dumps(result, ensure_ascii=False, indent=2))
             return 0
-        if args.command == "install":
-            selected = all_components if args.all_tools else list(dict.fromkeys(args.component))
-            return install_flow(
-                hosts=list(dict.fromkeys(args.host)),
-                custom_targets=list(dict.fromkeys(args.custom_target)),
-                components=selected,
-                home=home,
-                payload=payload,
-                asset_dir=asset_dir,
+        if args.command in {"apply", "repair"}:
+            plan = (
+                load_json(args.plan)
+                if args.command == "apply"
+                else protocol_repair_plan(home, payload, args.selection)
+            )
+            result, result_path = apply_windows_protocol_plan(
+                plan, home, payload, asset_dir,
                 allow_test_platform=args.allow_test_platform,
                 skip_postcheck=args.skip_postcheck,
-                browser=args.browser,
             )
-        if args.command == "components":
-            selected = list(dict.fromkeys(args.component))
-            if args.component_command == "install":
-                return install_components(
-                    components=selected,
-                    home=home,
-                    payload=payload,
-                    asset_dir=asset_dir,
-                    allow_test_platform=args.allow_test_platform,
-                    skip_postcheck=args.skip_postcheck,
-                )
-            return doctor_components(selected, home, payload, skip=args.skip_postcheck)
+            if not args.json_events:
+                print(json.dumps({**result, "result_path": str(result_path)}, ensure_ascii=False, indent=2))
+            if result["state"] == "action-required":
+                return 3
+            return 0 if result["state"] in {"complete", "degraded"} else 1
         if args.command == "tools":
             validate_platform(args.allow_test_platform)
             if args.tool_command == "list":
@@ -2459,8 +2857,18 @@ def main(argv: list[str] | None = None) -> int:
             validate_platform(args.allow_test_platform)
             return run_managed_python(args.profile, args.args, home)
         if args.command == "status":
+            if args.session:
+                root = home / "install-sessions" / args.session
+                source = root / "result.json"
+                if not source.is_file():
+                    source = root / "journal.json"
+                if not source.is_file():
+                    raise SetupError(f"unknown install session: {args.session}")
+                result = load_json(source)
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+                return 0
             receipt = read_receipt(home)
-            result = receipt or {"status": "not-installed", "platform": "windows"}
+            result = receipt or {"schema": 1, "protocol": 5, "status": "not-installed", "platform": "windows"}
             if args.json:
                 print(json.dumps(result, ensure_ascii=False, indent=2))
             else:
@@ -2468,13 +2876,26 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if receipt else 3
         if args.command == "uninstall":
             validate_platform(args.allow_test_platform)
-            return uninstall_hosts(
-                list(dict.fromkeys(args.host)),
-                home,
-                payload,
-                custom_targets=list(dict.fromkeys(args.custom_target)),
-                purge=args.purge,
-            )
+            receipt = read_receipt(home)
+            if not receipt:
+                raise SetupError("Windows Setup receipt is missing")
+            selection = load_json(args.selection) if args.selection else {}
+            if not args.all and not selection:
+                raise SetupError("uninstall requires --all or --selection")
+            removed_components = []
+            if not args.all and selection.get("components"):
+                removed_components = uninstall_windows_components(
+                    home, set(selection["components"])
+                )
+            hosts = list(receipt.get("hosts", [])) if args.all else list(selection.get("hosts") or [])
+            customs = list(receipt.get("custom_targets", [])) if args.all else list(selection.get("custom_targets") or [])
+            if hosts or customs or args.all:
+                status = uninstall_hosts(hosts, home, payload, custom_targets=customs, purge=args.all)
+            else:
+                status = 0
+            if removed_components:
+                print(json.dumps({"removed_components": removed_components}, ensure_ascii=False))
+            return status
         raise SetupError(f"unsupported command: {args.command}")
     except SetupError as exc:
         if args.command is None:

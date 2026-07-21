@@ -279,22 +279,30 @@ class DoctorComponentTests(unittest.TestCase):
         self.dest = self.base / "opencli-extension"
 
     def test_skip_when_opencli_is_not_installed(self) -> None:
-        with mock.patch.object(self.doctor.shutil, "which", return_value=None):
+        with mock.patch.object(
+            self.doctor.tool_runtime,
+            "resolve_command_argv",
+            side_effect=self.doctor.tool_runtime.ToolRuntimeError("missing"),
+        ):
             result = self.doctor.check_opencli_extension(self.dest)
         self.assertEqual(result["status"], "skip")
 
     def test_warn_with_offer_when_installed_but_not_staged(self) -> None:
-        with mock.patch.object(self.doctor.shutil, "which", return_value="/bin/opencli"):
+        with mock.patch.object(
+            self.doctor.tool_runtime, "resolve_command_argv", return_value=["/managed/opencli"]
+        ):
             result = self.doctor.check_opencli_extension(self.dest)
         self.assertEqual(result["status"], "warn")
-        self.assertIn("scripts/opencli_extension.py", result["detail"])
-        self.assertIn("opencli doctor", result["detail"])
+        self.assertIn("repair the web component", result["detail"])
+        self.assertIn("chrome://extensions", result["detail"])
 
     def test_ok_when_staged(self) -> None:
         archive = self.base / "opencli-extension-v1.0.22.zip"
         make_extension_zip(archive)
         ext.stage(self.dest, asset_url=archive.resolve().as_uri())
-        with mock.patch.object(self.doctor.shutil, "which", return_value="/bin/opencli"):
+        with mock.patch.object(
+            self.doctor.tool_runtime, "resolve_command_argv", return_value=["/managed/opencli"]
+        ):
             result = self.doctor.check_opencli_extension(self.dest)
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["version"], "1.0.22")
@@ -314,7 +322,7 @@ class DoctorComponentTests(unittest.TestCase):
                 ):
             result = self.doctor.check_opencli_extension(self.dest)
         self.assertEqual(result["status"], "warn")
-        self.assertIn("My-LLM-Wiki-Setup.exe", result["detail"])
+        self.assertIn("repair the web component", result["detail"])
 
     def test_windows_receipt_without_opencli_still_skips(self) -> None:
         with mock.patch.object(self.doctor.shutil, "which", return_value=None), \

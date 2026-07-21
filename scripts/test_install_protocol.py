@@ -23,7 +23,7 @@ class InstallProtocolTests(unittest.TestCase):
 
     def config(self, root: Path) -> dict:
         return {
-            "version": 4,
+            "version": 5,
             "agent_hosts": {
                 "demo": {
                     "detect_dir": str(root / "agent"),
@@ -95,6 +95,29 @@ class InstallProtocolTests(unittest.TestCase):
                     ["cn-mirrors"], "link", False,
                 )
             self.assertEqual(marker.read_text(encoding="utf-8"), "keep")
+
+    def test_exact_replacement_authorizes_only_named_destination(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "skills"
+            first = target / "my-llm-wiki"
+            second = target / "my-llm-wiki-video"
+            first.mkdir(parents=True)
+            second.mkdir()
+            config = self.config(root)
+            with self.assertRaisesRegex(install.InstallError, str(second)):
+                install.build_plan(
+                    config,
+                    self.registry,
+                    [],
+                    [str(target)],
+                    ["my-llm-wiki-video"],
+                    "copy",
+                    False,
+                    {str(first)},
+                )
+            self.assertTrue(first.is_dir())
+            self.assertTrue(second.is_dir())
 
     def test_copy_is_current_only_while_content_matches_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

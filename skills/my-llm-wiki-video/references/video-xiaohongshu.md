@@ -12,8 +12,8 @@ metadata) in under 5 minutes. 小红书 has **no caption track** — always Path
 The one viable fetcher is **`opencli xiaohongshu`** riding a logged-in Chrome
 session — 小红书 login-walls everything else (see dead ends). Note that
 agent-reach's xiaohongshu backend *is* opencli: `agent-reach doctor` showing
-`xiaohongshu: off` usually means opencli is missing **from that process's
-PATH**, not that a separate backend needs installing.
+`xiaohongshu: off` can mean the Protocol 5 `web` component or live Browser
+Bridge is unavailable, not that a separate backend needs installing.
 
 **Step 0 — preconditions.**
 
@@ -80,8 +80,5 @@ with no cover; `normalize_raw.py` now refuses it).
   `Failed to fetch url` — same login wall.
 - **`opencli xiaohongshu note <bare-note-id>`**: hard error
   `requires a full signed URL` — always pass the resolved URL with `xsec_token`.
-- **A daemon agent seeing `which opencli` fail while it's installed**: daemon
-  terminals snapshot a `bash -l` env, which reads `~/.profile` /
-  `~/.bash_profile` — **not** `~/.zprofile`, where npm-global PATH exports
-  usually live. Fix the PATH (export in `~/.profile`, or symlink opencli into
-  `~/.local/bin`) instead of concluding the tool is absent.
+- **A daemon agent seeing bare `opencli` fail**: this is expected. Use the
+  receipt runner; if it also fails, repair or reselect the `web` component.

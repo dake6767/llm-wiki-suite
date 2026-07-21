@@ -1,7 +1,7 @@
 {
   "version": 3,
-  "pack_version": "1.0.14",
-  "pack_notes": "macOS/Linux 把 Browser 并入采集工具链的同一份推荐清单（doctor 新增 browser 行与 --browser-only 自检）；安装完成后自动启动应用并打开本机 Wiki 页面，Windows Setup 同样自动打开。",
+  "pack_version": "1.0.15",
+  "pack_notes": "Protocol 5 统一 agent 一次选择安装：macOS/Linux 使用受管发布组件，Windows Setup 提供同一套无交互 inspect/plan/apply 协议，安装过程不再逐步等待用户确认。",
   "updated_at": "2026-07-21",
   "skills": [
     {

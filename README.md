@@ -1,397 +1,168 @@
 # My LLM Wiki
 
-> **把视频变成可搜索、可引用、能跳回原片的知识。**
->
-> 从网页、公众号、视频、X 和本地文档采集内容，编译成相互链接的 Markdown Wiki；
-> 知识文件保留在自己的电脑里，同时可供桌面、手机和 AI Agent 检索与使用。
+> 把网页、文档和视频变成可搜索、可引用、能跳回原始来源的本地知识。
 
-`llm-wiki-suite` ，包含一组 agent skills 和跨平台桌面应用 **My LLM Wiki Browser**。它覆盖知识从采集、编译、维护到读取、溯源和分享的完整生命周期。
+My LLM Wiki 是一组 agent skills 与跨平台桌面应用。它把网页、公众号、视频、X、本地
+文档和个人笔记保存为不可变 RAW，再增量编译成相互链接的 Markdown Wiki。知识文件留在
+自己的电脑里，同时可供 Browser、Obsidian 和 AI Agent 检索。
 
-本项目基于 Andrej Karpathy 提出的 [LLM Wiki 理念](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)：让 LLM 将原始资料增量编译为一份持久、互联、持续积累的 Wiki，并在此基础上补齐**可插拔内容采集**、**桌面浏览**、**检索**、**远程 WEB 访问**与**分享**。
+项目源于 Andrej Karpathy 的 [LLM Wiki 理念](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)：
+LLM 不只回答一次问题，而是持续把原始资料编译进一份可维护、可追溯的长期知识库。
 
-[快速开始](#快速开始) · [视频如何变成知识](#一个视频如何变成可验证的知识) · [可插拔抓取工具](#抓取工具可以换知识链路不用换) ·
-[完整能力](#不止于视频) · [轻量 Research](#整理时也会发现下一步值得研究什么) · [本地与远程](#知识留在本地也能在线使用) ·
-[组件状态](#组件与状态)
+![My LLM Wiki Browser](assets/wiki-browser-frame.jpg)
 
-![My LLM Wiki Browser：在同一界面浏览知识页面并回看来源原文](assets/wiki-browser-frame.jpg)
-
-## 一个视频如何变成可验证的知识
-
-给 agent 一条 YouTube、Bilibili、抖音或小红书视频链接，My LLM Wiki 会优先读取
-原字幕；没有字幕时，可下载临时音频并使用本地 ASR。最终保存的是带来源信息和
-跳转时间戳的完整转写，而不是一段脱离原文的摘要。
-
-![从 B 站视频到时间戳转写、本地 Wiki、Agent 检索与可控分享的完整流程](assets/video-to-wiki-workflow.png)
+## 从原始资料到可验证知识
 
 ```text
-在线视频
-  ↓  字幕优先 / 本地 ASR fallback
-带时间戳的完整转写
-  ↓  每段保留跳回原视频的深链
+网页 / 文档 / 视频 / X / 笔记
+  ↓  可替换的采集适配器
 不可变 RAW 原件
   ↓  提取、合并、互链、Review
 Markdown Wiki
   ↓
-Browser / 全文检索 / MCP / AI Agent
+Browser / Obsidian / 有界全文检索 / AI Agent
 ```
 
-转写中的片段形如：
+视频场景会优先读取字幕；没有字幕时使用选定的本地 ASR。保存结果是带来源与跳转时间戳
+的完整转写，而不是一段脱离原文的摘要：
 
 ```markdown
 **[23:56](https://www.youtube.com/watch?v=<id>&t=1436s)**
 这里是该时刻开始的转写内容……
 ```
 
-因此，一次检索不仅能找到“视频讲了什么”，还能回答“这句话在原视频的什么位置”，
-并一键回到对应片段核验。
+因此检索结果既能说明“视频讲了什么”，也能回到原片的准确位置核验。
 
-- 保留完整、轻度校正的转写，不用摘要替代原内容。
-- 时间戳贯穿原文；非中文视频可附带保留相同锚点的完整中文译文。
-- 本地只保存转写、来源链接和封面，不长期保存视频文件。
-- 转写进入 RAW 后，可以继续编译成来源页、概念页和相互链接的知识。
+![从在线视频到 RAW、Wiki 与检索](assets/video-to-wiki-workflow.png)
 
-视频 RAW 的具体契约见
-[`raw-contract.md`](skills/my-llm-wiki/references/raw-contract.md#online-video-source_type-video)，
-采集流程见 [`my-llm-wiki-video`](skills/my-llm-wiki-video/SKILL.md)。
+## 核心能力
 
-## 抓取工具可以换，知识链路不用换
-
-My LLM Wiki **不绑定某一个抓取器**，而是把“如何取得内容”和“如何沉淀知识”解耦。
-Agent 会根据平台、登录状态和本机能力选择可用工具；无论内容由 opencli、agent-reach、
-yt-dlp、本地 ASR 还是自定义脚本取得，最终都通过统一契约进入同一条 `RAW → Wiki` 链路。
-
-因此，网站策略或本机环境发生变化时，只需更换上游工具，不必迁移知识库或重写后续流程。
-**抓取工具会变，已经积累的知识资产和处理链路不变。**缺失能力与质量降级也会被显式报告，
-而不是悄悄产出不完整内容。实现契约见
-[`adapter-contract.md`](skills/my-llm-wiki/references/adapter-contract.md)。
-
-## 不止于视频
-
-| 环节 | My LLM Wiki 做什么 | 产物 |
+| 环节 | 能力 | 主要产物 |
 | --- | --- | --- |
-| 采集 | 通过可替换适配器接入网页、公众号、文档、个人笔记、在线视频、X 帖文与 bookmarks | 自包含 Markdown、已本地化图片、来源元数据 |
-| 编译 | 从 RAW 提取实体、概念、来源摘要与关联关系，增量合并并提出可深挖方向 | 可审阅、可追溯、相互链接的 Wiki 页面与 Research 线索 |
-| 维护 | Review、冲突哨兵、Deep Research、去重、增量 lint、答案回存 | 持续演进而非一次性生成的知识库 |
-| 检索 | 本地全文检索优先，只读取 top-k 候选页并执行硬上下文预算 | 带引用的回答和可控大小的上下文包 |
-| 使用 | Browser、本地/远程 MCP、CLI fallback、限时分享 | 同一份本地知识服务于人和 Agent |
+| 采集 | 网页、公众号、文档、笔记、视频、X 帖文与 bookmarks | 自包含 Markdown、已本地化资源、来源元数据 |
+| 编译 | 实体、概念、来源摘要、关联关系与轻量 Research 线索 | 可审阅、可追溯、相互链接的 Wiki 页面 |
+| 维护 | Review、冲突哨兵、Deep Research、去重、增量 lint | 持续演进的知识库 |
+| 检索 | FTS5 与 top-k 有界页面读取 | 带引用回答和可控大小的上下文 |
+| 使用 | Browser、Obsidian、CLI；显式开启后的 MCP/远程分享 | 同一份本地知识服务于人和 Agent |
 
-RAW 是可追溯的来源层，Wiki 是可继续维护的知识层。确定性的路径检查、缓存、索引合并、
-Review 写入和 lint 交给脚本；语义分析、合成、保守合并与冲突判断交给 LLM。
+采集工具是可替换适配器。opencli、agent-reach、yt-dlp、本地 ASR 或自定义脚本取得的内容
+都进入同一份 [`RAW 契约`](skills/my-llm-wiki/references/raw-contract.md)；抓取路径变化不需要
+迁移已经积累的知识。
 
-## 整理时，也会发现下一步值得研究什么
+每次编译还会给出 `0–3` 个证据缺口、来源冲突或可深挖方向。只有用户选择某个方向时才进入
+Deep Research，新证据仍先保存为 RAW，再编译回 Wiki。
 
-每次把 RAW 编译进 Wiki 时，Agent 不只负责归纳和互链，还会判断资料中有哪些证据缺口、
-来源冲突或值得继续追问的线索，并给出 `0–3` 个“可深挖方向”。这相当于随每次整理附带
-一轮**轻量 Research**：先帮你发现好问题，不自动展开大规模搜索。
+## 本地优先与远程访问
 
-当某个方向值得投入时，只需回复 `research <标题>`，Agent 就会按需进入 Deep Research；
-新找到的证据仍先保存到 RAW，再编译回 Wiki。于是“采集 → 整理 → 发现问题 → 深挖 →
-回写知识库”形成持续演进的闭环，而不是生成一次摘要后就结束。
+Wiki、RAW、图片和运行状态都是普通本地文件。生成的知识库兼容 Obsidian：页面使用
+Markdown、YAML frontmatter 与 `[[wikilinks]]`，初始化时也会创建 `.obsidian/` 配置。
+Browser 直接读取这些文件并建立本地 FTS5 索引，不要求把知识迁移到云笔记或托管向量库。
 
-### 支持的内容入口
+用户可显式开启 relay，让手机或异地浏览器读取电脑上的同一份 Wiki。relay 默认关闭；
+访客只能访问获准 Wiki 的页面、附件、目录、搜索和图谱，RAW、Review 与 MCP 不开放。
 
-- **网页 / 公众号 / 小红书图文**：正文转为自包含 Markdown，图片尽量本地化。
-- **在线视频**：字幕优先，本地 ASR fallback，生成可跳回原片的时间戳转写。
-- **X / Twitter**：单帖、长文、媒体与 bookmarks 增量同步，按 tweet id 去重并支持恢复。
-- **本地文档**：PDF、DOCX、PPTX、XLSX、EPUB 等先保留原文件，再提供可检索的文本抽取。
-- **个人笔记**：把自己的想法作为一等来源，与外部资料一起编译。
-
-这些内容入口共享同一份适配器与 RAW 契约；实际抓取路径取决于平台、登录状态和本机
-工具链。`doctor.py` 只检查并解释可用路径，不会静默安装外部工具。
-
-## 知识留在本地，也能在线使用
-
-Wiki、RAW、图片和运行状态都是用户文件系统中的普通文件。Browser 直接读取这些文件，
-使用本地 FTS5 全文索引提供搜索，不要求先把知识迁移到云笔记或托管向量数据库。
-
-生成的知识库兼容 **Obsidian**：页面使用 Markdown、YAML frontmatter 和 `[[wikilinks]]`，
-初始化时会生成 `.obsidian/` 配置，并把 `raw/assets/` 设为附件目录。整个 Wiki 可直接作为
-Obsidian vault 打开；My LLM Wiki Browser 提供额外的检索、溯源、MCP 和远程访问能力，
-知识内容不被锁定在专有格式中。
-
-一个典型场景是：当 Agent 已接入 IM 时，你可以直接在聊天中发来一篇文章或一段视频，
-远程发起“抓取并整理”任务。Agent 在运行本套件的电脑上完成 `capture → RAW → Wiki` 后，
-会把具体结果页的**线上 WIKI 链接**发回会话；你可以立即用手机或异地浏览器打开查看，
-无需远程操作那台电脑，而知识原件与 Wiki 文件仍保留在本地。
-
-<p align="center">
-  <img src="assets/im-agent-capture-result.jpeg" alt="在 IM 中远程发起抓取整理任务，Agent 返回 Wiki 页面、可深挖方向和线上查看链接" width="360">
-</p>
-
-需要跨设备访问时，可由用户显式开启 relay：
-
-- 手机和远程浏览器读取的仍是电脑上的同一份 Wiki。
-- Owner 可以通过远程 MCP 检索知识；本地 MCP 默认通过 suite 自带的 stdio bridge 连接。
-- 每个访客分享授权可以设置有效期、续期、查看最后访问时间或立即撤销。
-- Guest 只能读取获准 Wiki 的页面、附件、目录、搜索和图谱；RAW 目录、Review 和 MCP 不开放。
-- relay 默认关闭，Browser 不在运行或 relay 断开时，远程访问随之停止。
-
-### 信任边界
-
-“本地优先”指知识库**不被复制并托管到第三方知识数据库**，不代表远程流量端到端不可见。
-开启托管 relay 后，中继能够看到传输明文；当前协议按流式请求转发，不把 Wiki 正文写入
-Durable Object 存储。敏感知识库可以保持 relay 关闭，只使用本地 Browser、MCP 或 CLI。**当然，你也可以自己搭建中继服务器访问你本地电脑的 WIKI 库**。
-
-当前分享授权的权限范围是**整个 Wiki**，页面链接只是该 Wiki 内的落点，并非单页级授权。
-托管 relay 的服务端由项目单独运营，服务端源码当前不在本仓库中；客户端 connector、
-本地鉴权和分享权限实现位于 [`apps/my-llm-wiki-browser/`](apps/my-llm-wiki-browser/)。
-
-## 为人阅读，也为 Agent 提供上下文
-
-Browser 暴露六个只读 MCP 工具：
-
-```text
-list_wikis      search_wiki      read_page
-read_pages      read_raw         list_wiki_tree
-```
-
-典型读取路径是“先搜索，再批量读取少量候选页”，而不是让模型遍历整个 Wiki。
-`read_pages` 对页数、单页字符数和总字符数都有上限；Browser 不可用时，skills 会退回
-等价的本地有界检索。
-
-安装注册已覆盖 Codex、Claude、Hermes、WorkBuddy和通用 Agents 目录。MCP 是首选访问形式，
-但不是硬依赖：没有 MCP 的宿主仍可通过同一套 `wiki_ops.py` 查询和读取。而不过多消耗你的 Token。
+“本地优先”不等于托管 relay 的流量端到端不可见。中继能够看到传输明文，但当前协议不把
+Wiki 正文写入 Durable Object 存储。敏感知识库可以始终关闭 relay，只使用本地 Browser、
+Obsidian 或 CLI。分享授权当前以整个 Wiki 为边界，不是单页授权。
 
 ## 快速开始
 
-### 推荐：把仓库 URL 交给 agent
-
-本仓库根目录的 [`AGENTS.md`](AGENTS.md) 是端到端安装协议。GitHub 是 canonical
-源仓库，Gitee 是自动 Pull 的中国大陆只读镜像；两边保持同一提交。推荐先完成可验证的
-基础安装，首次采集留到你给出真实资料时再做。把当前网络可达的任一地址交给支持本地命令的
-agent：
+把仓库地址交给能执行本地命令的 agent：
 
 ```text
-安装 https://github.com/dake6767/llm-wiki-suite ，严格按仓库根目录 AGENTS.md 的安装协议执行；
-先问我要安装到哪些 agent，再创建或修改任何 skills 目录。
+安装 https://github.com/dake6767/llm-wiki-suite 。读取仓库根目录 AGENTS.md，
+先一次性列出宿主、skills、受管组件、Browser 和冲突替换选项；我确认一次后持续执行到终态。
 ```
+
+中国大陆网络可把地址换成只读镜像
+`https://gitee.com/dake6767/llm-wiki-suite`。GitHub 仍是 canonical 源。
+
+Protocol 5 在 Windows、macOS 和 Linux 上使用同一条交互：
 
 ```text
-安装 https://gitee.com/dake6767/llm-wiki-suite ，严格按仓库根目录 AGENTS.md 的安装协议执行；
-先问我要安装到哪些 agent，再创建或修改任何 skills 目录。
+只读检查 → 一次选择并确认全部选项 → 冻结计划 → 无人值守执行 → 集中显示结果/人工动作
 ```
 
-agent 会显式复用你指定的 checkout，或安装到稳定目录 `~/.my-llm-wiki/suite`；随后按固定顺序
-同步 skills、初始化或复用首个 Wiki、再运行 doctor。Wiki 初始化是基础安装的必做步骤，不会停在
-doctor 后留给用户处理。doctor 完成后，agent 会用宿主原生控件一次性征求工具链安装同意——
-markitdown、SenseVoice 这些采集工具，以及推荐安装的 Browser 都在同一份清单里，逐行可选，
-不会让你手动输入确认文字。同意 Browser 后才从 `wiki.htmlgo.to` 获取 Release（GitHub 仅作回退），
-装完自动启动应用并打开本机页面。完成后另发一条真实 URL 或自己的 note，即可开始
-首次 `capture → RAW → Wiki`。
+安装过程中不会逐步追问，也不会使用全局 pip/npm、Homebrew、apt、winget 或用户 PATH
+补依赖。Skills、Documents、Web/OpenCLI、Video、中文/非中文 ASR 与可选 Browser 都是
+显式选项。自动步骤完成后，才集中显示加载 Chrome 扩展等必须由人完成的动作。
 
-### Windows 原生安装
+Windows 由 agent 下载并校验原生执行核心，正常安装不打开 Setup 窗口，也不要求预装 Git、
+Python、Node 或 Git Bash；双击 Setup 仍可作为恢复界面。macOS/Linux 使用 Python 执行
+核心完成同一协议，不需要额外 GUI 安装器。
 
-Windows 不再兼容 Git Bash + Python + Git 的旧安装链路，也不要求用户预装这些工具。
-大陆网络优先从项目自有 Worker
-[下载 My-LLM-Wiki-Setup.exe](https://wiki.htmlgo.to/_setup/latest/My-LLM-Wiki-Setup.exe)，
-也可下载配套的 [SHA-256 清单](https://wiki.htmlgo.to/_setup/latest/SHA256SUMS-windows-setup.txt)；
-[GitHub 最新 Release](https://github.com/dake6767/llm-wiki-suite/releases/latest) 是 canonical
-源与回退入口。两条路径提供同一份正式 Release 字节。Setup 会显式列出 Codex、Claude、Hermes、agents 和
-WorkBuddy，未默认勾选任何宿主；你选定宿主后，它以受管 copy 模式安装 skills、私有
-Python 核心并初始化 Wiki。Documents、Web/OpenCLI、Video/yt-dlp+FFmpeg、中文 ASR 和
-非中文 ASR 都是可独立维护的版本锁定组件，不读取全局 PATH，也不会调用用户机器上的
-npm、pip 或 winget。
+所有平台的安装事实源是：
 
-Setup 也可勾选桌面端 Browser：它下载官方 NSIS 安装包（经 minisign 签名校验、走 Worker
-镜像路由）并静默安装，随后自动启动应用并在系统浏览器打开本机 Wiki 页面，装完即可看到内容；
-之后由应用内置的 Tauri updater 自行保持更新，Setup 不接管
-Browser 的后续升级。该项失败不影响 skills/组件安装，可稍后重跑 Setup 补装。
+```text
+~/.my-llm-wiki/install-state.json
+```
 
-Setup 支持选择安装位置：默认在用户目录（C 盘）；选其他盘时，数据实际放在所选目录的
-`home`/`wikis` 子目录，`~/.my-llm-wiki` 与 `~/wikis` 变为 NTFS junction（无需管理员权限），
-所有 skills 与 agent 文档中的路径约定不变。重装系统清空 C 盘后，重跑 Setup 选同一位置
-即可重建 junction 并复用盘上已有的组件与 Wiki 数据。安装开始前 Setup 会按所选组件
-体积预检目标盘剩余空间，并清理历史中断留下的临时目录。
+它记录宿主、skills 来源、受管组件、私有运行时、工具 argv、待处理动作和 doctor 结果。
+安装可以安全重跑、repair 或按所有权 uninstall；Wiki 与 RAW 始终作为用户数据保留。
 
-旧 `bootstrap.sh` / `scripts/install.sh` 在 MSYS、MINGW、Cygwin 上会立即停止并指向
-Setup，不再尝试兼容。Setup 的更新、修复、组件 doctor 和卸载都依据
-`~/.my-llm-wiki/setup/install-state.json`；外来目录或无法确认来源的旧 skill 会在写入前
-停止，不会静默覆盖。当前 Windows Setup 尚未配置 Authenticode 代码签名，首次运行可能
-出现 Windows 安全提示；Release 中的组件由 SHA-256 清单固定并校验。
-
-`My-LLM-Wiki-Setup.exe uninstall` 只删除同一 `install_id` 拥有的 skill copy；加
-`--purge` 会在所有受管宿主移除后继续清理 suite、私有 Python 和工具组件，但始终保留 Wiki
-内容与注册表。正在运行的稳定 Setup EXE 由用户在进程退出后手动删除。
-
-上游工具不会在用户机器上自动追新。仓库每周运行
-`scripts/check_windows_toolchain_updates.py`，只查询各项目官方元数据；发现确有对应 Windows
-资产的新版本时创建或刷新 `windows-toolchain` issue。维护者审阅 changelog、许可证和兼容性后，
-在 PR 中更新 `registry/windows-toolchain.lock.json` 的精确版本、URL、SHA-256/npm integrity，
-重新构建受影响组件，并通过组件 postcheck 与 PATH 为空的 Windows clean-room 安装。合并后只发布
-新 tag；绝不替换旧 Release 的同名资产。像 Python 3.12.13 这种只有源码、没有 Windows
-embeddable runtime 的版本不会被误报为可升级候选；`torch`/`torchaudio` 这类耦合依赖只按
-同时提供 Windows CPython 3.12 wheel 的共同版本升级，不分别追各自的 latest。
-
-### macOS / Linux 手动安装 skills
-
-先下载并审阅独立 bootstrap 脚本，不使用 `curl | bash`。全球入口：
+完整的 agent 操作契约、镜像路由、Windows 数据盘与恢复规则见 [`AGENTS.md`](AGENTS.md)。
+开发 checkout 可从只读检查开始：
 
 ```bash
-curl -fsSLo bootstrap.sh --connect-timeout 5 --max-time 30 --retry 1 \
-  https://raw.githubusercontent.com/dake6767/llm-wiki-suite/main/bootstrap.sh
-sed -n '1,260p' bootstrap.sh
-bash bootstrap.sh --host workbuddy
+bash bootstrap.sh --repo "$PWD" inspect --out inspection.json --json
 ```
 
-中国大陆入口：
-
-```bash
-curl -fsSLo bootstrap.sh --connect-timeout 5 --max-time 30 --retry 1 \
-  https://gitee.com/dake6767/llm-wiki-suite/raw/main/bootstrap.sh
-sed -n '1,260p' bootstrap.sh
-bash bootstrap.sh \
-  --repo-url https://gitee.com/dake6767/llm-wiki-suite.git \
-  --host workbuddy
-```
-
-以下 bootstrap 命令只适用于 macOS 和 Linux。默认安装使用软链，checkout 是长期 source of truth，不应放在临时目录。脚本只同步到用户
-明确传入的 `--host`（`codex` / `claude` / `hermes` / `agents` / `workbuddy` / `openclaw`），不会根据
-预先存在的目录擅自创建或修改 skills。已在开发 checkout 中运行时直接使用该 checkout；从
-独立下载的 bootstrap 安装时，如需复用开发 checkout，必须明确传 `--repo DIR`。未显式指定
-`--repo-url` 时，fresh install 会短时探测 GitHub；
-不可达时优先 Gitee，clone 失败时再尝试另一入口。已有 checkout 始终沿其 `origin` 更新。
-`bootstrap.sh` 和本地入口 `scripts/install.sh` 都会在 Skill 安装后立即执行幂等 Wiki 初始化，
-确认注册表中已有可用 Wiki 后才运行 doctor；`--no-doctor` 也不会跳过初始化。
-
-常用选项：
-
-```bash
-bash bootstrap.sh --host workbuddy my-llm-wiki-video  # 只选视频能力及其依赖
-bash bootstrap.sh --host workbuddy my-llm-wiki-x      # 只选 X 能力及其依赖
-bash bootstrap.sh --host workbuddy --dry-run          # 预览，不修改
-bash bootstrap.sh --host workbuddy --update           # clean checkout 上执行 ff-only 更新
-```
-
-### 安装 Browser
-
-在 macOS / Linux 上，Browser 不再是 doctor 之后单独的一问：doctor 会把它作为
-`browser [recommended]` 一行放进 markitdown、SenseVoice 那份采集工具链清单，agent 用同一个
-宿主原生控件一次性征求同意，这一行和其他行一样可以单独跳过。已经装好或已在运行的
-Browser 不会出现这一行。它不会把这个选择做成 shell 提示，也不会要求用户键入 `yes/no`；宿主
-无法提供原生选择控件时默认跳过 Browser。Windows 上这一行不出现——那里由 Setup 界面负责勾选。
-
-Browser 默认优先下载项目自有 htmlgo Release；元数据或资产下载失败时会继续回退到与当前
-操作系统/架构精确匹配的 GitHub Release。源码构建只在显式传入 `--fallback-source` 时运行：
-
-```bash
-python3 scripts/install-browser.py --open-web
-```
-
-`--open-web` 隐含 `--open`：同步安装完成后启动 Browser，等待应用的本机服务就绪（上限
-`first_run.ready_timeout_seconds`），再用系统浏览器打开 `http://127.0.0.1:<端口>/?token=<token>`，
-让用户立刻看到自己的 Wiki。端口按应用自身的顺序解析（`~/.my-llm-wiki/connector/server-port` →
-`$LLM_WIKI_PORT` → 默认 8800），不写死；token 取自 `~/.my-llm-wiki/connector/token`，由应用在
-这次首启中写入，所以只在服务应答之后才读——不带 token 直开本机地址会是 401。两步都是
-best-effort：服务迟迟不应答或系统浏览器打不开只会被报告，不影响安装结果与回执。不想开页面时
-用 `--open`，无人值守安装则两个都不传。
-
-脚本会优先读取项目自有的 [htmlgo Release manifest](https://wiki.htmlgo.to/_update/latest.json)，
-它为大陆网络提供 Browser 安装包；GitHub Release 仅作为回退。仅当 htmlgo 不可用时，脚本才用
-`cn-mirrors` 探测 GitHub metadata 与资产路径。两条路径都不可用时，它会立即提示使用本地
-`wiki_ops.py local-search`。不要默认使用第三方下载中转。
-
-release 提供 macOS Apple Silicon / Intel、Windows 安装包与 portable zip，以及 Linux
-AppImage / deb / rpm。当前产物尚未完成 Apple 公证和 Windows 代码签名，浏览器下载后
-首次运行可能需要在系统安全提示中手动放行。Windows 的 `setup.exe` / MSI 会由脚本直接
-启动，随后立即返回 `status: installer-launched`；agent 不等待安装器退出，不轮询注册表或
-主程序，也不会自动重跑 doctor。portable zip 则在安全解压并找到唯一主程序后完成安装。
-
-由脚本同步完成的安装会原子写入 `~/.my-llm-wiki/browser/install.json`；启动 Windows
-setup.exe/MSI 不写“已安装”回执，也不宣称 Browser 已安装完成。`--open` 对同步安装产物表示
-安装后启动；对 Windows setup.exe/MSI 只会启动原生安装器，不会等待后再启动 Browser。
-macOS 必须真正安装 `.app`，Linux 必须得到可执行 AppImage；单纯下载 DMG/deb/rpm 不会被
-报告为安装成功。
-
-初始安装在工具链清单（含 Browser 一行）征询完成后结束；Windows 原生安装器一旦启动就交还给用户，不再跟踪。
-整个流程不提议或配置 MCP，也不会修改任何 agent 的 MCP 配置。
-
-### 检查安装
-
-```bash
-python3 scripts/doctor.py --host workbuddy
-python3 scripts/doctor.py --host workbuddy --json
-python3 scripts/doctor.py --host workbuddy --skills my-llm-wiki-video
-```
-
-`doctor` 默认一次检查 skill 链接、运行时依赖、Wiki 注册表、Browser 可达性和所选采集
-工具链，不检查或提示 MCP。缺失的外部 fetcher / ASR 工具只会被报告，不会自动安装。
-
-完成安装后，可以从一句话开始：
+安装完成后，直接给 agent 一份真实资料：
 
 ```text
 把这个视频保存到我的 Wiki，保留完整转写和可跳转时间戳，然后整理成知识页面：<URL>
 ```
 
-### 按需维护 MCP（不属于初始安装）
+MCP 不属于初始安装；只有用户之后明确提出时才单独配置。
 
-只有用户在安装完成后另行明确提出 MCP 配置需求时，才执行独立命令：
+## 组件状态
 
-```bash
-python3 scripts/install-browser.py --register-mcp --host codex
-python3 scripts/install-browser.py --unregister-mcp --host codex
-python3 scripts/doctor.py --check-mcp --host codex
-```
-
-默认安装、Browser 安装和默认 `doctor` 都不会进入这条路径。
-
-## 组件与状态
-
-| 组件 | 职责 | 当前状态 |
+| 组件 | 职责 | 状态 |
 | --- | --- | --- |
-| [`my-llm-wiki`](skills/my-llm-wiki/SKILL.md) | Wiki 路由、网页/文档/note 采集、RAW 契约与 synthesis handoff | Stable · published |
-| [`my-llm-wiki-video`](skills/my-llm-wiki-video/SKILL.md) | 在线视频 → 带跳转时间戳的完整转写 | Preview · active in suite |
-| [`my-llm-wiki-x`](skills/my-llm-wiki-x/SKILL.md) | X 单条/长文抓取与 bookmarks 增量同步 | Preview · active in suite |
-| [`my-llm-wiki-maintainer`](skills/my-llm-wiki-maintainer/SKILL.md) | RAW 编译、Review、Research、去重、lint、查询回存 | Stable · published |
-| [`my-llm-wiki-search`](skills/my-llm-wiki-search/SKILL.md) | 只读检索、引用回答和硬上下文预算 | Preview · active in suite |
-| [`cn-mirrors`](skills/cn-mirrors/SKILL.md) | 受限网络探测与国内镜像安装建议 | Stable · published |
-| [`My LLM Wiki Browser`](apps/my-llm-wiki-browser/) | 桌面/Web 阅读、FTS 搜索、MCP、远程访问与分享 | Released · v1.0.13 |
+| [`my-llm-wiki`](skills/my-llm-wiki/SKILL.md) | Wiki 路由、网页/文档/note 采集、RAW 契约 | Stable |
+| [`my-llm-wiki-video`](skills/my-llm-wiki-video/SKILL.md) | 在线视频 → 带时间戳完整转写 | Preview |
+| [`my-llm-wiki-x`](skills/my-llm-wiki-x/SKILL.md) | X 单帖/长文与 bookmarks 增量同步 | Preview |
+| [`my-llm-wiki-maintainer`](skills/my-llm-wiki-maintainer/SKILL.md) | 编译、Review、Research、去重与 lint | Stable |
+| [`my-llm-wiki-search`](skills/my-llm-wiki-search/SKILL.md) | 只读检索、引用回答和上下文预算 | Preview |
+| [`cn-mirrors`](skills/cn-mirrors/SKILL.md) | 受限网络探测与分生态镜像路由 | Stable |
+| [`My LLM Wiki Browser`](apps/my-llm-wiki-browser/) | 阅读、FTS、MCP、远程访问与分享 | Released · v1.0.33 |
 
-这里的 Preview 表示源码已在 suite 中并参与安装，但独立发布、平台覆盖或对外文档仍在收敛。
-安装前以 [`registry/skills.json`](registry/skills.json) 中的 lifecycle、依赖和 capability 声明为准。
+Preview 表示能力已在 suite 中参与安装，但平台覆盖或独立发布仍在收敛。实际生命周期、依赖
+和 capability 以 [`registry/skills.json`](registry/skills.json) 为准。
 
 ## 仓库结构
 
 ```text
 llm-wiki-suite/
-├── bootstrap.sh              # 可独立下载的 agent-first 安装入口
-├── AGENTS.md                 # 给 agent 的端到端安装与首次使用协议
-├── apps/
-│   └── my-llm-wiki-browser/  # Tauri / Rust / React / MCP / relay connector
+├── bootstrap.sh                    # Protocol 5 获取与命令分发
+├── AGENTS.md                       # agent 的一次选择安装协议
+├── apps/my-llm-wiki-browser/       # Tauri / Rust / React / MCP / relay
 ├── registry/
-│   ├── skills.json           # skills、依赖、bundles、capabilities 的事实源
-│   └── bootstrap.json        # 安装目标、Browser release、独立 MCP 维护的事实源
+│   ├── skills.json                 # skills、依赖、bundles、capabilities
+│   ├── bootstrap.json              # 平台入口、宿主与 Release 路由
+│   └── agent-components.lock.json  # macOS/Linux 受管组件上游锁
 ├── scripts/
-│   ├── install.sh            # 精细控制 skills 安装
-│   ├── install-browser.py    # release-first Browser 安装与独立 MCP 维护
-│   └── doctor.py             # suite 级健康检查
-└── skills/<slug>/            # SKILL.md + scripts / references / assets
+│   ├── agent_install.py            # macOS/Linux 执行核心
+│   ├── windows_setup.py            # Windows 原生执行核心
+│   ├── install-browser.py          # Browser Release 安装
+│   └── doctor.py                   # 最终健康检查
+└── skills/<slug>/                  # SKILL.md、scripts、references、assets
 ```
 
-Browser 是可选组件：没有 Browser 时，采集、编译、维护和本地有界检索仍可使用；安装 Browser后增加桌面阅读、FTS 索引、MCP、远程访问和分享能力。
+Browser 是可选组件。没有 Browser 时，采集、编译、维护和本地有界检索仍可使用；安装后
+增加桌面阅读、FTS 索引、MCP、远程访问和分享能力。
 
 ## 开发与维护
-
-已经进入仓库开发时，可以用底层安装命令精细控制目标：
-
-```bash
-scripts/install.sh --host workbuddy --dry-run
-scripts/install.sh --host workbuddy
-scripts/install.sh --host workbuddy my-llm-wiki-video
-scripts/install.sh --host codex --host agents
-```
 
 提交前至少运行：
 
 ```bash
-python3 scripts/doctor.py --host workbuddy --json
+python3 -m compileall -q scripts skills/my-llm-wiki/scripts
 python3 -m unittest discover -s scripts -p 'test_*.py'
 python3 scripts/check_approval_safety.py
-python3 -m unittest scripts.test_approval_safe -v
 ```
 
-Browser 的前端构建、Rust 测试和 Tauri 开发命令见
-[`apps/my-llm-wiki-browser/README.md`](apps/my-llm-wiki-browser/README.md)。
-
-新增或调整 skill 时，请同时更新 [`registry/skills.json`](registry/skills.json)：
-`requires` 表示运行时依赖，`bundles` 表示门面默认一起安装的 companion skills，
-`capabilities` 用于让 `doctor` 只检查用户实际选择的抓取工具链。
+Browser 的前端构建、Rust 测试与 Tauri 开发命令见
+[`apps/my-llm-wiki-browser/README.md`](apps/my-llm-wiki-browser/README.md)。新增或调整 skill
+时，同时更新 [`registry/skills.json`](registry/skills.json)；`requires` 是运行时依赖，
+`bundles` 是门面默认 companion，`capabilities` 用于限定 doctor 的检查范围。

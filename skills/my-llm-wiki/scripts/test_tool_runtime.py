@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import json
-import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
 import sys
 
@@ -14,14 +12,12 @@ import tool_runtime
 
 
 class ToolRuntimeTests(unittest.TestCase):
-    def test_non_windows_uses_path_without_reading_receipt(self) -> None:
-        with mock.patch.object(tool_runtime.shutil, "which", return_value="/opt/bin/yt-dlp"), \
-                mock.patch.object(tool_runtime, "load_setup_receipt") as load:
-            self.assertEqual(
-                tool_runtime.resolve_command_argv("yt-dlp", system="Linux"),
-                ["/opt/bin/yt-dlp"],
-            )
-        load.assert_not_called()
+    def test_non_windows_requires_protocol_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(tool_runtime.ToolRuntimeError, "receipt is missing"):
+                tool_runtime.resolve_command_argv(
+                    "yt-dlp", system="Linux", receipt_path=Path(tmp) / "missing.json"
+                )
 
     def test_windows_resolves_only_receipt_argv(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -34,6 +30,7 @@ class ToolRuntimeTests(unittest.TestCase):
             receipt = home / "install-state.json"
             receipt.write_text(json.dumps({
                 "schema": 1,
+                "protocol": 5,
                 "platform": "windows",
                 "home": str(home),
                 "suite": str(home / "suite"),
@@ -49,11 +46,11 @@ class ToolRuntimeTests(unittest.TestCase):
             self.assertEqual(Path(resolved[1]), script.resolve())
 
     def test_windows_never_falls_back_to_path(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp, \
-                mock.patch.object(tool_runtime.shutil, "which", return_value="C:/global/opencli.exe"):
+        with tempfile.TemporaryDirectory() as tmp:
             receipt = Path(tmp) / "receipt.json"
             receipt.write_text(json.dumps({
                 "schema": 1,
+                "protocol": 5,
                 "platform": "windows",
                 "home": tmp,
                 "tools": {},
@@ -70,18 +67,36 @@ class ToolRuntimeTests(unittest.TestCase):
             receipt = Path(tmp) / "receipt.json"
             receipt.write_text(json.dumps({
                 "schema": 1,
+                "protocol": 5,
                 "platform": "windows",
                 "home": tmp,
                 "tools": {"tool": {"argv": [str(executable)]}},
             }), encoding="utf-8")
-            with self.assertRaisesRegex(tool_runtime.ToolRuntimeError, "escapes Setup home"):
+            with self.assertRaisesRegex(tool_runtime.ToolRuntimeError, "escapes install home"):
                 tool_runtime.resolve_command_argv(
                     "tool", system="Windows", receipt_path=receipt
                 )
 
-    def test_non_windows_python_keeps_legacy_contract(self) -> None:
-        with mock.patch.dict(os.environ, {"LLM_WIKI_ASR_PYTHON": ""}, clear=False):
-            self.assertTrue(tool_runtime.resolve_python("asr-other", system="Darwin"))
+    def test_non_windows_python_uses_managed_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            profile = home / "components" / "asr-other" / "python-asr-other"
+            profile.parent.mkdir(parents=True)
+            profile.write_text("#!/bin/sh\n", encoding="utf-8")
+            receipt = home / "install-state.json"
+            receipt.write_text(json.dumps({
+                "schema": 1,
+                "protocol": 5,
+                "platform": "darwin",
+                "home": str(home),
+                "python_profiles": {"asr-other": str(profile)},
+            }), encoding="utf-8")
+            self.assertEqual(
+                tool_runtime.resolve_python(
+                    "asr-other", system="Darwin", receipt_path=receipt
+                ),
+                str(profile.resolve()),
+            )
 
 
 if __name__ == "__main__":

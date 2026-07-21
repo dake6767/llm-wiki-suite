@@ -91,15 +91,13 @@ tool to install, which site to log into), not just descriptive.
 ## 2. Probe, then take the cheapest path
 
 Probe before fetching —
-Apply the platform command-runner rule from both loaded SKILL.md files to every
-command in this reference. On macOS/Linux,
-`python3 <core-skill>/scripts/preflight.py --profile capture.video` maps what's
-installed (its recommendations carry install commands **and project home
-URLs** — relay both when suggesting an install, so the user can vet the
-source); `agent-reach doctor --json` (if present) reports per-platform
-availability; `which yt-dlp ffmpeg` fills the rest. On Windows, run preflight
-with the Setup `core` Python profile and trust its receipt-based probes; do not
-use `which`, `where.exe`, or PATH as a second opinion. Then:
+apply the receipt-runner rule from both loaded SKILL.md files to every command
+in this reference. Run
+`python3 <core-skill>/scripts/preflight.py --profile capture.video` on
+macOS/Linux, or the Setup `core` Python profile on Windows. Its receipt-based
+inventory is authoritative. A recommendation identifies the managed component
+to add in a new Protocol 5 plan; do not use `which`, `where.exe`, PATH, or a
+global package manager as a second opinion. Then:
 
 ### Path A — captions (free, no download, seconds)
 

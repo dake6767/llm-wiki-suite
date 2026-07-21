@@ -493,40 +493,43 @@ def check_opencli_extension(dest: Path | None = None) -> dict:
             "status": "skip",
             "detail": "opencli not installed; Browser Bridge extension not applicable",
         }
-    staged = extension_stager.status_report(
-        dest if dest is not None else Path(extension_stager.DEFAULT_DEST).expanduser()
-    )
+    managed_dest = None
+    if dest is None:
+        try:
+            receipt = tool_runtime.load_setup_receipt()
+            web = (receipt.get("components") or {}).get("web") or {}
+            candidate = Path(str(web.get("path", ""))) / "extension"
+            if candidate.is_dir():
+                managed_dest = candidate
+        except tool_runtime.ToolRuntimeError:
+            pass
+    staged_path = dest or managed_dest or Path(extension_stager.DEFAULT_DEST).expanduser()
+    if managed_dest and staged_path == managed_dest:
+        try:
+            manifest = json.loads((managed_dest / "manifest.json").read_text(encoding="utf-8"))
+            staged = {
+                "status": "staged",
+                "version": manifest.get("version", "managed"),
+                "path": str(managed_dest),
+            }
+        except (OSError, json.JSONDecodeError):
+            staged = {"status": "not-staged"}
+    else:
+        staged = extension_stager.status_report(staged_path)
     if staged["status"] == "staged":
-        # The live-bridge verifier is the opencli CLI's own doctor; on Windows
-        # that CLI is only reachable through the Setup runner, never PATH.
-        verify = (
-            "My-LLM-Wiki-Setup.exe tools run opencli -- doctor"
-            if tool_runtime.is_windows()
-            else "`opencli doctor`"
-        )
         return {
             "status": "ok",
             "detail": (
                 f"Browser Bridge staged v{staged['version']};"
-                f" {verify} verifies the live bridge"
+                " the receipt-managed opencli doctor verifies the live bridge"
             ),
             "version": staged["version"],
             "path": staged["path"],
         }
-    if tool_runtime.is_windows():
-        detail = (
-            "opencli is installed (Windows Setup managed) but its Browser Bridge"
-            " extension is not staged; re-run My-LLM-Wiki-Setup.exe to repair the"
-            " web component, then load the staged folder via chrome://extensions"
-        )
-    else:
-        detail = (
-            "opencli is installed but its Browser Bridge extension is not staged;"
-            " re-present the required AGENTS.md §6 extension sequence: stage via"
-            " `python3 scripts/opencli_extension.py`, relay its manual"
-            " chrome://extensions load steps, ask whether loading is done"
-            " (skippable), then verify with `opencli doctor`"
-        )
+    detail = (
+        "managed opencli is installed but its Browser Bridge extension is not staged;"
+        " repair the web component, then load its released folder via chrome://extensions"
+    )
     return {
         "status": "warn",
         "detail": detail,
@@ -553,7 +556,7 @@ def build_report(
         return {"fatal": f"cannot read {BOOTSTRAP}: {bootstrap}"}
     if isinstance(skills_registry, Exception):
         return {"fatal": f"cannot read {SKILLS_REGISTRY}: {skills_registry}"}
-    if bootstrap.get("version") != 4:
+    if bootstrap.get("version") != 5:
         return {"fatal": f"unsupported bootstrap protocol: {bootstrap.get('version')}"}
 
     try:

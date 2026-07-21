@@ -80,7 +80,7 @@ class InstallerLaunch:
 
 def load_bootstrap() -> dict:
     config = json.loads(BOOTSTRAP.read_text(encoding="utf-8"))
-    if config.get("version") != 4:
+    if config.get("version") != 5:
         raise RuntimeError(f"unsupported bootstrap protocol: {config.get('version')}")
     browser = config.get("browser")
     if not isinstance(browser, dict) or not browser.get("release_sources"):

@@ -48,6 +48,8 @@ jobs:
           bash -n bootstrap.sh scripts/install.sh
           python -m json.tool registry/bootstrap.json >/dev/null
           python -m json.tool registry/skills.json >/dev/null
+          python -m json.tool registry/agent-install-v5.schema.json >/dev/null
+          python -m json.tool registry/agent-components.lock.json >/dev/null
           python -m json.tool skills/my-llm-wiki/references/toolchain.json >/dev/null
       - name: Compile Python
         run: python -m compileall -q scripts skills/cn-mirrors/scripts skills/my-llm-wiki/scripts
@@ -73,7 +75,7 @@ jobs:
           status=$?
           set -e
           test "$status" -eq 2
-          grep -F 'Windows no longer supports' windows-bootstrap.out
+          grep -F 'Windows uses the Protocol 5 headless native core' windows-bootstrap.out
           grep -F 'My-LLM-Wiki-Setup.exe' windows-bootstrap.out
       - name: Validate lock and controller tests
         shell: pwsh
@@ -112,10 +114,31 @@ jobs:
           $savedPath = $env:PATH
           $env:PATH = ''
           try {
-            & "$pwd/setup-dist/My-LLM-Wiki-Setup.exe" `
-              --home $managedHome --skip-postcheck `
-              install --host codex
-            if ($LASTEXITCODE -ne 0) { throw "Setup install exited $LASTEXITCODE" }
+            $setup = "$pwd/setup-dist/My-LLM-Wiki-Setup.exe"
+            $inspectionPath = Join-Path $testRoot 'inspection.json'
+            $selectionPath = Join-Path $testRoot 'selection.json'
+            $planPath = Join-Path $testRoot 'plan.json'
+            & $setup --home $managedHome inspect --out $inspectionPath --json
+            if ($LASTEXITCODE -ne 0) { throw "Setup inspect exited $LASTEXITCODE" }
+            $inspection = Get-Content $inspectionPath -Raw | ConvertFrom-Json
+            @{
+              schema = 1
+              inspection_id = $inspection.inspection_id
+              hosts = @('codex')
+              custom_targets = @()
+              skills = @()
+              mode = 'copy'
+              replace_destinations = @()
+              components = @()
+              browser = $false
+              host_configuration = @{ hermes_hardening = $false }
+              failure_policy = @{ optional_components = 'continue'; browser = 'continue' }
+            } | ConvertTo-Json -Depth 8 | Set-Content $selectionPath
+            & $setup --home $managedHome plan `
+              --inspection $inspectionPath --selection $selectionPath --out $planPath --json
+            if ($LASTEXITCODE -ne 0) { throw "Setup plan exited $LASTEXITCODE" }
+            & $setup --home $managedHome --skip-postcheck apply --plan $planPath --json-events
+            if ($LASTEXITCODE -ne 0) { throw "Setup apply exited $LASTEXITCODE" }
             & "$managedHome/setup/My-LLM-Wiki-Setup.exe" `
               --home $managedHome status --json
             if ($LASTEXITCODE -ne 0) { throw "Setup status exited $LASTEXITCODE" }

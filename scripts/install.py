@@ -49,7 +49,7 @@ class InstallOperationError(RuntimeError):
 
 
 def require_protocol(config: dict) -> None:
-    if config.get("version") != 4:
+    if config.get("version") != 5:
         raise InstallError(f"unsupported bootstrap protocol: {config.get('version')}")
     if not isinstance(config.get("agent_hosts"), dict):
         raise InstallError("bootstrap.json has no agent_hosts map")
@@ -150,6 +150,7 @@ def build_plan(
     requested: list[str],
     mode: str,
     replace: bool,
+    replace_destinations: set[str] | None = None,
 ) -> dict:
     targets = resolve_targets(config, hosts, custom_targets)
     try:
@@ -166,6 +167,20 @@ def build_plan(
             raise InstallError(f"invalid skill source for {slug}: {source}")
         sources[slug] = (source, content_digest(source))
 
+    # Replacement authority belongs to the destination name, not to whatever
+    # an existing symlink happens to resolve to.  Normalise without following
+    # the final path component so a foreign link cannot redirect consent.
+    def replacement_name(raw: str) -> str:
+        candidate = Path(
+            native_path(
+                os.path.abspath(os.path.expandvars(os.path.expanduser(raw)))
+            )
+        )
+        return str(candidate.parent.resolve() / candidate.name)
+
+    exact_replacements = {
+        replacement_name(raw) for raw in (replace_destinations or set())
+    }
     actions = []
     conflicts = []
     for target in targets:
@@ -180,7 +195,11 @@ def build_plan(
             ):
                 state = "current"
             elif dest.exists() or is_linklike(dest):
-                state = "replace" if replace else "conflict"
+                state = (
+                    "replace"
+                    if replace or str(dest.absolute()) in exact_replacements
+                    else "conflict"
+                )
             else:
                 state = "create"
             item = {
@@ -214,6 +233,7 @@ def build_plan(
         "requested": requested,
         "mode": mode,
         "replace": replace,
+        "replace_destinations": sorted(exact_replacements),
         "selection": selection,
         "actions": actions,
     }
@@ -274,7 +294,7 @@ def install_lock(config: dict):
         raise InstallError(str(exc)) from exc
 
 
-def apply_plan(config: dict, plan: dict) -> None:
+def apply_plan(config: dict, plan: dict, journal_hook=None) -> None:
     backup_name = (config.get("install") or {}).get(
         "backup_dir_name", ".llm-wiki-backups"
     )
@@ -312,8 +332,15 @@ def apply_plan(config: dict, plan: dict) -> None:
                 backup = folder / (
                     f"{item['slug']}-{time.time_ns()}-{uuid.uuid4().hex[:8]}"
                 )
-                os.replace(dest, backup)
                 item["backup"] = str(backup)
+                item["state"] = "activating"
+                if journal_hook:
+                    journal_hook(plan)
+                os.replace(dest, backup)
+            else:
+                item["state"] = "activating"
+                if journal_hook:
+                    journal_hook(plan)
             changed.append(item)
             if item["mode"] == "link":
                 make_link(source, dest)
@@ -338,6 +365,8 @@ def apply_plan(config: dict, plan: dict) -> None:
                     copy_manifest,
                 )
             item["state"] = "installed"
+            if journal_hook:
+                journal_hook(plan)
     except BaseException as exc:
         rollback_errors = []
         for item in reversed(changed):
@@ -360,6 +389,53 @@ def apply_plan(config: dict, plan: dict) -> None:
                 + "; ".join(rollback_errors)
             ) from exc
         raise InstallOperationError(f"installation failed; all changes rolled back: {exc}") from exc
+
+
+def rollback_applied_plan(plan: dict) -> None:
+    """Undo a successfully applied skill plan.
+
+    Protocol 5 treats skill activation and required Wiki verification as one
+    core transaction.  ``apply_plan`` already rolls back failures that happen
+    while destinations are changing; this companion handles a later failure
+    (for example Wiki initialization or core doctor) without guessing which
+    paths belong to the run.
+    """
+    errors: list[str] = []
+    touched_parents: set[Path] = set()
+    backup_parents: set[Path] = set()
+    for item in reversed(plan.get("actions", [])):
+        if item.get("state") != "installed":
+            continue
+        dest = Path(item["destination"])
+        touched_parents.add(dest.parent)
+        try:
+            remove_path(dest)
+            backup = item.get("backup")
+            if backup:
+                backup_parents.add(Path(backup).parent)
+                os.replace(backup, dest)
+            item["state"] = "rolled-back"
+        except Exception as exc:  # noqa: BLE001 - aggregate every restore error
+            errors.append(f"{dest}: {exc}")
+
+    # Backups live below the target directory.  Remove only empty installer
+    # directories; never recurse over a directory that may contain another
+    # operation's recoverable data.
+    for backup_dir in backup_parents:
+        try:
+            backup_dir.rmdir()
+        except OSError:
+            pass
+    for parent in touched_parents:
+        try:
+            parent.rmdir()
+        except OSError:
+            pass
+
+    if errors:
+        raise InstallOperationError(
+            "rollback incomplete: " + "; ".join(errors)
+        )
 
 
 def doctor_argv(args: argparse.Namespace) -> list[str]:

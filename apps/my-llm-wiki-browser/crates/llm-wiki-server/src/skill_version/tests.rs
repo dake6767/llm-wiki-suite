@@ -296,10 +296,6 @@ fn init_managed_copy(root: &std::path::Path, slug: &str, pack_version: &str) -> 
         ),
     )
     .unwrap();
-    let setup = home.join("setup/My-LLM-Wiki-Setup.exe");
-    std::fs::create_dir_all(setup.parent().unwrap()).unwrap();
-    std::fs::write(&setup, b"MZ-test").unwrap();
-
     let host = root.join("home/.codex/skills");
     let entry = host.join(slug);
     std::fs::create_dir_all(&entry).unwrap();
@@ -316,19 +312,20 @@ fn init_managed_copy(root: &std::path::Path, slug: &str, pack_version: &str) -> 
             "pack_version": pack_version,
             "source_digest": digest,
             "source_repo": suite,
-            "installer": "windows-setup",
+            "installer": "agent-install-protocol-5",
             "install_id": install_id,
             "distribution": "managed-pack"
         }))
         .unwrap(),
     )
     .unwrap();
-    let receipt = home.join("setup/install-state.json");
+    let receipt = home.join("install-state.json");
     std::fs::write(
         &receipt,
         serde_json::to_vec_pretty(&serde_json::json!({
             "schema": 1,
-            "platform": "windows",
+            "protocol": 5,
+            "platform": protocol_platform(),
             "home": home,
             "suite": suite,
             "pack_version": pack_version,
@@ -341,7 +338,7 @@ fn init_managed_copy(root: &std::path::Path, slug: &str, pack_version: &str) -> 
 }
 
 #[test]
-fn resolve_setup_managed_copy_reads_installed() {
+fn resolve_protocol_5_managed_copy_reads_installed() {
     let tmp = tempfile::tempdir().unwrap();
     let (host, receipt) = init_managed_copy(tmp.path(), "my-llm-wiki", "1.2.0");
     let resolved =
@@ -352,7 +349,7 @@ fn resolve_setup_managed_copy_reads_installed() {
             .info
             .path
             .unwrap()
-            .ends_with("My-LLM-Wiki-Setup.exe")
+            .ends_with("install-state.json")
     );
     assert_eq!(
         read_installed_version(resolved.toplevel.as_ref().unwrap())
@@ -363,7 +360,7 @@ fn resolve_setup_managed_copy_reads_installed() {
 }
 
 #[test]
-fn mutated_setup_copy_is_unknown() {
+fn mutated_protocol_5_copy_is_unknown() {
     let tmp = tempfile::tempdir().unwrap();
     let (host, receipt) = init_managed_copy(tmp.path(), "my-llm-wiki", "1.2.0");
     std::fs::write(
@@ -455,7 +452,7 @@ fn gitlink_source() -> ResolvedSource {
 }
 
 #[test]
-fn managed_prompt_routes_to_new_setup_not_bootstrap() {
+fn managed_prompt_routes_to_protocol_5_single_selection() {
     let candidate = Candidate {
         pack_version: SemVer::parse("1.3.0").unwrap(),
         source_commit: None,
@@ -464,12 +461,12 @@ fn managed_prompt_routes_to_new_setup_not_bootstrap() {
         min_app_version: None,
     };
     let prompt = build_managed_prompt(
-        r"C:\Users\tester\.my-llm-wiki\setup\My-LLM-Wiki-Setup.exe",
+        r"C:\Users\tester\.my-llm-wiki\install-state.json",
         &candidate,
     );
-    assert!(prompt.contains("My-LLM-Wiki-Setup.exe"));
+    assert!(prompt.contains("Protocol 5"));
     assert!(prompt.contains("1.3.0"));
-    assert!(prompt.contains("不要运行旧 `bootstrap.sh`"));
+    assert!(prompt.contains("一次性"));
     assert!(!prompt.contains("bootstrap.sh --update"));
 }
 

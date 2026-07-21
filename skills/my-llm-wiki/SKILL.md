@@ -136,17 +136,25 @@ when deliberately returning before the job finishes and a later user-facing
 follow-up is wanted. Mixing active polling with a completion push creates a
 second, stale reply after the real result has already been delivered.
 
-## Use the platform command runner
+## Use the receipt-managed command runner
 
-The command examples below are literal on macOS/Linux: run skill scripts with
-the selected Python and invoke installed tools through PATH. Windows is a hard
-cutover to the Setup receipt, so translate every Python/tool example through
-the stable native runner instead of searching PATH or recreating an old venv:
+Every platform resolves external capture tools exclusively from the atomic
+Protocol 5 receipt. Never translate a bare example into a PATH lookup or a
+global package install. On macOS/Linux, use the shipped runner:
+
+```bash
+python3 <my-llm-wiki>/scripts/tool_exec.py opencli -- web read \
+  --url "https://example.com" --output "<temp>"
+python3 <my-llm-wiki>/scripts/tool_exec.py markitdown -- \
+  "/path/document.pdf" -o "<temp>/doc.md"
+```
+
+Windows exposes the same receipt through Setup:
 
 ```powershell
 $Setup = "$env:USERPROFILE\.my-llm-wiki\setup\My-LLM-Wiki-Setup.exe"
 
-# A core skill script (preflight, normalization, wiki routing, etc.)
+# A core or ASR skill script
 & $Setup python run --profile core -- "<skill>\scripts\preflight.py" --profile capture.web
 
 # A managed external tool and all of its ordinary argv
@@ -154,15 +162,12 @@ $Setup = "$env:USERPROFILE\.my-llm-wiki\setup\My-LLM-Wiki-Setup.exe"
 & $Setup tools run markitdown -- "C:\path\document.pdf" -o "<temp>\doc.md"
 ```
 
-For video ASR runners, use `python run --profile asr-zh -- ...` for
-SenseVoice and `python run --profile asr-other -- ...` for faster-whisper.
-The Setup runner applies the recorded runtime environment at model load time.
-If a component is absent, use only the doctor's structured
-`My-LLM-Wiki-Setup.exe components install --component <id>` recommendation
-after consent. Do not fall back to `python`, `python3`, npm, pip, winget,
-global PATH, MSYS path rewriting, or `~/.local/share/llm-wiki/asr-venv` on
-Windows. This single translation rule applies to every command in this skill
-and its references; macOS/Linux behavior remains unchanged.
+ASR entry points re-exec the receipt's `asr-zh` or `asr-other` Python and apply
+the recorded first-use model environment on all platforms. If a component is
+absent or unhealthy, create and confirm a new Protocol 5 plan that includes it.
+Do not fall back to another Python, npm, pip, winget, global PATH, MSYS path
+rewriting, or a legacy venv. This rule applies to every command in this skill
+and its references.
 
 ## Fetch payloads are disk-first
 

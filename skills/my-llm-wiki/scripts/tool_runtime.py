@@ -1,25 +1,17 @@
 #!/usr/bin/env python3
-"""Resolve external tools without leaking Windows Setup policy into skills.
-
-macOS and Linux intentionally keep the historical contract: commands come
-from ``PATH`` and ASR may use the existing user venv.  Windows is a hard
-cutover: commands and Python profiles must be declared by the native Setup
-receipt.  There is deliberately no fallback to global npm, pip, winget, or an
-old Git-Bash installation on Windows.
-"""
+"""Resolve Protocol 5 tools exclusively from the atomic install receipt."""
 
 from __future__ import annotations
 
 import json
 import os
 import platform
-import shutil
 import sys
 from pathlib import Path
 
 
-SETUP_RECEIPT_ENV = "LLM_WIKI_SETUP_RECEIPT"
-DEFAULT_SETUP_RECEIPT = "~/.my-llm-wiki/setup/install-state.json"
+INSTALL_RECEIPT_ENV = "LLM_WIKI_INSTALL_RECEIPT"
+DEFAULT_INSTALL_RECEIPT = "~/.my-llm-wiki/install-state.json"
 _PLACEHOLDERS = {"home", "suite", "runtime"}
 
 
@@ -36,25 +28,30 @@ def is_windows(system: str | None = None) -> bool:
 
 
 def setup_receipt_path(path: Path | str | None = None) -> Path:
-    raw = path or os.environ.get(SETUP_RECEIPT_ENV) or DEFAULT_SETUP_RECEIPT
+    raw = path or os.environ.get(INSTALL_RECEIPT_ENV) or DEFAULT_INSTALL_RECEIPT
     return Path(raw).expanduser().resolve()
 
 
-def load_setup_receipt(path: Path | str | None = None) -> dict:
+def load_setup_receipt(
+    path: Path | str | None = None, *, system: str | None = None
+) -> dict:
     receipt_path = setup_receipt_path(path)
     try:
         value = json.loads(receipt_path.read_text(encoding="utf-8"))
     except OSError as exc:
         raise ToolRuntimeError(
-            "Windows requires My-LLM-Wiki-Setup.exe; managed install receipt "
-            f"is missing: {receipt_path}"
+            f"Protocol 5 managed install receipt is missing: {receipt_path}"
         ) from exc
     except json.JSONDecodeError as exc:
-        raise ToolRuntimeError(f"invalid Windows Setup receipt {receipt_path}: {exc}") from exc
-    if not isinstance(value, dict) or value.get("schema") != 1:
-        raise ToolRuntimeError(f"unsupported Windows Setup receipt: {receipt_path}")
-    if value.get("platform") != "windows":
-        raise ToolRuntimeError(f"Setup receipt belongs to another platform: {receipt_path}")
+        raise ToolRuntimeError(f"invalid Protocol 5 receipt {receipt_path}: {exc}") from exc
+    if (
+        not isinstance(value, dict)
+        or value.get("schema") != 1
+        or value.get("protocol") != 5
+    ):
+        raise ToolRuntimeError(f"unsupported Protocol 5 receipt: {receipt_path}")
+    if value.get("platform") != _system_name(system):
+        raise ToolRuntimeError(f"install receipt belongs to another platform: {receipt_path}")
     return value
 
 
@@ -62,10 +59,12 @@ def _receipt_roots(receipt: dict) -> dict[str, str]:
     roots = {}
     for key in _PLACEHOLDERS:
         raw = receipt.get(key)
+        if key == "runtime" and isinstance(raw, dict):
+            raw = raw.get("path")
         if isinstance(raw, str) and raw:
             roots[key] = str(Path(raw).expanduser().resolve())
     if "home" not in roots:
-        raise ToolRuntimeError("Windows Setup receipt has no managed home")
+        raise ToolRuntimeError("Protocol 5 receipt has no managed home")
     return roots
 
 
@@ -91,7 +90,7 @@ def _validated_argv(raw: object, receipt: dict, label: str) -> list[str]:
     resolved = executable.resolve()
     if resolved != home and home not in resolved.parents:
         raise ToolRuntimeError(
-            f"managed executable for {label} escapes Setup home: {resolved}"
+            f"managed executable for {label} escapes install home: {resolved}"
         )
     argv[0] = str(resolved)
     return argv
@@ -111,20 +110,13 @@ def resolve_command_argv(
     """
     if not name or any(ch in name for ch in "/\\"):
         raise ToolRuntimeError(f"invalid tool name: {name!r}")
-    if not is_windows(system):
-        path = shutil.which(name)
-        if not path:
-            raise ToolRuntimeError(f"{name} is not on PATH")
-        return [path]
-
-    receipt = load_setup_receipt(receipt_path)
+    receipt = load_setup_receipt(receipt_path, system=system)
     tools = receipt.get("tools")
     spec = tools.get(name) if isinstance(tools, dict) else None
     if not isinstance(spec, dict):
         component = name.replace("_", "-")
         raise ToolRuntimeError(
-            f"managed Windows tool {name!r} is not installed; repair component "
-            f"with My-LLM-Wiki-Setup.exe ({component})"
+            f"managed tool {name!r} is not installed; repair component {component}"
         )
     return _validated_argv(spec.get("argv"), receipt, name)
 
@@ -135,15 +127,7 @@ def resolve_python(
     system: str | None = None,
     receipt_path: Path | str | None = None,
 ) -> str:
-    if not is_windows(system):
-        override = os.environ.get("LLM_WIKI_ASR_PYTHON", "")
-        legacy = Path.home() / ".local" / "share" / "llm-wiki" / "asr-venv" / "bin" / "python"
-        for candidate in (override, str(legacy), sys.executable):
-            if candidate and Path(candidate).expanduser().is_file():
-                return str(Path(candidate).expanduser().resolve())
-        return sys.executable
-
-    receipt = load_setup_receipt(receipt_path)
+    receipt = load_setup_receipt(receipt_path, system=system)
     profiles = receipt.get("python_profiles")
     raw = profiles.get(profile) if isinstance(profiles, dict) else None
     argv = _validated_argv([raw] if isinstance(raw, str) else raw, receipt, profile)
@@ -158,9 +142,7 @@ def runtime_env(
     system: str | None = None,
     receipt_path: Path | str | None = None,
 ) -> dict[str, str]:
-    if not is_windows(system):
-        return {}
-    receipt = load_setup_receipt(receipt_path)
+    receipt = load_setup_receipt(receipt_path, system=system)
     values = (receipt.get("runtime_env") or {}).get(profile, {})
     if not isinstance(values, dict) or any(
         not isinstance(key, str) or not isinstance(value, str)
@@ -171,9 +153,7 @@ def runtime_env(
 
 
 def ensure_managed_python(profile: str) -> None:
-    """Re-exec an ASR entry point with its Setup-managed Windows Python."""
-    if not is_windows():
-        return
+    """Re-exec an ASR entry point with its receipt-managed Python profile."""
     target = resolve_python(profile)
     try:
         same = Path(sys.executable).resolve() == Path(target).resolve()

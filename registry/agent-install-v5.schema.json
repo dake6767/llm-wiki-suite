@@ -1,0 +1,186 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/dake6767/llm-wiki-suite/registry/agent-install-v5.schema.json",
+  "title": "My LLM Wiki Agent Install Protocol 5",
+  "type": "object",
+  "oneOf": [
+    {"$ref": "#/$defs/inspection"},
+    {"$ref": "#/$defs/selection"},
+    {"$ref": "#/$defs/plan"},
+    {"$ref": "#/$defs/result"}
+  ],
+  "$defs": {
+    "stringList": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["os", "arch"],
+      "properties": {
+        "os": {"enum": ["darwin", "linux", "windows"]},
+        "arch": {"type": "string", "minLength": 1}
+      }
+    },
+    "inspection": {
+      "type": "object",
+      "required": [
+        "schema",
+        "protocol",
+        "inspection_id",
+        "created_at",
+        "platform",
+        "source",
+        "hosts",
+        "components",
+        "browser",
+        "network",
+        "wiki",
+        "warnings",
+        "blockers"
+      ],
+      "properties": {
+        "schema": {"const": 1},
+        "protocol": {"const": 5},
+        "inspection_id": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "created_at": {"type": "string", "format": "date-time"},
+        "platform": {"$ref": "#/$defs/platform"},
+        "source": {"type": "object"},
+        "requested_skills": {"$ref": "#/$defs/stringList"},
+        "resolved_skills": {"type": "object"},
+        "hosts": {"type": "array", "items": {"type": "object"}},
+        "components": {"type": "array", "items": {"type": "object"}},
+        "component_manifest": {"type": ["object", "null"]},
+        "toolchain": {"type": "object"},
+        "browser": {"type": "object"},
+        "opencli_extension": {"type": "object"},
+        "network": {"type": "object"},
+        "wiki": {"type": "object"},
+        "warnings": {"type": "array", "items": {"type": "string"}},
+        "blockers": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "inspection_id",
+        "hosts",
+        "custom_targets",
+        "skills",
+        "mode",
+        "replace_destinations",
+        "components",
+        "browser",
+        "host_configuration",
+        "failure_policy"
+      ],
+      "properties": {
+        "schema": {"const": 1},
+        "inspection_id": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "hosts": {"$ref": "#/$defs/stringList"},
+        "custom_targets": {"$ref": "#/$defs/stringList"},
+        "skills": {"$ref": "#/$defs/stringList"},
+        "mode": {"const": "copy"},
+        "replace_destinations": {"$ref": "#/$defs/stringList"},
+        "components": {
+          "type": "array",
+          "items": {
+            "enum": ["documents", "web", "video", "asr-zh", "asr-other"]
+          },
+          "uniqueItems": true
+        },
+        "browser": {"type": "boolean"},
+        "host_configuration": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "hermes_hardening": {"type": "boolean", "default": false}
+          }
+        },
+        "failure_policy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["optional_components", "browser"],
+          "properties": {
+            "optional_components": {"enum": ["continue", "stop"]},
+            "browser": {"const": "continue"}
+          }
+        }
+      },
+      "anyOf": [
+        {"properties": {"hosts": {"minItems": 1}}},
+        {"properties": {"custom_targets": {"minItems": 1}}}
+      ]
+    },
+    "plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "protocol",
+        "plan_id",
+        "install_id",
+        "plan_hash",
+        "created_at",
+        "inspection_id",
+        "platform",
+        "source",
+        "selection",
+        "skills",
+        "components",
+        "browser",
+        "extension",
+        "wiki",
+        "expected_manual_actions"
+      ],
+      "properties": {
+        "schema": {"const": 1},
+        "protocol": {"const": 5},
+        "plan_id": {"type": "string", "format": "uuid"},
+        "install_id": {"type": "string", "minLength": 16},
+        "plan_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "created_at": {"type": "string", "format": "date-time"},
+        "inspection_id": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "platform": {"$ref": "#/$defs/platform"},
+        "source": {"type": "object"},
+        "selection": {"$ref": "#/$defs/selection"},
+        "skills": {"type": "object"},
+        "components": {"type": "object"},
+        "browser": {"type": "object"},
+        "extension": {"type": "object"},
+        "wiki": {"type": "object"},
+        "expected_manual_actions": {"type": "array", "items": {"type": "object"}}
+      }
+    },
+    "result": {
+      "type": "object",
+      "required": [
+        "schema",
+        "protocol",
+        "session_id",
+        "plan_id",
+        "plan_hash",
+        "state",
+        "started_at",
+        "finished_at"
+      ],
+      "properties": {
+        "schema": {"const": 1},
+        "protocol": {"const": 5},
+        "session_id": {"type": "string", "format": "uuid"},
+        "plan_id": {"type": "string", "format": "uuid"},
+        "plan_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "state": {
+          "enum": ["complete", "degraded", "action-required", "rolled-back", "failed"]
+        },
+        "started_at": {"type": "string", "format": "date-time"},
+        "finished_at": {"type": "string", "format": "date-time"},
+        "manual_actions": {"type": "array", "items": {"type": "object"}}
+      }
+    }
+  }
+}

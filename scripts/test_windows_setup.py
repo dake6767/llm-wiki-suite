@@ -121,6 +121,63 @@ class WindowsSetupTests(unittest.TestCase):
                 windows_setup.safe_extract(archive, root / "out")
             self.assertFalse((root / "escape.txt").exists())
 
+    def test_protocol5_inspect_plan_and_hash_are_agent_driven(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            payload, target, _ = self.make_payload(root)
+            home = root / "home"
+            inspection = windows_setup.protocol_inspection(
+                home, payload, ["cn-mirrors"]
+            )
+            self.assertEqual(inspection["protocol"], 5)
+            self.assertFalse(inspection["hosts"][0]["selected_by_default"])
+            self.assertFalse(target.exists())
+            selection = {
+                "schema": 1,
+                "inspection_id": inspection["inspection_id"],
+                "hosts": ["codex"],
+                "custom_targets": [],
+                "skills": ["cn-mirrors"],
+                "mode": "copy",
+                "replace_destinations": [],
+                "components": [],
+                "browser": False,
+                "host_configuration": {"hermes_hardening": False},
+                "failure_policy": {"optional_components": "continue", "browser": "continue"},
+            }
+            plan = windows_setup.protocol_plan(home, payload, inspection, selection)
+            windows_setup.validate_windows_plan(plan, home, payload)
+            plan["selection"]["browser"] = True
+            with self.assertRaisesRegex(windows_setup.SetupError, "hash mismatch"):
+                windows_setup.validate_windows_plan(plan, home, payload)
+
+    def test_protocol5_plan_requires_every_exact_windows_conflict(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            payload, target, _ = self.make_payload(root, foreign=True)
+            home = root / "home"
+            inspection = windows_setup.protocol_inspection(
+                home, payload, ["my-llm-wiki"]
+            )
+            selection = {
+                "schema": 1,
+                "inspection_id": inspection["inspection_id"],
+                "hosts": ["codex"],
+                "custom_targets": [],
+                "skills": ["my-llm-wiki"],
+                "mode": "copy",
+                "replace_destinations": [],
+                "components": [],
+                "browser": False,
+                "host_configuration": {"hermes_hardening": False},
+                "failure_policy": {"optional_components": "continue", "browser": "continue"},
+            }
+            with self.assertRaisesRegex(windows_setup.SetupError, "missing"):
+                windows_setup.protocol_plan(home, payload, inspection, selection)
+            selection["replace_destinations"] = [str((target / "my-llm-wiki").absolute())]
+            plan = windows_setup.protocol_plan(home, payload, inspection, selection)
+            self.assertEqual(plan["skills"]["actions"][0]["state"], "replace")
+
     def test_replace_with_retries_survives_transient_locks(self) -> None:
         calls = {"count": 0}
         real_replace = windows_setup.os.replace
@@ -298,6 +355,7 @@ class WindowsSetupTests(unittest.TestCase):
             )
             receipt = {
                 "schema": 1,
+                "protocol": 5,
                 "platform": "windows",
                 "home": str(home),
                 "suite": str(home / "suite" / "versions" / "1.0"),
@@ -330,6 +388,7 @@ class WindowsSetupTests(unittest.TestCase):
             }), encoding="utf-8")
             windows_setup.write_receipt(home, {
                 "schema": 1,
+                "protocol": 5,
                 "platform": "windows",
                 "home": str(home),
                 "suite": str(suite),
@@ -351,6 +410,7 @@ class WindowsSetupTests(unittest.TestCase):
             (component / "extension").mkdir(parents=True)
             windows_setup.write_receipt(home, {
                 "schema": 1,
+                "protocol": 5,
                 "platform": "windows",
                 "home": str(home),
                 "components": {"web": {"path": str(component)}},
@@ -461,7 +521,7 @@ class WindowsSetupTests(unittest.TestCase):
                     encoding="utf-8"
                 )
             )
-            self.assertEqual(manifest["installer"], "windows-setup")
+            self.assertEqual(manifest["installer"], "agent-install-protocol-5")
             self.assertEqual(manifest["install_id"], receipt["install_id"])
             self.assertTrue((wiki / "schema.md").is_file())
 
@@ -568,11 +628,18 @@ class WindowsSetupTests(unittest.TestCase):
             tool.parent.mkdir(parents=True)
             tool.write_text("#!/bin/sh\nexit 7\n", encoding="utf-8")
             tool.chmod(tool.stat().st_mode | stat.S_IXUSR)
+            ffmpeg = tool.with_name("ffmpeg.exe")
+            ffmpeg.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            ffmpeg.chmod(ffmpeg.stat().st_mode | stat.S_IXUSR)
             windows_setup.write_receipt(home, {
                 "schema": 1,
+                "protocol": 5,
                 "platform": "windows",
                 "home": str(home.resolve()),
-                "tools": {"yt-dlp": {"argv": [str(tool)]}},
+                "tools": {
+                    "yt-dlp": {"argv": [str(tool)]},
+                    "ffmpeg": {"argv": [str(ffmpeg)]},
+                },
                 "python_profiles": {},
             })
             self.assertEqual(windows_setup.run_managed_tool("yt-dlp", [], home), 7)
@@ -630,6 +697,7 @@ class ManagedToolListingTests(unittest.TestCase):
         tool.write_text("", encoding="utf-8")
         windows_setup.write_receipt(home, {
             "schema": 1,
+            "protocol": 5,
             "platform": "windows",
             "home": str(home.resolve()),
             "tools": {"yt-dlp": {"argv": [str(tool)]}, "gone": {"argv": ["missing.exe"]}},

@@ -21,9 +21,6 @@ from __future__ import annotations
 import argparse
 import functools
 import json
-import os
-import platform
-import shutil
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -31,7 +28,6 @@ from pathlib import Path
 
 from tool_runtime import (
     ToolRuntimeError,
-    is_windows,
     resolve_command_argv,
     resolve_python,
 )
@@ -84,68 +80,19 @@ def load_catalog(path: Path | str | None = None) -> dict:
             not isinstance(windows_component, str) or not windows_component
         ):
             raise ValueError(f"invalid windows_component: {name}")
-        installs = spec.get("install")
-        if installs is None:
-            continue
-        if not isinstance(installs, dict):
-            raise ValueError(f"invalid install recipes: {name}")
-        for field in ("step_timeout_seconds", "postcheck_timeout_seconds"):
-            if not isinstance(spec.get(field), int) or spec[field] <= 0:
-                raise ValueError(f"invalid {field}: {name}")
-        postcheck = spec.get("postcheck")
-        if (
-            not isinstance(postcheck, list)
-            or not postcheck
-            or any(not isinstance(arg, str) or not arg for arg in postcheck)
-        ):
-            raise ValueError(f"invalid postcheck: {name}")
-        valid_platforms = {
-            "darwin", "darwin-brew", "linux", "linux-apt", "linux-apt-root",
-            "linux-dnf", "linux-dnf-root", "linux-pacman", "linux-pacman-root",
-            "windows", "windows-winget",
-        }
-        route_ecosystem = spec.get("route_ecosystem", {})
-        if not isinstance(route_ecosystem, dict) or any(
-            key not in valid_platforms
-            or value not in {"github", "pypi", "npm", "huggingface", "system"}
-            for key, value in route_ecosystem.items()
-        ):
-            raise ValueError(f"invalid route_ecosystem: {name}")
-        for os_name, routes in installs.items():
-            if os_name not in valid_platforms or not isinstance(routes, dict):
-                raise ValueError(f"invalid install platform for {name}: {os_name}")
-            for route, recipe in routes.items():
-                if route not in {"global", "cn"} or not isinstance(recipe, dict):
-                    raise ValueError(f"invalid install route for {name}: {os_name}/{route}")
-                steps = recipe.get("steps")
-                if not isinstance(steps, list) or not steps or any(
-                    not isinstance(step, list)
-                    or not step
-                    or any(not isinstance(arg, str) or not arg for arg in step)
-                    for step in steps
-                ):
-                    raise ValueError(f"invalid argv steps for {name}: {os_name}/{route}")
-                env = recipe.get("env", {})
-                if not isinstance(env, dict) or any(
-                    not isinstance(key, str) or not isinstance(value, str)
-                    for key, value in env.items()
-                ):
-                    raise ValueError(f"invalid install env for {name}: {os_name}/{route}")
-                if "self_probing" in recipe and not isinstance(
-                    recipe["self_probing"], bool
-                ):
-                    raise ValueError(
-                        f"invalid self_probing for {name}: {os_name}/{route}"
-                    )
-                recipe_postcheck = recipe.get("postcheck")
-                if recipe_postcheck is not None and (
-                    not isinstance(recipe_postcheck, list)
-                    or not recipe_postcheck
-                    or any(not isinstance(arg, str) or not arg for arg in recipe_postcheck)
-                ):
-                    raise ValueError(
-                        f"invalid recipe postcheck for {name}: {os_name}/{route}"
-                    )
+        if "install" in spec:
+            raise ValueError(f"legacy global install recipe is forbidden: {name}")
+        if windows_component is not None:
+            for field in ("step_timeout_seconds", "postcheck_timeout_seconds"):
+                if not isinstance(spec.get(field), int) or spec[field] <= 0:
+                    raise ValueError(f"invalid {field}: {name}")
+            postcheck = spec.get("postcheck")
+            if (
+                not isinstance(postcheck, list)
+                or not postcheck
+                or any(not isinstance(arg, str) or not arg for arg in postcheck)
+            ):
+                raise ValueError(f"invalid postcheck: {name}")
     return data
 
 
@@ -173,29 +120,9 @@ def profile_tool_names(catalog: dict, profiles: list[str]) -> list[str]:
 
 def command_tool(spec: dict, name: str) -> str:
     """Return the executable only after its declared postcheck succeeds."""
-    prefix: list[str] = []
-    if is_windows():
-        try:
-            prefix = resolve_command_argv(name)
-        except ToolRuntimeError:
-            return ""
-    else:
-        path = shutil.which(name)
-        if path:
-            prefix = [path]
-    if not prefix and not is_windows():
-        # Portable installs (e.g. fetch_ffmpeg.py) live in declared well-known
-        # directories rather than on PATH.
-        extra_dirs = [
-            str(Path(entry).expanduser())
-            for entry in (spec.get("probe") or {}).get("extra_paths", [])
-        ]
-        extra_dirs = [entry for entry in extra_dirs if Path(entry).is_dir()]
-        if extra_dirs:
-            path = shutil.which(name, path=os.pathsep.join(extra_dirs))
-            if path:
-                prefix = [path]
-    if not prefix:
+    try:
+        prefix = resolve_command_argv(name)
+    except ToolRuntimeError:
         return ""
     postcheck = spec.get("postcheck") or [name, "--help"]
     if not isinstance(postcheck, list) or not postcheck:
@@ -217,27 +144,14 @@ def command_tool(spec: dict, name: str) -> str:
     return prefix[0] if len(prefix) == 1 else json.dumps(prefix, ensure_ascii=False)
 
 
-_ASR_VENV = Path.home() / ".local" / "share" / "llm-wiki" / "asr-venv"
-ASR_VENV_PYTHON = _ASR_VENV / (
-    "Scripts/python.exe" if os.name == "nt" else "bin/python"
-)
-
-
 @functools.lru_cache(maxsize=None)
 def _module_python(module: str) -> str:
     """Return an interpreter that can import ``module``, or ""."""
-    if is_windows():
-        profile = {"funasr": "asr-zh", "faster_whisper": "asr-other"}.get(module)
-        try:
-            candidates = [resolve_python(profile)] if profile else []
-        except ToolRuntimeError:
-            candidates = []
-    else:
-        candidates = [
-            os.environ.get("LLM_WIKI_ASR_PYTHON", ""),
-            str(ASR_VENV_PYTHON),
-            sys.executable,
-        ]
+    profile = {"funasr": "asr-zh", "faster_whisper": "asr-other"}.get(module)
+    try:
+        candidates = [resolve_python(profile)] if profile else []
+    except ToolRuntimeError:
+        candidates = []
     seen = set()
     for candidate in candidates:
         if not candidate or candidate in seen:
@@ -281,152 +195,39 @@ def network_routes(timeout: float = 3.0) -> dict[str, str]:
     return defaults
 
 
-def platform_keys() -> list[str]:
-    system = platform.system().lower()
-    if system == "darwin":
-        return (["darwin-brew", "darwin"] if shutil.which("brew") else ["darwin"])
-    if system == "windows":
-        return (["windows-winget", "windows"] if shutil.which("winget") else ["windows"])
-    if system == "linux":
-        root = hasattr(os, "geteuid") and os.geteuid() == 0
-        sudo = shutil.which("sudo") is not None
-        for manager in ("apt-get", "dnf", "pacman"):
-            if shutil.which(manager) and (root or sudo):
-                suffix = manager.removesuffix("-get")
-                key = f"linux-{suffix}{'-root' if root else ''}"
-                return [key, "linux"]
-        return ["linux"]
-    return []
-
-
-def _replace_placeholders(value, replacements: dict[str, str]):
-    if isinstance(value, str):
-        for name, replacement in replacements.items():
-            value = value.replace("{" + name + "}", replacement)
-        return value
-    if isinstance(value, list):
-        return [_replace_placeholders(item, replacements) for item in value]
-    if isinstance(value, dict):
-        return {key: _replace_placeholders(item, replacements) for key, item in value.items()}
-    return value
-
-
 def install_recipe(spec: dict, routes: dict[str, str]) -> dict | None:
-    if platform.system().lower() == "windows":
-        component = spec.get("windows_component")
-        if not isinstance(component, str) or not component:
-            return None
-        setup = Path.home() / ".my-llm-wiki" / "setup" / "My-LLM-Wiki-Setup.exe"
-        return {
-            "step_timeout_seconds": spec["step_timeout_seconds"],
-            "postcheck_timeout_seconds": spec["postcheck_timeout_seconds"],
-            "route": "windows-setup",
-            "platform": "windows-setup",
-            "reason": "Windows toolchains are managed only by My-LLM-Wiki-Setup.exe",
-            "component": component,
-            "steps": [[str(setup), "components", "install", "--component", component]],
-            "env": {},
-            "runtime_env": {},
-            "unavailable_runtime": [],
-            "postcheck": [str(setup), "components", "doctor", "--component", component],
-        }
-    installs = spec.get("install")
-    if not isinstance(installs, dict):
+    """Describe the Protocol 5 component choice needed for a missing tool.
+
+    Doctor is diagnostic only. It must never revive the pre-v5 global
+    pip/npm/Homebrew/apt/winget recipes or create a second mutation path.
+    """
+    component = spec.get("windows_component")
+    if not isinstance(component, str) or not component:
         return None
-    replacements = {
-        "python": sys.executable,
-        "asr_venv": str(_ASR_VENV),
-        "asr_python": str(ASR_VENV_PYTHON),
-        "suite": str(SKILL_DIR.parents[1]),
-    }
-    execution = {
+    runtime_env: dict[str, str] = {}
+    unavailable_runtime: list[str] = []
+    for ecosystem in spec.get("runtime_ecosystems", []):
+        route = routes.get(ecosystem, "unavailable")
+        if route == "unavailable":
+            unavailable_runtime.append(ecosystem)
+            continue
+        overlay = ((spec.get("runtime_env") or {}).get(ecosystem) or {}).get(route) or {}
+        runtime_env.update(overlay)
+    return {
         "step_timeout_seconds": spec["step_timeout_seconds"],
         "postcheck_timeout_seconds": spec["postcheck_timeout_seconds"],
-    }
-    missing_prerequisites = [
-        command for command in spec.get("install_requires", [])
-        if shutil.which(command) is None
-    ]
-    if missing_prerequisites:
-        return {
-            **execution,
-            "route": "unavailable",
-            "reason": "missing install prerequisite(s): " + ", ".join(missing_prerequisites),
-            "steps": [],
-            "env": {},
-            "runtime_env": {},
-            "unavailable_runtime": [],
-            "postcheck": _replace_placeholders(spec.get("postcheck", []), replacements),
-        }
-    selected_platform = next(
-        (key for key in platform_keys() if isinstance(installs.get(key), dict)), None
-    )
-    if selected_platform is None:
-        return {
-            **execution,
-            "route": "unavailable",
-            "reason": f"no install recipe for {platform.system()} on this machine",
-            "steps": [],
-            "env": {},
-            "runtime_env": {},
-            "unavailable_runtime": [],
-            "postcheck": _replace_placeholders(spec.get("postcheck", []), replacements),
-        }
-    # A platform recipe may depend on a different ecosystem than the tool's
-    # own (winget's ffmpeg payload downloads from GitHub Releases); route by
-    # the declared override so a restricted network selects the cn recipe.
-    ecosystem = (spec.get("route_ecosystem") or {}).get(
-        selected_platform, spec.get("ecosystem", "system")
-    )
-    route = routes.get(ecosystem, "unavailable")
-    platform_recipes = installs[selected_platform]
-    # A cn recipe marked self_probing carries its own channel probing and
-    # fallbacks (e.g. fetch_ffmpeg.py: gyan.dev → project relay), so the
-    # probed ecosystem being unreachable does not dead-end the tool — the
-    # recipe is still worth proposing and fails with an actionable error.
-    if (
-        route == "unavailable"
-        and isinstance(platform_recipes.get("cn"), dict)
-        and platform_recipes["cn"].get("self_probing") is True
-    ):
-        route = "cn"
-    if route == "unavailable":
-        return {
-            **execution,
-            "route": route,
-            "reason": f"{ecosystem} has no reachable global or cn route",
-            "steps": [],
-            "env": {},
-            "runtime_env": {},
-            "unavailable_runtime": [],
-            "postcheck": _replace_placeholders(spec.get("postcheck", []), replacements),
-        }
-    if route not in platform_recipes:
-        raise ValueError(
-            f"no {selected_platform}/{route} install recipe for {spec.get('description', 'tool')}"
-        )
-    recipe = _replace_placeholders(platform_recipes[route], replacements)
-    env = dict(recipe.get("env", {}))
-    selected_runtime_env = {}
-    unavailable_runtime = []
-    runtime_env = spec.get("runtime_env") or {}
-    for runtime_ecosystem in spec.get("runtime_ecosystems", []):
-        runtime_route = routes.get(runtime_ecosystem, "unavailable")
-        if runtime_route == "unavailable":
-            unavailable_runtime.append(runtime_ecosystem)
-            continue
-        overlay = (runtime_env.get(runtime_ecosystem) or {}).get(runtime_route) or {}
-        selected_runtime_env.update(_replace_placeholders(overlay, replacements))
-    return {
-        **execution,
-        "route": route,
-        "platform": selected_platform,
-        "steps": recipe.get("steps", []),
-        "env": env,
-        "runtime_env": selected_runtime_env,
+        "route": "protocol-5-plan",
+        "platform": "protocol-5",
+        "reason": (
+            f"managed component {component!r} is not selected or is unhealthy; "
+            "create and confirm a new Protocol 5 plan that includes it"
+        ),
+        "component": component,
+        "steps": [],
+        "env": {},
+        "runtime_env": runtime_env,
         "unavailable_runtime": unavailable_runtime,
-        "postcheck": recipe.get("postcheck")
-        or _replace_placeholders(spec.get("postcheck", []), replacements),
+        "postcheck": [],
     }
 
 
@@ -569,10 +370,7 @@ def assess_profiles(
                 )
 
         elif profile == "capture.video":
-            asr = (
-                "faster-whisper" if have("faster-whisper")
-                else "whisper" if have("whisper") else ""
-            )
+            asr = "faster-whisper" if have("faster-whisper") else ""
             asr_any = bool(asr) or have("sensevoice")
             if asr and have("sensevoice"):
                 asr_desc = f"zh→SenseVoice, else {asr}"

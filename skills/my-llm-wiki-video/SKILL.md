@@ -36,14 +36,11 @@ If the check fails, stop and install `my-llm-wiki`; do not duplicate or improvis
 the core. Suite installs declare this runtime dependency and install it
 automatically.
 
-On Windows, inherit the sibling core's **Use the platform command runner**
-rule for every command in this skill and its references. Resolve the sibling
-with native paths, then run core/video scripts through
-`My-LLM-Wiki-Setup.exe python run --profile core -- ...`; use profile
-`asr-zh` or `asr-other` for the matching ASR runner, and invoke opencli,
-yt-dlp, and ffmpeg through `My-LLM-Wiki-Setup.exe tools run <tool> -- ...`.
-Never reinterpret the macOS/Linux `python3` or bare-tool examples as permission
-to use global PATH on Windows.
+Inherit the sibling core's **Use the receipt-managed command runner** rule for
+every command in this skill and its references. On macOS/Linux use
+`tool_exec.py`; on Windows use Setup `tools run` / `python run`. The ASR
+runners select their receipt-owned Python profile themselves. Never reinterpret
+a bare-tool example as permission to use global PATH on any platform.
 
 ## Workflow
 
@@ -56,8 +53,8 @@ to use global PATH on Windows.
    `python3 "$CORE_SKILL/scripts/preflight.py" --profile capture.video` and
    inspect `capabilities.capture.video`.
    Use captions first; when captions are absent, require audio download,
-   `ffmpeg`, and a language-appropriate local ASR backend. Relay install hints
-   with their project URLs. When installs are blocked or slow, use `cn-mirrors`.
+   `ffmpeg`, and a language-appropriate local ASR backend. If one is absent,
+   return to a single Protocol 5 selection that includes its managed component.
 3. **Probe metadata without executable pipes.** Run
    `python3 "$VIDEO_SKILL/scripts/video_probe.py" --url <url> --output <temp>/metadata.json`.
    Retry with `--cookies-from-browser <browser>` only after a real auth/bot wall

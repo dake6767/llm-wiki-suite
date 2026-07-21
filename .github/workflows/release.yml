@@ -62,7 +62,7 @@ jobs:
               // quarantine：Gatekeeper 提示「无法验证开发者」，需到系统设置里「仍要打开」；
               // 右键打开对这种情况不适用（老文案误导，v1.0.5 起修正）。脚本/更新器下载
               // 不带 quarantine，无此步。
-              body: 'Windows agent/skills/toolchain 请下载 My-LLM-Wiki-Setup.exe；它不要求预装 Git、Python、Node、npm、pip 或 winget，并按 component-manifest.json 的 SHA-256 安装受管组件。Browser 仍提供各平台安装包，Windows 另有免安装 portable zip（需 WebView2）。产物未做 Apple 公证 / Windows Authenticode 代码签名：macOS 首次运行按系统提示到 隐私与安全性 → 仍要打开；Windows SmartScreen 选择仍要运行。',
+              body: 'Protocol 5 由 agent 一次呈现宿主、skills、受管组件与 Browser 选项，确认后通过 inspect/plan/apply 无人值守安装。Windows agent 使用 My-LLM-Wiki-Setup.exe 的 headless 命令，不要求 Git、Python、Node、npm、pip、winget 或 Git Bash；GUI 仅作为恢复入口。macOS/Linux 组件是本 Release 中按平台构建并经 SHA-256 固定的私有运行时包，不调用全局 pip/npm/brew/sudo。Browser 仍提供各平台安装包，Windows 另有 portable zip（需 WebView2）。产物未做 Apple 公证 / Windows Authenticode 代码签名：macOS 首次运行按系统提示到 隐私与安全性 → 仍要打开；Windows SmartScreen 选择仍要运行。',
               draft: true,
               prerelease: false,
             });
@@ -125,6 +125,72 @@ jobs:
               --data-binary "@$($file.FullName)" `
               "https://uploads.github.com/repos/${{ github.repository }}/releases/$env:RELEASE_ID/assets?name=$name"
           }
+
+  build-agent-components:
+    needs: create-release
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            artifact: linux-x64
+            components: documents,web,video,asr-zh,asr-other
+          - os: macos-15
+            artifact: darwin-arm64
+            components: documents,web,video,asr-zh,asr-other
+          - os: macos-15-intel
+            artifact: darwin-x64
+            components: documents,web,video,asr-other
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.10'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.10.0'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.1'
+      - name: Build and postcheck managed agent components
+        run: |
+          python3 scripts/build_agent_components.py \
+            --release-tag "${{ github.ref_name }}" \
+            --dist agent-component-dist \
+            --components "${{ matrix.components }}"
+      - name: Write component checksums
+        shell: bash
+        run: |
+          cd agent-component-dist
+          shasum -a 256 * > "SHA256SUMS-agent-components-${{ matrix.artifact }}.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-components-${{ matrix.artifact }}-${{ github.ref_name }}
+          path: agent-component-dist/*
+          retention-days: 14
+      - name: Upload component assets to draft release
+        if: needs.create-release.outputs.release_id != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
+        run: |
+          set -euo pipefail
+          existing="$(gh api "repos/${{ github.repository }}/releases/$RELEASE_ID/assets")"
+          for file in agent-component-dist/*; do
+            name="$(basename "$file")"
+            asset_id="$(printf '%s' "$existing" | jq -r --arg name "$name" '.[] | select(.name == $name) | .id' | head -1)"
+            if [ -n "$asset_id" ]; then
+              gh api --method DELETE "repos/${{ github.repository }}/releases/assets/$asset_id"
+            fi
+            gh api --method POST \
+              -H 'Content-Type: application/octet-stream' \
+              --input "$file" \
+              "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=$name"
+          done
 
   build:
     needs: create-release
