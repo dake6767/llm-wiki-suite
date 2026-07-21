@@ -125,7 +125,7 @@ MCP 不属于初始安装；只有用户之后明确提出时才单独配置。
 | [`my-llm-wiki-maintainer`](skills/my-llm-wiki-maintainer/SKILL.md) | 编译、Review、Research、去重与 lint | Stable |
 | [`my-llm-wiki-search`](skills/my-llm-wiki-search/SKILL.md) | 只读检索、引用回答和上下文预算 | Preview |
 | [`cn-mirrors`](skills/cn-mirrors/SKILL.md) | 受限网络探测与分生态镜像路由 | Stable |
-| [`My LLM Wiki Browser`](apps/my-llm-wiki-browser/) | 阅读、FTS、MCP、远程访问与分享 | Released · v1.0.33 |
+| [`My LLM Wiki Browser`](apps/my-llm-wiki-browser/) | 阅读、FTS、MCP、远程访问与分享 | Released · v1.0.34 |
 
 Preview 表示能力已在 suite 中参与安装，但平台覆盖或独立发布仍在收敛。实际生命周期、依赖
 和 capability 以 [`registry/skills.json`](registry/skills.json) 为准。

@@ -153,6 +153,7 @@ def build_runtime(lock: dict, source: Path, work: Path, dist: Path, system: str,
 
 
 def pip_target(python: Path, stage: Path, packages: list[str]) -> None:
+    stage.mkdir(parents=True, exist_ok=True)
     site = stage / "site"
     report = stage / "pip-report.json"
     checked(

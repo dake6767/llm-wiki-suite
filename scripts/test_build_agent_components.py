@@ -6,6 +6,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 from scripts import build_agent_components as builder
 
@@ -38,6 +39,17 @@ class AgentComponentBuilderTests(unittest.TestCase):
         lock = json.loads(builder.LOCK.read_text(encoding="utf-8"))
         self.assertIn("ext.", builder.component_version("web", lock["components"]["web"]))
         self.assertIn("yt-dlp", builder.component_version("video", lock["components"]["video"]))
+
+    def test_pip_target_creates_stage_before_invocation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            builder, "checked"
+        ) as checked:
+            stage = Path(tmp) / "documents"
+            builder.pip_target(Path("/private/python"), stage, ["example==1.0"])
+            self.assertTrue(stage.is_dir())
+            argv = checked.call_args.args[0]
+            self.assertIn(str(stage / "site"), argv)
+            self.assertIn(str(stage / "pip-report.json"), argv)
 
 
 if __name__ == "__main__":
