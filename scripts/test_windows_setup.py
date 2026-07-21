@@ -474,6 +474,60 @@ class WindowsSetupTests(unittest.TestCase):
             self.assertFalse((home / "runtime").exists())
             self.assertTrue(wiki.exists(), "purge must preserve user Wikis")
 
+    def test_custom_skills_directory_installs_and_uninstalls(self) -> None:
+        """A user-picked skills directory is owned like a registry host."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            payload, _, _ = self.make_payload(root)
+            home = root / "managed-home"
+            picked = root / "picked-skills"
+            status = windows_setup.install_flow(
+                hosts=[],
+                custom_targets=[str(picked)],
+                components=[],
+                home=home,
+                payload=payload,
+                asset_dir=None,
+                allow_test_platform=True,
+                skip_postcheck=True,
+            )
+            self.assertEqual(status, 0)
+            receipt = windows_setup.read_receipt(home)
+            self.assertEqual(receipt["hosts"], [])
+            self.assertEqual(receipt["custom_targets"], [str(picked)])
+            self.assertTrue((picked / "my-llm-wiki" / "SKILL.md").is_file())
+
+            with self.assertRaisesRegex(windows_setup.SetupError, "not owned"):
+                windows_setup.uninstall_hosts(
+                    [], home, payload, custom_targets=[str(root / "elsewhere")]
+                )
+            self.assertEqual(
+                windows_setup.uninstall_hosts(
+                    [], home, payload, custom_targets=[str(picked)]
+                ),
+                0,
+            )
+            self.assertFalse((picked / "my-llm-wiki").exists())
+            self.assertEqual(
+                windows_setup.read_receipt(home)["custom_targets"], []
+            )
+
+    def test_install_requires_a_host_or_a_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            payload, _, _ = self.make_payload(root)
+            with self.assertRaisesRegex(windows_setup.SetupError, "at least one"):
+                windows_setup.install_flow(
+                    hosts=[],
+                    custom_targets=[],
+                    components=[],
+                    home=root / "managed-home",
+                    payload=payload,
+                    asset_dir=None,
+                    allow_test_platform=True,
+                    skip_postcheck=True,
+                )
+
     def test_foreign_skill_stops_before_replacement(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

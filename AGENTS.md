@@ -37,7 +37,10 @@ https://github.com/dake6767/llm-wiki-suite/releases/latest/download/My-LLM-Wiki-
 
 The Setup UI must show every `registry/bootstrap.json` → `agent_hosts` entry
 with expanded skills path and detection state, start with no host selected,
-and require at least one explicit selection. It installs immutable skill
+and require at least one explicit selection. It also offers a directory picker
+for a skills directory the registry does not name; picking a path selects it,
+and it is recorded in the receipt as `custom_targets` so doctor and uninstall
+can address it. It installs immutable skill
 copies plus a private CPython core under `~/.my-llm-wiki`, and may install the
 pinned Documents, Web, Video, Chinese ASR, and non-Chinese ASR components.
 Windows skills resolve external tools exclusively from the atomic Setup
@@ -102,7 +105,7 @@ bash bootstrap.sh --host codex --host claude my-llm-wiki-video
 `--custom-target DIR` is only for a real host not represented by the registry.
 Never translate a known host into a custom path, create unselected agent homes,
 or infer consent from stale `~/.codex`, `~/.claude`, `~/.hermes`, `~/.agents`,
-or `~/.workbuddy` directories.
+`~/.workbuddy`, or `~/.openclaw` directories.
 
 ## 2. Release-First Entry Point
 

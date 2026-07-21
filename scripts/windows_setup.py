@@ -1127,10 +1127,17 @@ def rollback_skill_plan(install, plan: dict) -> None:
             emit("rollback-error", destination=str(destination), error=str(exc))
 
 
-def doctor_command(runtime: Path, suite: Path, hosts: list[str]) -> list[str]:
+def doctor_command(
+    runtime: Path,
+    suite: Path,
+    hosts: list[str],
+    custom_targets: list[str] | None = None,
+) -> list[str]:
     command = [str(runtime / "python.exe"), str(suite / "scripts" / "doctor.py")]
     for host in hosts:
         command += ["--host", host]
+    for target in custom_targets or []:
+        command += ["--custom-target", target]
     return command
 
 
@@ -1141,7 +1148,10 @@ def run_doctor_capture(home: Path) -> tuple[int, str]:
         return 2, "Setup receipt is missing; run the install first."
     result = subprocess.run(
         doctor_command(
-            Path(receipt["runtime"]), Path(receipt["suite"]), list(receipt.get("hosts", []))
+            Path(receipt["runtime"]),
+            Path(receipt["suite"]),
+            list(receipt.get("hosts", [])),
+            list(receipt.get("custom_targets", [])),
         ),
         stdin=subprocess.DEVNULL,
         text=True,
@@ -1220,9 +1230,15 @@ def browser_bridge_extension_dir(home: Path) -> Path | None:
     return extension if extension.is_dir() else None
 
 
-def run_doctor(runtime: Path, suite: Path, hosts: list[str], home: Path) -> int:
+def run_doctor(
+    runtime: Path,
+    suite: Path,
+    hosts: list[str],
+    home: Path,
+    custom_targets: list[str] | None = None,
+) -> int:
     result = subprocess.run(
-        doctor_command(runtime, suite, hosts),
+        doctor_command(runtime, suite, hosts, custom_targets),
         stdin=subprocess.DEVNULL,
         text=True,
         encoding="utf-8",
@@ -1254,6 +1270,7 @@ def build_receipt(
     runtime: Path,
     pack_version: str,
     hosts: list[str],
+    custom_targets: list[str],
     components: dict[str, dict],
 ) -> dict:
     tools: dict[str, dict] = {}
@@ -1283,6 +1300,12 @@ def build_receipt(
         "runtime": str(runtime),
         "pack_version": pack_version,
         "hosts": sorted(set([*(old or {}).get("hosts", []), *hosts])),
+        # Explicit skills directories the user picked in the UI. Kept beside
+        # ``hosts`` (not folded into it) so uninstall and doctor can address a
+        # path that no registry host id names.
+        "custom_targets": sorted(
+            set([*(old or {}).get("custom_targets", []), *custom_targets])
+        ),
         "components": component_rows,
         "tools": tools,
         "python_profiles": profiles,
@@ -1294,6 +1317,7 @@ def build_receipt(
 def install_flow(
     *,
     hosts: list[str],
+    custom_targets: list[str] | None = None,
     components: list[str],
     home: Path,
     payload: Path,
@@ -1305,8 +1329,9 @@ def install_flow(
 ) -> int:
     validate_platform(allow_test_platform)
     rows = {row["id"]: row for row in host_rows(payload)}
-    if not hosts:
-        raise SetupError("select at least one agent host")
+    custom_targets = list(dict.fromkeys(custom_targets or []))
+    if not hosts and not custom_targets:
+        raise SetupError("select at least one agent host or skills directory")
     unknown = sorted(set(hosts) - set(rows))
     if unknown:
         raise SetupError("unknown host(s): " + ", ".join(unknown))
@@ -1364,6 +1389,7 @@ def install_flow(
         runtime=runtime,
         pack_version=pack_version,
         hosts=hosts,
+        custom_targets=custom_targets,
         components=component_states,
     )
     install, initialize = import_suite_modules(suite)
@@ -1373,7 +1399,9 @@ def install_flow(
     plan = None
     try:
         with install.install_lock(config):
-            plan = install.build_plan(config, registry, hosts, [], [], "copy", True)
+            plan = install.build_plan(
+                config, registry, hosts, custom_targets, [], "copy", True
+            )
             # A digest-current generic v4 copy is not current for the Windows
             # hard-cutover contract. Every selected copy must carry this
             # receipt's install_id, otherwise repair it through backup/replace.
@@ -1409,7 +1437,11 @@ def install_flow(
             )
         if not skip_postcheck:
             notify_progress(phase="正在运行 doctor 检查")
-        doctor_status = 0 if skip_postcheck else run_doctor(runtime, suite, hosts, home)
+        doctor_status = (
+            0
+            if skip_postcheck
+            else run_doctor(runtime, suite, hosts, home, custom_targets)
+        )
         if doctor_status not in {0, 3}:
             raise SetupError(f"doctor failed with status {doctor_status}")
     except Exception:
@@ -1460,6 +1492,7 @@ def install_flow(
     emit(
         "installed",
         hosts=hosts,
+        custom_targets=custom_targets,
         components=sorted(component_states),
         pack_version=pack_version,
         doctor_status=doctor_status,
@@ -1483,6 +1516,7 @@ def install_components(
         raise SetupError("install the core and at least one agent host first")
     return install_flow(
         hosts=list(old.get("hosts", [])),
+        custom_targets=list(old.get("custom_targets", [])),
         components=[*old.get("components", {}).keys(), *components],
         home=home,
         payload=payload,
@@ -1653,23 +1687,51 @@ def run_managed_python(profile: str, values: list[str], home: Path) -> int:
 
 
 def uninstall_hosts(
-    hosts: list[str], home: Path, payload: Path, *, purge: bool = False
+    hosts: list[str],
+    home: Path,
+    payload: Path,
+    *,
+    custom_targets: list[str] | None = None,
+    purge: bool = False,
 ) -> int:
     receipt = read_receipt(home)
     if receipt is None:
         raise SetupError("Windows Setup receipt is missing")
     installed_hosts = list(receipt.get("hosts", []))
-    selected = hosts or installed_hosts
+    installed_customs = list(receipt.get("custom_targets", []))
+    requested_customs = list(dict.fromkeys(custom_targets or []))
+    # No selection at all means "everything this Setup owns"; naming either
+    # kind narrows the removal to exactly what was named.
+    if hosts or requested_customs:
+        selected, selected_customs = hosts, requested_customs
+    else:
+        selected, selected_customs = installed_hosts, installed_customs
     unknown = sorted(set(selected) - set(installed_hosts))
     if unknown:
         raise SetupError("host(s) are not owned by this Setup: " + ", ".join(unknown))
-    if purge and set(selected) != set(installed_hosts):
-        raise SetupError("--purge requires uninstalling every Setup-owned host")
     suite = Path(receipt["suite"])
     install, _ = import_suite_modules(suite)
+    owned_customs = {install.expand(path) for path in installed_customs}
+    unknown_customs = sorted(
+        str(path)
+        for path in {install.expand(raw) for raw in selected_customs} - owned_customs
+    )
+    if unknown_customs:
+        raise SetupError(
+            "skills directory is not owned by this Setup: " + ", ".join(unknown_customs)
+        )
+    if purge and (
+        set(selected) != set(installed_hosts)
+        or {install.expand(raw) for raw in selected_customs} != owned_customs
+    ):
+        raise SetupError("--purge requires uninstalling every Setup-owned target")
     bootstrap = install.load_json(suite / "registry" / "bootstrap.json")
     skills = install.load_json(suite / "registry" / "skills.json")
-    targets = install.resolve_targets(bootstrap, selected, []) if selected else []
+    targets = (
+        install.resolve_targets(bootstrap, selected, selected_customs)
+        if selected or selected_customs
+        else []
+    )
     removed = []
     for target in targets:
         for skill in skills.get("skills", []):
@@ -1686,6 +1748,10 @@ def uninstall_hosts(
                 install.remove_path(destination)
                 removed.append(str(destination))
     receipt["hosts"] = [host for host in installed_hosts if host not in selected]
+    dropped = {install.expand(raw) for raw in selected_customs}
+    receipt["custom_targets"] = [
+        path for path in installed_customs if install.expand(path) not in dropped
+    ]
     receipt["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
     if purge:
         # Wikis and their registry are user data and deliberately remain.
@@ -1706,6 +1772,7 @@ def uninstall_hosts(
     emit(
         "uninstalled",
         hosts=selected,
+        custom_targets=selected_customs,
         removed=removed,
         preserved=(
             [str(home / "wikis.json")]
@@ -1847,6 +1914,32 @@ def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
             text=f"{row['id']} — {row['skills_dir']} ({suffix})",
             variable=var,
         ).pack(anchor="w", padx=(px(8), 0), pady=px(1))
+
+    # Escape hatch for a real host the registry does not name, or one whose
+    # skills directory the user has relocated. Checked automatically once a
+    # directory is picked, so choosing a path is itself the consent.
+    host_dir_var = tk.BooleanVar(value=False)
+    host_dir = tk.StringVar(value="")
+    host_dir_row = ttk.Frame(hosts_box)
+    host_dir_row.pack(fill="x", padx=(px(8), 0), pady=(px(4), 0))
+    ttk.Checkbutton(
+        host_dir_row,
+        text="其他目录 — 直接指定一个 skills 目录：",
+        variable=host_dir_var,
+    ).pack(side="left")
+
+    def browse_host_dir() -> None:
+        chosen = filedialog.askdirectory(title="选择 agent 宿主的 skills 目录")
+        if chosen:
+            host_dir.set(chosen)
+            host_dir_var.set(True)
+
+    ttk.Button(host_dir_row, text="浏览…", command=browse_host_dir).pack(
+        side="left", padx=px(8)
+    )
+    ttk.Label(hosts_box, textvariable=host_dir, style="Muted.TLabel").pack(
+        anchor="w", padx=(px(28), 0)
+    )
 
     components_box = section("工具组件")
     component_vars = {}
@@ -1990,8 +2083,18 @@ def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
     def run_install() -> None:
         hosts = [name for name, var in host_vars.items() if var.get()]
         components = [name for name, var in component_vars.items() if var.get()]
-        if not hosts:
-            messagebox.showerror("My LLM Wiki 安装程序", "请至少选择一个 agent 宿主。")
+        custom_targets = []
+        if host_dir_var.get():
+            if not host_dir.get():
+                messagebox.showerror(
+                    "My LLM Wiki 安装程序", "请先为「其他目录」选择一个 skills 目录。"
+                )
+                return
+            custom_targets.append(host_dir.get())
+        if not hosts and not custom_targets:
+            messagebox.showerror(
+                "My LLM Wiki 安装程序", "请至少选择一个 agent 宿主或一个 skills 目录。"
+            )
             return
         data_root = None
         if location_var.get() == "custom":
@@ -2026,6 +2129,7 @@ def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
                     ensure_data_root(home_link, data_root)
                 code = install_flow(
                     hosts=hosts,
+                    custom_targets=custom_targets,
                     components=components,
                     home=home_link.resolve(),
                     payload=payload,
@@ -2221,11 +2325,19 @@ def parser() -> argparse.ArgumentParser:
 
     plan = sub.add_parser("plan", help="render an offline install plan")
     plan.add_argument("--host", action="append", default=[])
+    plan.add_argument("--custom-target", action="append", default=[])
     plan.add_argument("--component", action="append", default=[])
     plan.add_argument("--all-tools", action="store_true")
 
     install = sub.add_parser("install", help="install/update/repair core and selected components")
     install.add_argument("--host", action="append", default=[])
+    install.add_argument(
+        "--custom-target",
+        action="append",
+        default=[],
+        metavar="DIR",
+        help="install into an explicit skills directory not named by any registry host",
+    )
     install.add_argument("--component", action="append", default=[])
     install.add_argument("--all-tools", action="store_true")
     install.add_argument(
@@ -2260,6 +2372,7 @@ def parser() -> argparse.ArgumentParser:
 
     uninstall = sub.add_parser("uninstall", help="remove Setup-owned agent skill copies")
     uninstall.add_argument("--host", action="append", default=[])
+    uninstall.add_argument("--custom-target", action="append", default=[], metavar="DIR")
     uninstall.add_argument(
         "--purge",
         action="store_true",
@@ -2300,6 +2413,7 @@ def main(argv: list[str] | None = None) -> int:
                 "status": "planned",
                 "platform": "windows",
                 "hosts": args.host,
+                "custom_targets": args.custom_target,
                 "components": [
                     row for row in component_choices(manifest) if row["id"] in selected
                 ],
@@ -2311,6 +2425,7 @@ def main(argv: list[str] | None = None) -> int:
             selected = all_components if args.all_tools else list(dict.fromkeys(args.component))
             return install_flow(
                 hosts=list(dict.fromkeys(args.host)),
+                custom_targets=list(dict.fromkeys(args.custom_target)),
                 components=selected,
                 home=home,
                 payload=payload,
@@ -2350,7 +2465,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "uninstall":
             validate_platform(args.allow_test_platform)
             return uninstall_hosts(
-                list(dict.fromkeys(args.host)), home, payload, purge=args.purge
+                list(dict.fromkeys(args.host)),
+                home,
+                payload,
+                custom_targets=list(dict.fromkeys(args.custom_target)),
+                purge=args.purge,
             )
         raise SetupError(f"unsupported command: {args.command}")
     except SetupError as exc:
