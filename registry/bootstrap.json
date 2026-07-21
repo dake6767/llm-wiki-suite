@@ -25,7 +25,7 @@
   "agent_installer": {
     "protocol": 5,
     "entrypoint": "scripts/agent_install.py",
-    "release_tag": "v1.0.36",
+    "release_tag": "v1.0.37",
     "component_lock": "registry/agent-components.lock.json",
     "component_manifest_asset": "My-LLM-Wiki-Agent-Components_{platform}_{arch}.json",
     "release_sources": [

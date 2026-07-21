@@ -19,6 +19,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 LOCK = ROOT / "registry" / "agent-components.lock.json"
+RELEASE_PART_BYTES = 1_900_000_000
 
 
 class BuildError(RuntimeError):
@@ -55,6 +56,49 @@ def sha256_file(path: Path) -> str:
 def expanded_zip_size(path: Path) -> int:
     with zipfile.ZipFile(path) as bundle:
         return sum(info.file_size for info in bundle.infolist() if not info.is_dir())
+
+
+def release_archive_spec(path: Path, *, part_bytes: int = RELEASE_PART_BYTES) -> dict:
+    if part_bytes <= 0:
+        raise BuildError("release part size must be positive")
+    spec = {
+        "asset": path.name,
+        "sha256": sha256_file(path),
+        "size": path.stat().st_size,
+        "installed_size": expanded_zip_size(path),
+    }
+    if spec["size"] <= part_bytes:
+        return spec
+    parts = []
+    with path.open("rb") as source:
+        index = 1
+        while True:
+            first = source.read(min(part_bytes, 8 * 1024 * 1024))
+            if not first:
+                break
+            part = path.with_name(f"{path.name}.part{index:03d}")
+            remaining = part_bytes - len(first)
+            with part.open("wb") as destination:
+                destination.write(first)
+                while remaining:
+                    block = source.read(min(remaining, 8 * 1024 * 1024))
+                    if not block:
+                        break
+                    destination.write(block)
+                    remaining -= len(block)
+            parts.append(
+                {
+                    "asset": part.name,
+                    "sha256": sha256_file(part),
+                    "size": part.stat().st_size,
+                }
+            )
+            index += 1
+    if sum(row["size"] for row in parts) != spec["size"]:
+        raise BuildError(f"split archive size mismatch: {path}")
+    path.unlink()
+    spec["parts"] = parts
+    return spec
 
 
 def target() -> tuple[str, str]:
@@ -300,6 +344,7 @@ def main(argv: list[str] | None = None) -> int:
         work = Path(tmp)
         runtime_root, python = install_managed_python(lock, work)
         runtime_asset, runtime_version = build_runtime(lock, runtime_root, work, args.dist, system, arch)
+        runtime_spec = release_archive_spec(runtime_asset)
         assets = {}
         builders = {
             "documents": lambda spec: build_documents(spec, python, work),
@@ -312,9 +357,9 @@ def main(argv: list[str] | None = None) -> int:
             stage = builders[component](lock["components"][component])
             asset = args.dist / f"My-LLM-Wiki-Agent-{component}_{system}_{arch}.zip"
             write_zip(stage, asset)
-            assets[component] = asset
+            assets[component] = release_archive_spec(asset)
         manifest = {
-            "schema": 1,
+            "schema": 2,
             "protocol": 5,
             "release_tag": args.release_tag,
             "platform": system,
@@ -322,10 +367,7 @@ def main(argv: list[str] | None = None) -> int:
             "sources": lock["release_sources"],
             "runtime": {
                 "version": runtime_version,
-                "asset": runtime_asset.name,
-                "sha256": sha256_file(runtime_asset),
-                "size": runtime_asset.stat().st_size,
-                "installed_size": expanded_zip_size(runtime_asset),
+                **runtime_spec,
             },
             "components": {},
         }
@@ -336,10 +378,7 @@ def main(argv: list[str] | None = None) -> int:
                 "description": spec["description"],
                 "default": bool(spec.get("default")),
                 "version": component_version(component, spec),
-                "asset": asset.name,
-                "sha256": sha256_file(asset),
-                "size": asset.stat().st_size,
-                "installed_size": expanded_zip_size(asset),
+                **asset,
                 "tools": spec.get("tools", {}),
                 "python_profile": spec.get("python_profile"),
                 "runtime_env": spec.get("runtime_env", {}),

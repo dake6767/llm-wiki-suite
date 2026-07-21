@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "protocol": 5,
-  "release_tag": "v1.0.36",
+  "release_tag": "v1.0.37",
   "runtime": {
     "python": "3.12.10",
     "uv": "0.10.0"

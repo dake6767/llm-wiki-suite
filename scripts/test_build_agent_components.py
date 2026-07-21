@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import unittest
@@ -64,6 +65,23 @@ class AgentComponentBuilderTests(unittest.TestCase):
         self.assertEqual(
             builder.npm_lock_entry(lock, "@jackwener/opencli")["integrity"], integrity
         )
+
+    def test_large_release_archive_is_split_without_changing_logical_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = Path(tmp) / "pack.zip"
+            with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as bundle:
+                bundle.writestr("payload.bin", b"0123456789" * 20)
+            original = archive.read_bytes()
+            spec = builder.release_archive_spec(archive, part_bytes=128)
+            self.assertFalse(archive.exists())
+            self.assertGreaterEqual(len(spec["parts"]), 2)
+            rebuilt = b"".join(
+                (archive.parent / row["asset"]).read_bytes() for row in spec["parts"]
+            )
+            self.assertEqual(rebuilt, original)
+            self.assertEqual(spec["size"], len(original))
+            self.assertEqual(spec["sha256"], hashlib.sha256(original).hexdigest())
+            self.assertTrue(all(row["size"] <= 128 for row in spec["parts"]))
 
 
 if __name__ == "__main__":

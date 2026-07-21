@@ -23,7 +23,7 @@ class ManagedComponentTests(unittest.TestCase):
             "installed_size": 2,
         }
         return {
-            "schema": 1,
+            "schema": 2,
             "protocol": 5,
             "release_tag": "v-test",
             "platform": "darwin",
@@ -43,6 +43,42 @@ class ManagedComponentTests(unittest.TestCase):
                 managed_components.validate_manifest(value)
                 value["components"]["documents"]["asset"] = "../pack.zip"
                 with self.assertRaisesRegex(managed_components.ComponentError, "unsafe"):
+                    managed_components.validate_manifest(value)
+
+    def test_manifest_validates_multipart_total_and_unique_names(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            asset = Path(tmp) / "pack.zip"
+            with zipfile.ZipFile(asset, "w") as bundle:
+                bundle.writestr("file", "ok")
+            value = self.manifest(asset)
+            component = value["components"]["documents"]
+            raw = asset.read_bytes()
+            midpoint = len(raw) // 2
+            chunks = (raw[:midpoint], raw[midpoint:])
+            component["parts"] = [
+                {
+                    "asset": f"pack.zip.part{index:03d}",
+                    "sha256": hashlib.sha256(chunk).hexdigest(),
+                    "size": len(chunk),
+                }
+                for index, chunk in enumerate(chunks, 1)
+            ]
+            with mock.patch.object(managed_components, "platform_id", return_value=("darwin", "arm64")):
+                managed_components.validate_manifest(value)
+                component["parts"][1]["asset"] = component["parts"][0]["asset"]
+                with self.assertRaisesRegex(managed_components.ComponentError, "unsafe"):
+                    managed_components.validate_manifest(value)
+
+    def test_manifest_requires_oversized_release_assets_to_be_split(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            asset = Path(tmp) / "pack.zip"
+            asset.write_bytes(b"pack")
+            value = self.manifest(asset)
+            value["components"]["documents"]["size"] = (
+                managed_components.MAX_RELEASE_PART_BYTES + 1
+            )
+            with mock.patch.object(managed_components, "platform_id", return_value=("darwin", "arm64")):
+                with self.assertRaisesRegex(managed_components.ComponentError, "must be split"):
                     managed_components.validate_manifest(value)
 
     def test_safe_extract_rejects_traversal_and_symlink(self) -> None:
@@ -95,6 +131,39 @@ class ManagedComponentTests(unittest.TestCase):
                 with self.assertRaisesRegex(managed_components.ComponentError, "verification"):
                     managed_components._download(spec, plan, root / "home")
 
+    def test_multipart_local_assets_are_streamed_and_verified(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            chunks = (b"first-part", b"second-part")
+            content = b"".join(chunks)
+            parts = []
+            for index, chunk in enumerate(chunks, 1):
+                path = root / f"pack.zip.part{index:03d}"
+                path.write_bytes(chunk)
+                parts.append(
+                    {
+                        "asset": path.name,
+                        "sha256": hashlib.sha256(chunk).hexdigest(),
+                        "size": len(chunk),
+                    }
+                )
+            spec = {
+                "version": "1",
+                "asset": "pack.zip",
+                "size": len(content),
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "installed_size": 1,
+                "parts": parts,
+            }
+            plan = {"release_tag": "v", "sources": []}
+            with mock.patch.dict(
+                managed_components.os.environ,
+                {"LLM_WIKI_COMPONENT_ASSET_DIR": str(root)},
+            ):
+                assembled = managed_components._download(spec, plan, root / "home")
+            self.assertEqual(assembled.read_bytes(), content)
+            self.assertTrue(all((root / row["asset"]).is_file() for row in parts))
+
     def test_remove_owned_refuses_unmarked_component(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
@@ -137,6 +206,31 @@ class ManagedComponentTests(unittest.TestCase):
                 with self.assertRaisesRegex(managed_components.ComponentError, "insufficient"):
                     managed_components.install_selected(plan, home)
             download.assert_not_called()
+
+    def test_disk_preflight_accounts_for_multipart_assembly(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            plan = {
+                "runtime": None,
+                "items": [
+                    {
+                        "id": "asr-zh",
+                        "version": "1",
+                        "size": 20,
+                        "installed_size": 30,
+                        "parts": [{"asset": "one"}, {"asset": "two"}],
+                    }
+                ],
+            }
+            self.assertEqual(
+                managed_components._required_space(plan, home),
+                {
+                    "download_bytes": 20,
+                    "assembly_bytes": 20,
+                    "installed_bytes": 30,
+                    "required_bytes": 70,
+                },
+            )
 
 
 if __name__ == "__main__":

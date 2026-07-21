@@ -19,10 +19,12 @@ from pathlib import Path
 from typing import Any, Callable
 
 
-SCHEMA = 1
+SCHEMA = 2
 PROTOCOL = 5
 MAX_MANIFEST_BYTES = 1024 * 1024
 MAX_ASSET_BYTES = 8 * 1024 * 1024 * 1024
+MAX_RELEASE_PART_BYTES = 2_000_000_000
+MAX_ASSET_PARTS = 16
 MAX_INSTALLED_BYTES = 32 * 1024 * 1024 * 1024
 MAX_ARCHIVE_MEMBERS = 250_000
 PYTHON_COMPONENTS = {"documents", "video", "asr-zh", "asr-other"}
@@ -99,6 +101,30 @@ def _validate_asset(spec: object, label: str) -> dict:
         raise ComponentError(f"{label} asset has an invalid installed size")
     if Path(str(spec["asset"])).name != str(spec["asset"]):
         raise ComponentError(f"{label} asset name is unsafe")
+    parts = spec.get("parts")
+    if parts is None and spec["size"] > MAX_RELEASE_PART_BYTES:
+        raise ComponentError(f"{label} asset exceeds the release limit and must be split")
+    if parts is not None:
+        if not isinstance(parts, list) or not 2 <= len(parts) <= MAX_ASSET_PARTS:
+            raise ComponentError(f"{label} asset parts are invalid")
+        names = {str(spec["asset"])}
+        total = 0
+        for index, part in enumerate(parts, 1):
+            if not isinstance(part, dict):
+                raise ComponentError(f"{label} asset part {index} is invalid")
+            name = str(part.get("asset", ""))
+            digest = str(part.get("sha256", ""))
+            size = part.get("size")
+            if not name or Path(name).name != name or name in names:
+                raise ComponentError(f"{label} asset part {index} name is unsafe")
+            if not re.fullmatch(r"[0-9a-f]{64}", digest):
+                raise ComponentError(f"{label} asset part {index} has an invalid SHA-256")
+            if not isinstance(size, int) or not 0 < size <= MAX_RELEASE_PART_BYTES:
+                raise ComponentError(f"{label} asset part {index} has an invalid size")
+            names.add(name)
+            total += size
+        if total != spec["size"]:
+            raise ComponentError(f"{label} asset part sizes differ from total size")
     return spec
 
 
@@ -225,6 +251,7 @@ def freeze_plan(manifest: dict, selected: list[str], receipt: dict | None) -> di
     pending = [row for row in items if row["state"] == "install"]
     pending_specs = [*pending, *([runtime] if runtime and runtime["state"] == "install" else [])]
     download_bytes = sum(int(row["size"]) for row in pending_specs)
+    assembly_bytes = sum(int(row["size"]) for row in pending_specs if row.get("parts"))
     installed_bytes = sum(int(row["installed_size"]) for row in pending_specs)
     return {
         "release_tag": manifest.get("release_tag"),
@@ -235,16 +262,17 @@ def freeze_plan(manifest: dict, selected: list[str], receipt: dict | None) -> di
         "items": items,
         "disk": {
             "download_bytes": download_bytes,
+            "assembly_bytes": assembly_bytes,
             "installed_bytes": installed_bytes,
-            "required_bytes": download_bytes + installed_bytes,
+            "required_bytes": download_bytes + assembly_bytes + installed_bytes,
         },
     }
 
 
-def _download(spec: dict, plan: dict, home: Path) -> Path:
-    asset = str(spec["asset"])
-    expected_hash = str(spec["sha256"])
-    expected_size = int(spec["size"])
+def _download_file(asset_spec: dict, plan: dict, downloads: Path) -> Path:
+    asset = str(asset_spec["asset"])
+    expected_hash = str(asset_spec["sha256"])
+    expected_size = int(asset_spec["size"])
     local_dir = os.environ.get("LLM_WIKI_COMPONENT_ASSET_DIR")
     if local_dir:
         source = Path(local_dir) / asset
@@ -254,8 +282,6 @@ def _download(spec: dict, plan: dict, home: Path) -> Path:
             raise ComponentError(f"component asset failed verification: {source}")
         return source
 
-    downloads = home / "downloads" / str(plan["release_tag"])
-    downloads.mkdir(parents=True, exist_ok=True)
     target = downloads / asset
     if target.is_file() and target.stat().st_size == expected_size:
         if sha256_file(target) == expected_hash:
@@ -288,6 +314,52 @@ def _download(spec: dict, plan: dict, home: Path) -> Path:
         finally:
             partial.unlink(missing_ok=True)
     raise ComponentError("all component sources failed: " + "; ".join(errors))
+
+
+def _download(spec: dict, plan: dict, home: Path) -> Path:
+    downloads = home / "downloads" / str(plan["release_tag"])
+    downloads.mkdir(parents=True, exist_ok=True)
+    target = downloads / str(spec["asset"])
+    expected_size = int(spec["size"])
+    expected_hash = str(spec["sha256"])
+    if target.is_file() and target.stat().st_size == expected_size:
+        if sha256_file(target) == expected_hash:
+            return target
+        target.unlink()
+    if not spec.get("parts"):
+        return _download_file(spec, plan, downloads)
+
+    local_dir = os.environ.get("LLM_WIKI_COMPONENT_ASSET_DIR")
+    if local_dir:
+        combined = Path(local_dir) / str(spec["asset"])
+        if combined.is_file():
+            if combined.stat().st_size != expected_size or sha256_file(combined) != expected_hash:
+                raise ComponentError(f"component asset failed verification: {combined}")
+            return combined
+
+    part_paths = [_download_file(part, plan, downloads) for part in spec["parts"]]
+    partial = downloads / f".{spec['asset']}.{uuid.uuid4().hex}.assembling"
+    digest = hashlib.sha256()
+    total = 0
+    try:
+        with partial.open("wb") as destination:
+            for part in part_paths:
+                with part.open("rb") as source:
+                    for block in iter(lambda: source.read(1024 * 1024), b""):
+                        total += len(block)
+                        if total > expected_size or total > MAX_ASSET_BYTES:
+                            raise ComponentError("assembled component exceeds declared size")
+                        digest.update(block)
+                        destination.write(block)
+        if total != expected_size or digest.hexdigest() != expected_hash:
+            raise ComponentError("assembled component failed SHA-256/size verification")
+        os.replace(partial, target)
+        if not local_dir:
+            for part in part_paths:
+                part.unlink(missing_ok=True)
+        return target
+    finally:
+        partial.unlink(missing_ok=True)
 
 
 def _safe_extract(archive: Path, destination: Path) -> None:
@@ -451,11 +523,13 @@ def _required_space(plan: dict, home: Path) -> dict[str, int]:
         if not _marker_matches(target, item, "component"):
             pending.append(item)
     download_bytes = sum(int(row["size"]) for row in pending)
+    assembly_bytes = sum(int(row["size"]) for row in pending if row.get("parts"))
     installed_bytes = sum(int(row["installed_size"]) for row in pending)
     return {
         "download_bytes": download_bytes,
+        "assembly_bytes": assembly_bytes,
         "installed_bytes": installed_bytes,
-        "required_bytes": download_bytes + installed_bytes,
+        "required_bytes": download_bytes + assembly_bytes + installed_bytes,
     }
 
 
