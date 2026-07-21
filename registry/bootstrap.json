@@ -44,7 +44,8 @@
     "claude": {"detect_dir": "~/.claude", "skills_dir": "~/.claude/skills"},
     "hermes": {"detect_dir": "~/.hermes", "skills_dir": "~/.hermes/skills"},
     "agents": {"detect_dir": "~/.agents", "skills_dir": "~/.agents/skills"},
-    "workbuddy": {"detect_dir": "~/.workbuddy", "skills_dir": "~/.workbuddy/skills"}
+    "workbuddy": {"detect_dir": "~/.workbuddy", "skills_dir": "~/.workbuddy/skills"},
+    "openclaw": {"detect_dir": "~/.openclaw", "skills_dir": "~/.openclaw/skills"}
   },
   "install": {
     "lock_file": "~/.my-llm-wiki/install.lock",
@@ -108,6 +109,12 @@
         "register_argv": null,
         "manual_config": {"mcpServers": {"my-llm-wiki": {"command": "{python}", "args": ["{bridge_script}"]}}},
         "register_note": "WorkBuddy has no registration CLI, so the user applies the printed JSON to the expanded per-user config path shown by the installer. Local HTTP loopback is deliberately not offered because its client can route it through the system proxy. A remote relay may still use native HTTPS."
+      },
+      "openclaw": {
+        "cli": null,
+        "config_path": null,
+        "register_argv": null,
+        "register_note": "OpenCLAW is wired for skills only; no MCP registration path has been verified for it yet. Use the equivalent CLI fallback (wiki_ops.py browser-search / local-search / read-pages) until one is."
       }
     }
   },

@@ -243,7 +243,7 @@ bash bootstrap.sh \
 ```
 
 以下 bootstrap 命令只适用于 macOS 和 Linux。默认安装使用软链，checkout 是长期 source of truth，不应放在临时目录。脚本只同步到用户
-明确传入的 `--host`（`codex` / `claude` / `hermes` / `agents` / `workbuddy`），不会根据
+明确传入的 `--host`（`codex` / `claude` / `hermes` / `agents` / `workbuddy` / `openclaw`），不会根据
 预先存在的目录擅自创建或修改 skills。已在开发 checkout 中运行时直接使用该 checkout；从
 独立下载的 bootstrap 安装时，如需复用开发 checkout，必须明确传 `--repo DIR`。未显式指定
 `--repo-url` 时，fresh install 会短时探测 GitHub；
