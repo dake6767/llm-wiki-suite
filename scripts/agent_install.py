@@ -289,7 +289,9 @@ def build_inspection(
     # probes are inventory only and never satisfy a managed component.
     toolchain = capture_preflight.build_report(None)
     browser = doctor.check_browser(config)
-    browser_offer = doctor.browser_recommendation(browser)
+    browser_offer = doctor.browser_recommendation(browser, config)
+    browser_presentation = doctor.browser_offer_presentation(config)
+    browser_installable = browser_offer is not None
     extension = doctor.check_opencli_extension()
     inspection = {
         "schema": SCHEMA,
@@ -311,8 +313,19 @@ def build_inspection(
         "browser": {
             "status": browser.get("status"),
             "detail": browser.get("detail"),
-            "installable": browser_offer is not None,
-            "already_satisfied": browser_offer is None,
+            "installable": browser_installable,
+            "already_satisfied": not browser_installable,
+            "optional": True,
+            "recommended": browser_presentation["priority"] == "recommended",
+            "default_selected": (
+                browser_installable and browser_presentation["default_selected"]
+            ),
+            "presentation": browser_presentation,
+            "after_install": {
+                "launch": True,
+                "open_initialized_wiki": True,
+                "automatic_updates": True,
+            },
         },
         "opencli_extension": extension,
         "wiki": doctor.check_wiki(config),
@@ -480,7 +493,7 @@ def build_plan_document(
         "state": "not-selected",
     }
     if selection["browser"]:
-        recommendation = doctor.browser_recommendation(browser_state)
+        recommendation = doctor.browser_recommendation(browser_state, config)
         if recommendation is None:
             browser_action = {"selected": True, "state": "satisfied"}
         else:

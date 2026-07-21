@@ -417,7 +417,42 @@ def check_toolchain(bootstrap: dict, selection: dict) -> dict:
     return report
 
 
-def browser_recommendation(browser: dict) -> dict | None:
+def browser_offer_presentation(bootstrap: dict | None = None) -> dict:
+    """Return stable, user-facing Browser choice metadata.
+
+    Protocol 5 agents should not have to invent a reason to install the desktop
+    app from a bare ``installable`` boolean. Keep a safe fallback here because
+    doctor unit tests and older development registries may omit the copy block.
+    """
+    configured = (((bootstrap or {}).get("browser") or {}).get("install_offer") or {})
+    return {
+        "priority": configured.get("priority", "recommended"),
+        "default_selected": bool(configured.get("default_selected", True)),
+        "title": configured.get("title", "My LLM Wiki Browser"),
+        "value_proposition": configured.get(
+            "value_proposition",
+            "Open the new wiki immediately, then read and search it from one desktop app.",
+        ),
+        "value_proposition_zh": configured.get(
+            "value_proposition_zh",
+            "安装完成后立即打开新建的知识库，并在桌面应用中阅读与全文搜索。",
+        ),
+        "benefits": list(configured.get("benefits") or []),
+        "benefits_zh": list(configured.get("benefits_zh") or []),
+        "decline_impact": configured.get(
+            "decline_impact",
+            "Capture and agent/CLI search still work, but there is no desktop reading entry point.",
+        ),
+        "decline_impact_zh": configured.get(
+            "decline_impact_zh",
+            "不安装仍可由 Agent 采集并通过 CLI 检索，但不会有桌面阅读入口。",
+        ),
+    }
+
+
+def browser_recommendation(
+    browser: dict, bootstrap: dict | None = None
+) -> dict | None:
     """Browser as one more row of the capture-toolchain consent list.
 
     The reading app is offered in the same breath as markitdown and SenseVoice
@@ -433,13 +468,16 @@ def browser_recommendation(browser: dict) -> dict | None:
     # over the top of a running app would be nonsense.
     if (browser.get("install") or {}).get("ok") or browser.get("status") == "ok":
         return None
+    presentation = browser_offer_presentation(bootstrap)
     return {
         "tool": "browser",
-        "priority": "recommended",
+        "priority": presentation["priority"],
+        "optional": True,
+        "default_selected": presentation["default_selected"],
+        "presentation": presentation,
         "profiles": ["read.browse"],
         "reasons": [
-            "reading, full-text search and sharing for the wiki you just "
-            "initialized; wiki_ops.py local-search is the fallback"
+            presentation["value_proposition"]
         ],
         "install": {
             "route": "release",
@@ -591,7 +629,7 @@ def build_report(
         components["toolchain"] = check_toolchain(bootstrap, selection)
         # Browser rides the same consent list as the capture tools, so the
         # agent asks about it once, alongside markitdown and SenseVoice.
-        recommendation = browser_recommendation(browser)
+        recommendation = browser_recommendation(browser, bootstrap)
         if recommendation is not None:
             components["toolchain"].setdefault("recommendations", []).append(
                 recommendation

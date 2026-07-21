@@ -174,6 +174,9 @@ class BrowserRecommendationTests(unittest.TestCase):
         row = next(r for r in report["components"]["toolchain"]["recommendations"]
                    if r["tool"] == "browser")
         self.assertEqual(row["priority"], "recommended")
+        self.assertTrue(row["optional"])
+        self.assertTrue(row["default_selected"])
+        self.assertIn("desktop app", row["reasons"][0])
         # The recipe must be a directly executable argv, like every other row.
         self.assertIn("--open-web", row["install"]["steps"][0])
 

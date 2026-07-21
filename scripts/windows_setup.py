@@ -1837,6 +1837,34 @@ def component_choices(manifest: dict) -> list[dict]:
     return out
 
 
+def browser_offer_presentation(bootstrap: dict) -> dict:
+    """Normalize the registry-owned Browser copy for CLI and recovery GUI."""
+    configured = ((bootstrap.get("browser") or {}).get("install_offer") or {})
+    return {
+        "priority": configured.get("priority", "recommended"),
+        "default_selected": bool(configured.get("default_selected", True)),
+        "title": configured.get("title", "My LLM Wiki Browser"),
+        "value_proposition": configured.get(
+            "value_proposition",
+            "Open the new wiki immediately, then read and search it from one desktop app.",
+        ),
+        "value_proposition_zh": configured.get(
+            "value_proposition_zh",
+            "安装完成后立即打开新建的知识库，并在桌面应用中阅读与全文搜索。",
+        ),
+        "benefits": list(configured.get("benefits") or []),
+        "benefits_zh": list(configured.get("benefits_zh") or []),
+        "decline_impact": configured.get(
+            "decline_impact",
+            "Capture and agent/CLI search still work, but there is no desktop reading entry point.",
+        ),
+        "decline_impact_zh": configured.get(
+            "decline_impact_zh",
+            "不安装仍可由 Agent 采集并通过 CLI 检索，但不会有桌面阅读入口。",
+        ),
+    }
+
+
 P5_SELECTION_KEYS = {
     "schema", "inspection_id", "hosts", "custom_targets", "skills", "mode",
     "replace_destinations", "components", "browser", "host_configuration",
@@ -1946,6 +1974,7 @@ def protocol_inspection(home: Path, payload: Path, requested: list[str] | None =
             "managed": True,
             "blockers": [],
         })
+    browser_presentation = browser_offer_presentation(bootstrap)
     value = {
         "schema": 1,
         "protocol": 5,
@@ -1961,7 +1990,20 @@ def protocol_inspection(home: Path, payload: Path, requested: list[str] | None =
         "resolved_skills": slugs,
         "hosts": hosts,
         "components": components,
-        "browser": {"status": "optional", "installable": True},
+        "browser": {
+            "status": "installable",
+            "installable": True,
+            "already_satisfied": False,
+            "optional": True,
+            "recommended": browser_presentation["priority"] == "recommended",
+            "default_selected": browser_presentation["default_selected"],
+            "presentation": browser_presentation,
+            "after_install": {
+                "launch": True,
+                "open_initialized_wiki": True,
+                "automatic_updates": True,
+            },
+        },
         "network": {"route": "release-mirror-first"},
         "wiki": {"root": str(Path(DEFAULT_WIKIS).expanduser() / "my-llm-wiki")},
         "warnings": [],
@@ -2268,6 +2310,8 @@ def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
 
     enable_windows_dpi_awareness()
     manifest = embedded_json(payload, "component-manifest.json")
+    bootstrap = read_suite_registry_from_zip(payload, "registry/bootstrap.json")
+    browser_copy = browser_offer_presentation(bootstrap)
     root = tk.Tk()
     root.title("My LLM Wiki 安装程序")
     icon_file = payload / "setup-icon.png"
@@ -2320,7 +2364,7 @@ def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
     buttons.pack(fill="x")
     close_button = ttk.Button(buttons, text="取消", command=root.destroy, width=14)
     close_button.pack(side="right")
-    install_button = ttk.Button(buttons, text="安装", width=14, default="active")
+    install_button = ttk.Button(buttons, text="安装", width=20, default="active")
     install_button.pack(side="right", padx=(0, px(8)))
 
     content = ttk.Frame(root)
@@ -2394,6 +2438,42 @@ def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
         anchor="w", padx=(px(28), 0)
     )
 
+    # Browser is the normal human-facing entry point after installation. Keep
+    # it above the potentially long component list and preselect it, while
+    # preserving an explicit checkbox so the user can still decline it.
+    desktop_box = section("推荐的桌面阅读入口")
+    browser_var = tk.BooleanVar(value=True)
+    ttk.Checkbutton(
+        desktop_box,
+        text=f"安装 {browser_copy['title']}（推荐）",
+        variable=browser_var,
+    ).pack(anchor="w", padx=(px(8), 0), pady=px(1))
+    ttk.Label(
+        desktop_box,
+        text=browser_copy["value_proposition_zh"],
+        style="Muted.TLabel",
+        wraplength=px(650),
+        justify="left",
+    ).pack(anchor="w", padx=(px(28), 0), pady=(px(2), 0))
+    ttk.Label(
+        desktop_box,
+        text=(
+            " · ".join(browser_copy["benefits_zh"]) + "。\n"
+            + browser_copy["decline_impact_zh"]
+        ),
+        style="Muted.TLabel",
+        wraplength=px(650),
+        justify="left",
+    ).pack(anchor="w", padx=(px(28), 0), pady=(0, px(2)))
+
+    def sync_install_button(*_args) -> None:
+        install_button.configure(
+            text="安装并打开 Browser" if browser_var.get() else "仅安装 Agent 能力"
+        )
+
+    browser_var.trace_add("write", sync_install_button)
+    sync_install_button()
+
     components_box = section("工具组件")
     component_vars = {}
     for row in component_choices(manifest):
@@ -2407,14 +2487,6 @@ def launch_gui(home_link: Path, payload: Path, asset_dir: Path | None) -> int:
             ttk.Label(
                 components_box, text=row["description_zh"], style="Muted.TLabel"
             ).pack(anchor="w", padx=(px(28), 0))
-
-    desktop_box = section("桌面应用")
-    browser_var = tk.BooleanVar(value=True)
-    ttk.Checkbutton(
-        desktop_box,
-        text="My LLM Wiki Browser — 静默安装，此后自动保持更新",
-        variable=browser_var,
-    ).pack(anchor="w", padx=(px(8), 0), pady=px(1))
 
     location_box = section("安装位置")
     location_var = tk.StringVar(value="default")

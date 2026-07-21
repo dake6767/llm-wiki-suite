@@ -135,6 +135,25 @@
     "slug": "my-llm-wiki-browser",
     "collection_path": "apps/my-llm-wiki-browser",
     "release_strategy": "download-release-first",
+    "install_offer": {
+      "priority": "recommended",
+      "default_selected": true,
+      "title": "My LLM Wiki Browser",
+      "value_proposition": "Open the new wiki immediately, then read, search, and follow sources and backlinks from one desktop app.",
+      "value_proposition_zh": "安装完成后立即打开新建的知识库，用一个桌面应用阅读、全文搜索，并沿来源与引用继续浏览。",
+      "benefits": [
+        "opens the initialized wiki automatically after installation",
+        "reads local Markdown directly and builds a local full-text index",
+        "keeps itself updated independently of the agent toolchain"
+      ],
+      "benefits_zh": [
+        "安装结束自动打开已经初始化的知识库",
+        "直接读取本地 Markdown，并在本机建立全文索引",
+        "此后独立自动更新，不需要反复运行安装流程"
+      ],
+      "decline_impact": "Capture and agent/CLI search still work, but there is no desktop reading and visual search entry point.",
+      "decline_impact_zh": "不安装仍可由 Agent 采集并通过 CLI 检索，但不会有桌面阅读与可视化搜索入口。"
+    },
     "operation_lock_file": "~/.my-llm-wiki/browser.lock",
     "install_receipt": {
       "path": "~/.my-llm-wiki/browser/install.json",

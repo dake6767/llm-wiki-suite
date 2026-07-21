@@ -102,7 +102,8 @@ must be able to review the complete selection before confirming it:
 3. all skills or an explicit skill subset;
 4. every exact conflict destination that may be replaced;
 5. managed components: Documents, Web, Video, Chinese ASR, non-Chinese ASR;
-6. optional Browser desktop app;
+6. recommended, preselected Browser desktop app (still optional and removable
+   from the selection);
 7. optional Hermes hardening when Hermes is selected;
 8. optional-component failure policy (`continue` is recommended).
 
@@ -115,6 +116,15 @@ If the host supports a native multi-select/confirmation control, use it. Never
 split these choices into later questions and never demand typed `yes`/`no`.
 If a native control is unavailable, clearly present one complete structured
 choice and obtain one confirmation before writing the Selection object.
+
+Render Browser as a distinct recommended choice, not as one generic dependency
+row. When inspection reports it installable, use its `default_selected` value
+(normally `true`) and show the returned value proposition, main benefits, and
+decline impact in the user's language. Make it clear that installation opens
+the initialized Wiki immediately and that the app reads local Markdown. The
+user must be able to clear the choice before the one confirmation; preselection
+alone is never consent. Do not lead with the CLI fallback or describe Browser
+as unnecessary, though the decline impact must honestly preserve that path.
 
 The Selection schema is `registry/agent-install-v5.schema.json`. An empty
 `skills` list means every active skill. Production mode is always `copy`.

@@ -139,6 +139,58 @@ class AgentInstallProtocolTests(unittest.TestCase):
             self.assertFalse((root / "home").exists())
             self.assertFalse((root / "wikis").exists())
 
+    def test_missing_browser_is_a_preselected_recommended_choice(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            offer = {
+                "priority": "recommended",
+                "default_selected": True,
+                "title": "My LLM Wiki Browser",
+                "value_proposition": "Open and search the initialized wiki.",
+                "value_proposition_zh": "打开并搜索初始化后的知识库。",
+                "benefits": ["local full-text search"],
+                "benefits_zh": ["本地全文搜索"],
+                "decline_impact": "No desktop reader.",
+                "decline_impact_zh": "没有桌面阅读入口。",
+            }
+            config = self.config(root)
+            config["browser"] = {"install_offer": offer}
+            recommendation = {
+                "tool": "browser",
+                "priority": "recommended",
+                "default_selected": True,
+                "presentation": offer,
+            }
+            with mock.patch.object(
+                agent_install.capture_preflight,
+                "build_report",
+                return_value=self.toolchain_all_satisfied(),
+            ), mock.patch.object(
+                agent_install.doctor,
+                "check_browser",
+                return_value={"status": "warn", "detail": "not installed"},
+            ), mock.patch.object(
+                agent_install.doctor,
+                "browser_recommendation",
+                return_value=recommendation,
+            ), mock.patch.object(
+                agent_install.doctor,
+                "check_opencli_extension",
+                return_value={"status": "ok", "detail": "staged"},
+            ), mock.patch.object(
+                agent_install.doctor,
+                "check_wiki",
+                return_value={"status": "warn", "detail": "not initialized"},
+            ):
+                inspection = agent_install.build_inspection(config, self.registry)
+
+            browser = inspection["browser"]
+            self.assertTrue(browser["optional"])
+            self.assertTrue(browser["recommended"])
+            self.assertTrue(browser["default_selected"])
+            self.assertTrue(browser["after_install"]["open_initialized_wiki"])
+            self.assertEqual(browser["presentation"]["decline_impact_zh"], "没有桌面阅读入口。")
+
     def test_selection_rejects_unknown_authority_field(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

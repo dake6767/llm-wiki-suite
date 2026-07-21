@@ -84,8 +84,10 @@ Protocol 5 在 Windows、macOS 和 Linux 上使用同一条交互：
 ```
 
 安装过程中不会逐步追问，也不会使用全局 pip/npm、Homebrew、apt、winget 或用户 PATH
-补依赖。Skills、Documents、Web/OpenCLI、Video、中文/非中文 ASR 与可选 Browser 都是
-显式选项。自动步骤完成后，才集中显示加载 Chrome 扩展等必须由人完成的动作。
+补依赖。Skills、Documents、Web/OpenCLI、Video、中文/非中文 ASR 与 Browser 都是
+显式选项。Browser 作为推荐的桌面阅读入口默认勾选，但可以在确认前取消；安装完成后会
+自动打开已经初始化的知识库。自动步骤完成后，才集中显示加载 Chrome 扩展等必须由人完成
+的动作。
 
 Windows 由 agent 下载并校验原生执行核心，正常安装不打开 Setup 窗口，也不要求预装 Git、
 Python、Node 或 Git Bash；双击 Setup 仍可作为恢复界面。macOS/Linux 使用 Python 执行

@@ -131,6 +131,13 @@ class WindowsSetupTests(unittest.TestCase):
             )
             self.assertEqual(inspection["protocol"], 5)
             self.assertFalse(inspection["hosts"][0]["selected_by_default"])
+            self.assertTrue(inspection["browser"]["optional"])
+            self.assertTrue(inspection["browser"]["recommended"])
+            self.assertTrue(inspection["browser"]["default_selected"])
+            self.assertTrue(
+                inspection["browser"]["after_install"]["open_initialized_wiki"]
+            )
+            self.assertTrue(inspection["browser"]["presentation"]["benefits_zh"])
             self.assertFalse(target.exists())
             selection = {
                 "schema": 1,
