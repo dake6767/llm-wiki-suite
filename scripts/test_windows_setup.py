@@ -738,6 +738,16 @@ class WindowedExecutableHelperTests(unittest.TestCase):
         windows_setup.attach_parent_console()
         self.assertEqual((sys.stdout, sys.stderr, sys.stdin), before)
 
+    def test_output_encoding_reconfigures_cp1252_streams_for_unicode_json(self) -> None:
+        stdout = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+        stderr = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+        with unittest.mock.patch.object(windows_setup.sys, "stdout", stdout), \
+                unittest.mock.patch.object(windows_setup.sys, "stderr", stderr):
+            windows_setup.configure_output_encoding()
+            print(json.dumps({"label": "中文"}, ensure_ascii=False))
+            stdout.flush()
+            self.assertEqual(stdout.encoding.lower().replace("-", ""), "utf8")
+
     def test_dpi_awareness_is_noop_off_windows(self) -> None:
         windows_setup.enable_windows_dpi_awareness()
 

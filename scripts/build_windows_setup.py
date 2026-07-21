@@ -204,6 +204,8 @@ def checked_output(argv: list[str], *, timeout: int = 120) -> str:
         argv,
         stdin=subprocess.DEVNULL,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
         timeout=timeout,
         check=False,

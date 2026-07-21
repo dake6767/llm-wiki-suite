@@ -178,6 +178,18 @@ def attach_parent_console() -> None:
         pass
 
 
+def configure_output_encoding() -> None:
+    """Make Protocol 5 CLI output independent of the Windows ANSI code page."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (OSError, ValueError):
+            pass
+
+
 def enable_windows_dpi_awareness() -> None:
     """Opt in to DPI awareness before Tk starts.
 
@@ -2807,6 +2819,7 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     attach_parent_console()
+    configure_output_encoding()
     args = parser().parse_args(argv)
     try:
         home_link = args.home.expanduser()
