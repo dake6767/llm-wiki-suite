@@ -182,6 +182,26 @@ class ManagedComponentTests(unittest.TestCase):
             self.assertEqual(managed_components.remove_owned(receipt, home), [])
             self.assertTrue((component / "user-file").is_file())
 
+    def test_profile_launcher_marks_the_managed_python_transition(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            component = root / "components" / "asr-zh" / "1"
+            component.mkdir(parents=True)
+            runtime_python = root / "runtime" / "bin" / "python3"
+            runtime_python.parent.mkdir(parents=True)
+            runtime_python.write_bytes(b"python")
+
+            launcher = managed_components._profile_launcher(
+                component, root / "runtime", "asr-zh"
+            )
+
+            body = launcher.read_text(encoding="utf-8")
+            self.assertIn(
+                "export LLM_WIKI_ACTIVE_PYTHON_PROFILE=asr-zh\n", body
+            )
+            self.assertIn(f"export PYTHONPATH={component / 'site'}\n", body)
+            self.assertTrue(launcher.stat().st_mode & 0o100)
+
     def test_install_rejects_insufficient_disk_before_download(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"

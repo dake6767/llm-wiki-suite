@@ -467,6 +467,7 @@ def _profile_launcher(component: Path, runtime: Path, profile: str) -> Path:
     target.write_text(
         "#!/bin/sh\n"
         f"export PYTHONPATH={shlex.quote(str(site))}\n"
+        f"export LLM_WIKI_ACTIVE_PYTHON_PROFILE={shlex.quote(profile)}\n"
         f"exec {shlex.quote(str(python))} \"$@\"\n",
         encoding="utf-8",
     )

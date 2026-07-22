@@ -108,6 +108,12 @@ background the command rather than generating another wrapper script, and do
 not reproduce either script's source in a heredoc, inline interpreter flag, or
 arbitrary-code tool.
 
+`$ASR_PYTHON` means the exact `python_profiles` entry in the active Protocol 5
+receipt. On macOS/Linux that entry is intentionally a small profile launcher,
+not `runtime/.../bin/python3`. Do not bypass it by selecting the shared runtime
+Python and constructing `PYTHONPATH` by hand; the shipped runner validates and
+enters the receipt-owned profile itself.
+
 ### 3a. SenseVoice (Chinese) — VAD-first
 
 The order is the whole trick: **run VAD first, then recognise each speech

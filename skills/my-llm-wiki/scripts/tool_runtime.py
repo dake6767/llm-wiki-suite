@@ -12,6 +12,7 @@ from pathlib import Path
 
 INSTALL_RECEIPT_ENV = "LLM_WIKI_INSTALL_RECEIPT"
 DEFAULT_INSTALL_RECEIPT = "~/.my-llm-wiki/install-state.json"
+ACTIVE_PYTHON_PROFILE_ENV = "LLM_WIKI_ACTIVE_PYTHON_PROFILE"
 _PLACEHOLDERS = {"home", "suite", "runtime"}
 
 
@@ -152,6 +153,33 @@ def runtime_env(
     return dict(values)
 
 
+def _profile_launcher_completed(profile: str, target: str) -> bool:
+    """Recognize the Python process started by a POSIX profile launcher.
+
+    POSIX receipts point at a small shell launcher which adds the component's
+    ``site`` directory before execing the shared managed Python.  Consequently
+    ``sys.executable`` can never equal the receipt target.  The marker is set
+    only on our exec transition, and the managed-home plus PYTHONPATH checks
+    keep an inherited or user-supplied marker from accepting another Python.
+    """
+    if os.environ.get(ACTIVE_PYTHON_PROFILE_ENV) != profile:
+        return False
+    receipt = load_setup_receipt()
+    roots = _receipt_roots(receipt)
+    try:
+        current = Path(sys.executable).resolve()
+        home = Path(roots["home"])
+        expected_site = (Path(target).parent / "site").resolve()
+        python_paths = {
+            Path(value).expanduser().resolve()
+            for value in os.environ.get("PYTHONPATH", "").split(os.pathsep)
+            if value
+        }
+    except OSError:
+        return False
+    return (current == home or home in current.parents) and expected_site in python_paths
+
+
 def ensure_managed_python(profile: str) -> None:
     """Re-exec an ASR entry point with its receipt-managed Python profile."""
     target = resolve_python(profile)
@@ -159,11 +187,13 @@ def ensure_managed_python(profile: str) -> None:
         same = Path(sys.executable).resolve() == Path(target).resolve()
     except OSError:
         same = False
-    if same:
+    if same or _profile_launcher_completed(profile, target):
+        os.environ[ACTIVE_PYTHON_PROFILE_ENV] = profile
         for key, value in runtime_env(profile).items():
             os.environ.setdefault(key, value)
         return
     env = os.environ.copy()
+    env[ACTIVE_PYTHON_PROFILE_ENV] = profile
     for key, value in runtime_env(profile).items():
         env.setdefault(key, value)
     os.execve(target, [target, str(Path(sys.argv[0]).resolve()), *sys.argv[1:]], env)

@@ -70,6 +70,7 @@ def transcribe(
     language: str,
     max_segment_ms: int,
 ) -> tuple[int, int]:
+    print("sensevoice_to_srt: loading managed dependencies", flush=True)
     try:
         import librosa
         from funasr import AutoModel
@@ -79,7 +80,9 @@ def transcribe(
             "SenseVoice dependencies are missing; run this with the configured ASR venv"
         ) from exc
 
+    print("sensevoice_to_srt: decoding 16 kHz mono audio", flush=True)
     wav, _ = librosa.load(str(audio), sr=16_000, mono=True)
+    print("sensevoice_to_srt: loading fsmn-vad", flush=True)
     vad = AutoModel(
         model="fsmn-vad",
         max_single_segment_time=max_segment_ms,
@@ -87,6 +90,8 @@ def transcribe(
     )
     generated = vad.generate(input=str(audio)) or [{}]
     spans = generated[0].get("value") or [[0, len(wav) // 16]]
+    print(f"sensevoice_to_srt: VAD found {len(spans)} segments", flush=True)
+    print("sensevoice_to_srt: loading SenseVoiceSmall", flush=True)
     recognizer = AutoModel(model="iic/SenseVoiceSmall", disable_update=True)
 
     cues: list[tuple[float, float, str]] = []
