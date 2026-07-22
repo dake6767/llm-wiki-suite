@@ -42,6 +42,46 @@ class DistributionBuilderTests(unittest.TestCase):
             self.assertEqual(spec["size"], archive.stat().st_size)
             self.assertEqual(spec["installed_size"], 4)
 
+    def test_linux_asr_uses_the_official_cpu_wheels(self) -> None:
+        spec = {
+            "packages": ["torch==2.11.0", "torchaudio==2.11.0"],
+            "linux": {
+                "extra_index_url": "https://download.pytorch.org/whl/cpu",
+                "packages": ["torch==2.11.0+cpu", "torchaudio==2.11.0+cpu"],
+            },
+        }
+
+        linux_packages, linux_index = builder.posix_asr_install(spec, "linux")
+        darwin_packages, darwin_index = builder.posix_asr_install(spec, "darwin")
+
+        self.assertEqual(
+            linux_packages, ["torch==2.11.0+cpu", "torchaudio==2.11.0+cpu"]
+        )
+        self.assertEqual(linux_index, "https://download.pytorch.org/whl/cpu")
+        self.assertEqual(darwin_packages, spec["packages"])
+        self.assertIsNone(darwin_index)
+
+    def test_asr_rejects_unapproved_package_index(self) -> None:
+        spec = {
+            "packages": ["torch==2.11.0"],
+            "linux": {
+                "extra_index_url": "https://packages.example.invalid/simple",
+                "packages": ["torch==2.11.0+cpu"],
+            },
+        }
+
+        with self.assertRaisesRegex(builder.BuildError, "unsupported ASR package index"):
+            builder.posix_asr_install(spec, "linux")
+
+    def test_release_asset_size_limit_is_enforced_before_upload(self) -> None:
+        builder.validate_release_asset_size(
+            "asr-zh", builder.MAX_RELEASE_ASSET_SIZE - 1
+        )
+        with self.assertRaisesRegex(builder.BuildError, "GitHub release asset limit"):
+            builder.validate_release_asset_size(
+                "asr-zh", builder.MAX_RELEASE_ASSET_SIZE
+            )
+
     def test_windows_asr_notice_is_written_at_pack_root(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

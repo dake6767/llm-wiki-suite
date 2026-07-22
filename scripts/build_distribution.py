@@ -26,6 +26,7 @@ ROOT = Path(__file__).resolve().parent.parent
 POSIX_LOCK = ROOT / "registry" / "pack-build-posix.lock.json"
 WINDOWS_LOCK = ROOT / "registry" / "pack-build-windows.lock.json"
 PACK_IDS = {"toolchain-base", "asr-zh", "asr-other"}
+MAX_RELEASE_ASSET_SIZE = 2_147_483_648
 
 
 class BuildError(RuntimeError):
@@ -140,17 +141,23 @@ def download_verified(url: str, destination: Path, expected: str) -> Path:
     return destination
 
 
-def pip_target(python: Path, destination: Path, packages: list[str]) -> None:
+def pip_target(
+    python: Path,
+    destination: Path,
+    packages: list[str],
+    *,
+    extra_index_url: str | None = None,
+) -> None:
     destination.mkdir(parents=True, exist_ok=True)
     report = destination.parent / "pip-report.json"
-    checked(
-        [
-            str(python), "-m", "pip", "install", "--disable-pip-version-check",
-            "--no-input", "--no-compile", "--target", str(destination),
-            "--report", str(report), *packages,
-        ],
-        timeout=3600,
-    )
+    command = [
+        str(python), "-m", "pip", "install", "--disable-pip-version-check",
+        "--no-input", "--no-compile", "--target", str(destination),
+        "--report", str(report),
+    ]
+    if extra_index_url:
+        command.extend(["--extra-index-url", extra_index_url])
+    checked([*command, *packages], timeout=3600)
     for cache in destination.rglob("__pycache__"):
         shutil.rmtree(cache, ignore_errors=True)
 
@@ -252,9 +259,28 @@ def build_posix_video(spec: dict, python: Path, work: Path) -> Path:
     return stage
 
 
-def build_posix_asr(name: str, spec: dict, python: Path, work: Path) -> Path:
+def posix_asr_install(spec: dict, system: str) -> tuple[list[str], str | None]:
+    platform_spec = spec.get(system) or {}
+    packages = platform_spec.get("packages", spec["packages"])
+    extra_index_url = platform_spec.get("extra_index_url")
+    if any(package.count("==") != 1 for package in packages):
+        raise BuildError("ASR packages must use exact pins")
+    if extra_index_url and extra_index_url != "https://download.pytorch.org/whl/cpu":
+        raise BuildError("unsupported ASR package index")
+    return packages, extra_index_url
+
+
+def build_posix_asr(
+    name: str, spec: dict, python: Path, work: Path, system: str
+) -> Path:
     stage = work / name
-    pip_target(python, stage / "site", spec["packages"])
+    packages, extra_index_url = posix_asr_install(spec, system)
+    pip_target(
+        python,
+        stage / "site",
+        packages,
+        extra_index_url=extra_index_url,
+    )
     checked(
         [str(python), *spec["postcheck"]],
         env=python_env(stage / "site"),
@@ -524,7 +550,9 @@ def build_posix(
     for pack_id in ("asr-zh", "asr-other"):
         if pack_id not in selected:
             continue
-        component = build_posix_asr(pack_id, lock["components"][pack_id], python, work)
+        component = build_posix_asr(
+            pack_id, lock["components"][pack_id], python, work, system
+        )
         stage = work / f"pack-{pack_id}"
         copy_tree(runtime_root, stage / "runtime")
         copy_tree(component, stage / pack_id)
@@ -646,6 +674,7 @@ def pack_spec(
     asset = write_zip(
         stage, dist / f"My-LLM-Wiki-{pack_id}_{system}_{architecture}.zip"
     )
+    validate_release_asset_size(pack_id, asset.stat().st_size)
     return {
         "asset": asset.name,
         "sha256": sha256(asset),
@@ -658,6 +687,14 @@ def pack_spec(
         "probes": probes or [],
         "manual_actions": manual_actions or [],
     }
+
+
+def validate_release_asset_size(pack_id: str, size: int) -> None:
+    if size >= MAX_RELEASE_ASSET_SIZE:
+        raise BuildError(
+            f"{pack_id} archive exceeds the GitHub release asset limit: "
+            f"{size} >= {MAX_RELEASE_ASSET_SIZE}"
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
