@@ -1,199 +1,347 @@
 #!/usr/bin/env python3
-"""Resolve Protocol 5 tools exclusively from the atomic install receipt."""
+"""Resolve capability providers without coupling Skills to an installer.
+
+The official toolchain is the preferred provider when Setup Core has activated
+it. Users can override a capability with a system tool or an explicitly
+configured custom provider. Skills remain usable when Browser and Setup Core do
+not exist at all.
+"""
 
 from __future__ import annotations
 
 import json
 import os
-import platform
+import shutil
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 
-INSTALL_RECEIPT_ENV = "LLM_WIKI_INSTALL_RECEIPT"
-DEFAULT_INSTALL_RECEIPT = "~/.my-llm-wiki/install-state.json"
-ACTIVE_PYTHON_PROFILE_ENV = "LLM_WIKI_ACTIVE_PYTHON_PROFILE"
-_PLACEHOLDERS = {"home", "suite", "runtime"}
+SETUP_STATE_ENV = "MY_LLM_WIKI_SETUP_STATE"
+PROVIDERS_CONFIG_ENV = "MY_LLM_WIKI_PROVIDERS"
+DEFAULT_SETUP_STATE = "~/.my-llm-wiki/setup-state.json"
+DEFAULT_PROVIDERS_CONFIG = "~/.my-llm-wiki/providers.json"
+ACTIVE_PYTHON_PROFILE_ENV = "MY_LLM_WIKI_ACTIVE_PYTHON_PROFILE"
+ACTIVE_PROVIDER_ENV = "MY_LLM_WIKI_ACTIVE_PROVIDER"
 
 
 class ToolRuntimeError(RuntimeError):
     pass
 
 
-def _system_name(system: str | None = None) -> str:
-    return (system or platform.system()).lower()
+@dataclass(frozen=True)
+class ResolvedProvider:
+    provider: str
+    argv: list[str]
+    environment: dict[str, str]
+    source: str
 
 
-def is_windows(system: str | None = None) -> bool:
-    return _system_name(system) == "windows"
-
-
-def setup_receipt_path(path: Path | str | None = None) -> Path:
-    raw = path or os.environ.get(INSTALL_RECEIPT_ENV) or DEFAULT_INSTALL_RECEIPT
+def setup_state_path(path: Path | str | None = None) -> Path:
+    raw = path or os.environ.get(SETUP_STATE_ENV) or DEFAULT_SETUP_STATE
     return Path(raw).expanduser().resolve()
 
 
-def load_setup_receipt(
-    path: Path | str | None = None, *, system: str | None = None
-) -> dict:
-    receipt_path = setup_receipt_path(path)
-    try:
-        value = json.loads(receipt_path.read_text(encoding="utf-8"))
-    except OSError as exc:
-        raise ToolRuntimeError(
-            f"Protocol 5 managed install receipt is missing: {receipt_path}"
-        ) from exc
-    except json.JSONDecodeError as exc:
-        raise ToolRuntimeError(f"invalid Protocol 5 receipt {receipt_path}: {exc}") from exc
+def providers_config_path(path: Path | str | None = None) -> Path:
+    raw = path or os.environ.get(PROVIDERS_CONFIG_ENV) or DEFAULT_PROVIDERS_CONFIG
+    return Path(raw).expanduser().resolve()
+
+
+def load_setup_state(path: Path | str | None = None) -> dict[str, Any] | None:
+    state_path = setup_state_path(path)
+    if not state_path.is_file():
+        return None
+    value = _load_object(state_path, "setup state")
+    if value.get("schema") != 1 or not isinstance(value.get("packs"), dict):
+        raise ToolRuntimeError(f"unsupported Setup Core state: {state_path}")
+    return value
+
+
+def load_provider_config(path: Path | str | None = None) -> dict[str, Any]:
+    config_path = providers_config_path(path)
+    if not config_path.is_file():
+        return {"schema": 1, "policy": "official-preferred", "overrides": {}, "providers": {}}
+    value = _load_object(config_path, "provider config")
     if (
-        not isinstance(value, dict)
-        or value.get("schema") != 1
-        or value.get("protocol") != 5
+        value.get("schema") != 1
+        or value.get("policy", "official-preferred") != "official-preferred"
+        or not isinstance(value.get("overrides", {}), dict)
+        or not isinstance(value.get("providers", {}), dict)
     ):
-        raise ToolRuntimeError(f"unsupported Protocol 5 receipt: {receipt_path}")
-    if value.get("platform") != _system_name(system):
-        raise ToolRuntimeError(f"install receipt belongs to another platform: {receipt_path}")
+        raise ToolRuntimeError(f"invalid provider config: {config_path}")
     return value
 
 
-def _receipt_roots(receipt: dict) -> dict[str, str]:
-    roots = {}
-    for key in _PLACEHOLDERS:
-        raw = receipt.get(key)
-        if key == "runtime" and isinstance(raw, dict):
-            raw = raw.get("path")
-        if isinstance(raw, str) and raw:
-            roots[key] = str(Path(raw).expanduser().resolve())
-    if "home" not in roots:
-        raise ToolRuntimeError("Protocol 5 receipt has no managed home")
-    return roots
+def resolve_command(
+    name: str,
+    *,
+    capability: str | None = None,
+    provider: str | None = None,
+    state_path: Path | str | None = None,
+    providers_path: Path | str | None = None,
+) -> ResolvedProvider:
+    _validate_name(name, "tool")
+    config = load_provider_config(providers_path)
+    state = load_setup_state(state_path)
+    explicit = provider
+    if explicit:
+        resolved = _command_from(explicit, name, state, config)
+        if resolved is None:
+            raise ToolRuntimeError(
+                f"requested provider {explicit!r} cannot supply tool {name!r}"
+            )
+        return resolved
 
-
-def _expand_arg(value: str, roots: dict[str, str]) -> str:
-    for name, replacement in roots.items():
-        value = value.replace("{" + name + "}", replacement)
-    return value
-
-
-def _validated_argv(raw: object, receipt: dict, label: str) -> list[str]:
-    if not isinstance(raw, list) or not raw or any(
-        not isinstance(arg, str) or not arg for arg in raw
-    ):
-        raise ToolRuntimeError(f"invalid managed argv for {label}")
-    roots = _receipt_roots(receipt)
-    argv = [_expand_arg(arg, roots) for arg in raw]
-    executable = Path(argv[0]).expanduser()
-    if not executable.is_absolute() or not executable.is_file():
-        raise ToolRuntimeError(
-            f"managed executable for {label} is missing: {executable}"
-        )
-    home = Path(roots["home"])
-    resolved = executable.resolve()
-    if resolved != home and home not in resolved.parents:
-        raise ToolRuntimeError(
-            f"managed executable for {label} escapes install home: {resolved}"
-        )
-    argv[0] = str(resolved)
-    return argv
+    override = _saved_override(config, capability, name)
+    candidates = _candidate_ids(config, override)
+    failures: list[str] = []
+    for provider_id in candidates:
+        try:
+            resolved = _command_from(provider_id, name, state, config)
+        except ToolRuntimeError as exc:
+            failures.append(f"{provider_id}: {exc}")
+            continue
+        if resolved is not None:
+            return resolved
+    detail = f" ({'; '.join(failures)})" if failures else ""
+    raise ToolRuntimeError(
+        f"no provider can supply tool {name!r}{detail}; configure a provider or install the official toolchain"
+    )
 
 
 def resolve_command_argv(
     name: str,
     *,
-    system: str | None = None,
-    receipt_path: Path | str | None = None,
+    capability: str | None = None,
+    provider: str | None = None,
+    state_path: Path | str | None = None,
+    providers_path: Path | str | None = None,
 ) -> list[str]:
-    """Return the argv prefix used to invoke ``name``.
+    return resolve_command(
+        name,
+        capability=capability,
+        provider=provider,
+        state_path=state_path,
+        providers_path=providers_path,
+    ).argv
 
-    A prefix may contain more than one item, for example bundled OpenCLI is
-    ``[node.exe, opencli.js]`` and MarkItDown is
-    ``[python.exe, -m, markitdown]``.
-    """
-    if not name or any(ch in name for ch in "/\\"):
-        raise ToolRuntimeError(f"invalid tool name: {name!r}")
-    receipt = load_setup_receipt(receipt_path, system=system)
-    tools = receipt.get("tools")
-    spec = tools.get(name) if isinstance(tools, dict) else None
-    if not isinstance(spec, dict):
-        component = name.replace("_", "-")
-        raise ToolRuntimeError(
-            f"managed tool {name!r} is not installed; repair component {component}"
-        )
-    return _validated_argv(spec.get("argv"), receipt, name)
+
+def resolve_python_provider(
+    profile: str,
+    *,
+    provider: str | None = None,
+    state_path: Path | str | None = None,
+    providers_path: Path | str | None = None,
+) -> ResolvedProvider:
+    _validate_name(profile, "Python profile")
+    config = load_provider_config(providers_path)
+    state = load_setup_state(state_path)
+    if provider:
+        resolved = _python_from(provider, profile, state, config)
+        if resolved is None:
+            raise ToolRuntimeError(
+                f"requested provider {provider!r} cannot supply Python profile {profile!r}"
+            )
+        return resolved
+    override = _saved_override(config, f"python.{profile}", profile)
+    for provider_id in _candidate_ids(config, override):
+        try:
+            resolved = _python_from(provider_id, profile, state, config)
+        except ToolRuntimeError:
+            continue
+        if resolved is not None:
+            return resolved
+    raise ToolRuntimeError(
+        f"no provider can supply Python profile {profile!r}; run `my-llm-wiki ensure-pack {profile}` or configure a custom provider"
+    )
 
 
 def resolve_python(
     profile: str,
     *,
-    system: str | None = None,
-    receipt_path: Path | str | None = None,
+    provider: str | None = None,
+    state_path: Path | str | None = None,
+    providers_path: Path | str | None = None,
 ) -> str:
-    receipt = load_setup_receipt(receipt_path, system=system)
-    profiles = receipt.get("python_profiles")
-    raw = profiles.get(profile) if isinstance(profiles, dict) else None
-    argv = _validated_argv([raw] if isinstance(raw, str) else raw, receipt, profile)
-    if len(argv) != 1:
-        raise ToolRuntimeError(f"managed Python profile {profile!r} is not an executable")
-    return argv[0]
+    return resolve_python_provider(
+        profile,
+        provider=provider,
+        state_path=state_path,
+        providers_path=providers_path,
+    ).argv[0]
 
 
 def runtime_env(
     profile: str,
     *,
-    system: str | None = None,
-    receipt_path: Path | str | None = None,
+    provider: str | None = None,
+    state_path: Path | str | None = None,
+    providers_path: Path | str | None = None,
 ) -> dict[str, str]:
-    receipt = load_setup_receipt(receipt_path, system=system)
-    values = (receipt.get("runtime_env") or {}).get(profile, {})
-    if not isinstance(values, dict) or any(
-        not isinstance(key, str) or not isinstance(value, str)
-        for key, value in values.items()
-    ):
-        raise ToolRuntimeError(f"invalid runtime environment for {profile}")
-    return dict(values)
+    return resolve_python_provider(
+        profile,
+        provider=provider,
+        state_path=state_path,
+        providers_path=providers_path,
+    ).environment
 
 
-def _profile_launcher_completed(profile: str, target: str) -> bool:
-    """Recognize the Python process started by a POSIX profile launcher.
-
-    POSIX receipts point at a small shell launcher which adds the component's
-    ``site`` directory before execing the shared managed Python.  Consequently
-    ``sys.executable`` can never equal the receipt target.  The marker is set
-    only on our exec transition, and the managed-home plus PYTHONPATH checks
-    keep an inherited or user-supplied marker from accepting another Python.
-    """
-    if os.environ.get(ACTIVE_PYTHON_PROFILE_ENV) != profile:
-        return False
-    receipt = load_setup_receipt()
-    roots = _receipt_roots(receipt)
+def ensure_provider_python(profile: str, *, provider: str | None = None) -> None:
+    """Re-exec an ASR entry point with the selected Provider's Python."""
+    resolved = resolve_python_provider(profile, provider=provider)
+    target = Path(resolved.argv[0]).resolve()
     try:
         current = Path(sys.executable).resolve()
-        home = Path(roots["home"])
-        expected_site = (Path(target).parent / "site").resolve()
-        python_paths = {
-            Path(value).expanduser().resolve()
-            for value in os.environ.get("PYTHONPATH", "").split(os.pathsep)
-            if value
-        }
     except OSError:
-        return False
-    return (current == home or home in current.parents) and expected_site in python_paths
-
-
-def ensure_managed_python(profile: str) -> None:
-    """Re-exec an ASR entry point with its receipt-managed Python profile."""
-    target = resolve_python(profile)
-    try:
-        same = Path(sys.executable).resolve() == Path(target).resolve()
-    except OSError:
-        same = False
-    if same or _profile_launcher_completed(profile, target):
-        os.environ[ACTIVE_PYTHON_PROFILE_ENV] = profile
-        for key, value in runtime_env(profile).items():
+        current = Path(sys.executable)
+    already_active = (
+        current == target
+        and os.environ.get(ACTIVE_PYTHON_PROFILE_ENV) == profile
+        and os.environ.get(ACTIVE_PROVIDER_ENV) == resolved.provider
+    )
+    if already_active:
+        for key, value in resolved.environment.items():
             os.environ.setdefault(key, value)
         return
-    env = os.environ.copy()
-    env[ACTIVE_PYTHON_PROFILE_ENV] = profile
-    for key, value in runtime_env(profile).items():
-        env.setdefault(key, value)
-    os.execve(target, [target, str(Path(sys.argv[0]).resolve()), *sys.argv[1:]], env)
+    environment = os.environ.copy()
+    environment[ACTIVE_PYTHON_PROFILE_ENV] = profile
+    environment[ACTIVE_PROVIDER_ENV] = resolved.provider
+    for key, value in resolved.environment.items():
+        environment.setdefault(key, value)
+    os.execve(
+        str(target),
+        [*resolved.argv, str(Path(sys.argv[0]).resolve()), *sys.argv[1:]],
+        environment,
+    )
+
+
+def _command_from(
+    provider_id: str,
+    name: str,
+    state: dict[str, Any] | None,
+    config: dict[str, Any],
+) -> ResolvedProvider | None:
+    if provider_id == "official":
+        return _official_entry(state, "commands", name)
+    if provider_id == "system":
+        executable = shutil.which(name)
+        if not executable:
+            return None
+        return ResolvedProvider("system", [str(Path(executable).resolve())], {}, "PATH")
+    return _custom_entry(config, provider_id, "commands", name)
+
+
+def _python_from(
+    provider_id: str,
+    profile: str,
+    state: dict[str, Any] | None,
+    config: dict[str, Any],
+) -> ResolvedProvider | None:
+    if provider_id == "official":
+        return _official_entry(state, "python_profiles", profile)
+    if provider_id == "system":
+        return None
+    return _custom_entry(config, provider_id, "python_profiles", profile)
+
+
+def _official_entry(
+    state: dict[str, Any] | None, section: str, name: str
+) -> ResolvedProvider | None:
+    if state is None:
+        return None
+    packs = state.get("packs")
+    if not isinstance(packs, dict):
+        return None
+    for pack_id in sorted(packs):
+        pack = packs[pack_id]
+        if not isinstance(pack, dict) or not isinstance(pack.get("artifact"), dict):
+            continue
+        artifact = pack["artifact"]
+        entries = artifact.get(section, {})
+        raw = entries.get(name) if isinstance(entries, dict) else None
+        if raw is None:
+            continue
+        root = Path(str(pack.get("path", ""))).expanduser().resolve()
+        argv = _validate_argv(raw, root=root, label=f"official/{pack_id}/{name}")
+        environment = _environment(artifact.get("environment", {}).get(name, {}), root)
+        return ResolvedProvider("official", argv, environment, f"pack:{pack_id}")
+    return None
+
+
+def _custom_entry(
+    config: dict[str, Any], provider_id: str, section: str, name: str
+) -> ResolvedProvider | None:
+    providers = config.get("providers", {})
+    spec = providers.get(provider_id) if isinstance(providers, dict) else None
+    if not isinstance(spec, dict):
+        return None
+    entries = spec.get(section, {})
+    raw = entries.get(name) if isinstance(entries, dict) else None
+    if raw is None:
+        return None
+    argv = _validate_argv(raw, root=None, label=f"{provider_id}/{name}")
+    environment = _environment(spec.get("environment", {}).get(name, {}), None)
+    return ResolvedProvider(provider_id, argv, environment, f"config:{provider_id}")
+
+
+def _validate_argv(raw: object, *, root: Path | None, label: str) -> list[str]:
+    if not isinstance(raw, list) or not raw or any(
+        not isinstance(value, str) or not value for value in raw
+    ):
+        raise ToolRuntimeError(f"invalid argv for {label}")
+    values = [value.replace("{pack}", str(root)) if root else value for value in raw]
+    executable = Path(values[0]).expanduser()
+    if not executable.is_absolute() or not executable.is_file():
+        raise ToolRuntimeError(f"provider executable is missing for {label}: {executable}")
+    executable = executable.resolve()
+    if root is not None and executable != root and root not in executable.parents:
+        raise ToolRuntimeError(f"official executable escapes its pack for {label}: {executable}")
+    values[0] = str(executable)
+    return values
+
+
+def _environment(raw: object, root: Path | None) -> dict[str, str]:
+    if not isinstance(raw, dict) or any(
+        not isinstance(key, str) or not isinstance(value, str)
+        for key, value in raw.items()
+    ):
+        raise ToolRuntimeError("invalid provider environment")
+    return {
+        key: value.replace("{pack}", str(root)) if root else value
+        for key, value in raw.items()
+    }
+
+
+def _saved_override(config: dict[str, Any], capability: str | None, name: str) -> str | None:
+    overrides = config.get("overrides", {})
+    for key in (capability, f"tool.{name}", name):
+        value = overrides.get(key) if key and isinstance(overrides, dict) else None
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _candidate_ids(config: dict[str, Any], override: str | None) -> list[str]:
+    custom = sorted(str(value) for value in config.get("providers", {}))
+    values = [override, "official", "system", *custom]
+    result: list[str] = []
+    for value in values:
+        if value and value not in result:
+            result.append(value)
+    return result
+
+
+def _validate_name(value: str, label: str) -> None:
+    if not value or any(character in value for character in "/\\"):
+        raise ToolRuntimeError(f"invalid {label} name: {value!r}")
+
+
+def _load_object(path: Path, label: str) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ToolRuntimeError(f"cannot read {label} {path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise ToolRuntimeError(f"invalid {label}: {path}")
+    return value

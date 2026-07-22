@@ -90,14 +90,13 @@ tool to install, which site to log into), not just descriptive.
 
 ## 2. Probe, then take the cheapest path
 
-Probe before fetching —
-apply the receipt-runner rule from both loaded SKILL.md files to every command
-in this reference. Run
-`python3 <core-skill>/scripts/preflight.py --profile capture.video` on
-macOS/Linux, or the Setup `core` Python profile on Windows. Its receipt-based
-inventory is authoritative. A recommendation identifies the managed component
-to add in a new Protocol 5 plan; do not use `which`, `where.exe`, PATH, or a
-global package manager as a second opinion. Then:
+Probe before fetching and apply the Provider Resolver rule from both loaded
+SKILL.md files to every command in this reference. Run
+`python3 <core-skill>/scripts/preflight.py --profile capture.video` on every
+platform. It reports the selected Provider for each capability and the official
+fallback pack when one is missing. Do not install dependencies ad hoc as part
+of the capture; select another healthy Provider or, with the user's approval,
+run the returned `my-llm-wiki ensure-pack <id>` command. Then:
 
 ### Path A — captions (free, no download, seconds)
 

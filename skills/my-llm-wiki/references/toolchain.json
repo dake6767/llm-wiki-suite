@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "profiles": {
     "capture.web": {"label": "Web capture", "tools": ["opencli", "agent-reach"]},
     "capture.doc": {"label": "Local document capture", "tools": ["markitdown"]},
@@ -13,70 +13,54 @@
   },
   "tools": {
     "opencli": {
-      "probe": {"kind": "command", "name": "opencli"},
-      "windows_component": "web",
+      "kind": "command",
       "description": "logged-in browser capture with image localization",
       "home": "https://www.npmjs.com/package/@jackwener/opencli",
-      "step_timeout_seconds": 600,
-      "postcheck_timeout_seconds": 30,
-      "postcheck": ["opencli", "--version"]
+      "official_pack": "toolchain-base",
+      "postcheck": ["--version"]
     },
     "agent-reach": {
-      "probe": {"kind": "command", "name": "agent-reach"},
-      "description": "multi-platform capture routing",
-      "home": "https://github.com/Panniantong/agent-reach"
+      "kind": "command",
+      "description": "agent-provided multi-platform capture routing",
+      "home": "https://github.com/Panniantong/agent-reach",
+      "postcheck": ["--help"]
     },
     "yt-dlp": {
-      "probe": {"kind": "command", "name": "yt-dlp"},
-      "windows_component": "video",
-      "description": "video metadata, captions, and audio-only download",
+      "kind": "command",
+      "description": "video metadata, captions, and audio retrieval",
       "home": "https://github.com/yt-dlp/yt-dlp",
-      "step_timeout_seconds": 600,
-      "postcheck_timeout_seconds": 30,
-      "postcheck": ["yt-dlp", "--version"]
+      "official_pack": "toolchain-base",
+      "postcheck": ["--version"]
     },
     "ffmpeg": {
-      "probe": {"kind": "command", "name": "ffmpeg"},
-      "windows_component": "video",
-      "description": "audio conversion and cover handling",
+      "kind": "command",
+      "description": "audio conversion and media handling",
       "home": "https://ffmpeg.org",
-      "step_timeout_seconds": 900,
-      "postcheck_timeout_seconds": 30,
-      "postcheck": ["ffmpeg", "-version"]
+      "official_pack": "toolchain-base",
+      "postcheck": ["-version"]
     },
     "sensevoice": {
-      "probe": {"kind": "python-module", "name": "funasr"},
-      "windows_component": "asr-zh",
-      "description": "SenseVoice/FunASR for Chinese video",
+      "kind": "python-profile",
+      "profile": "asr-zh",
+      "description": "SenseVoice/FunASR for Chinese audio",
       "home": "https://github.com/FunAudioLLM/SenseVoice",
-      "step_timeout_seconds": 1800,
-      "postcheck_timeout_seconds": 30,
-      "postcheck": ["funasr"]
+      "official_pack": "asr-zh",
+      "postcheck": ["-c", "import funasr"]
     },
     "faster-whisper": {
-      "probe": {"kind": "python-module", "name": "faster_whisper"},
-      "windows_component": "asr-other",
-      "runtime_ecosystems": ["huggingface"],
-      "runtime_env": {
-        "huggingface": {
-          "cn": {"HF_ENDPOINT": "https://hf-mirror.com"},
-          "global": {}
-        }
-      },
-      "description": "local ASR for non-Chinese video",
+      "kind": "python-profile",
+      "profile": "asr-other",
+      "description": "faster-whisper for non-Chinese audio",
       "home": "https://github.com/SYSTRAN/faster-whisper",
-      "step_timeout_seconds": 1200,
-      "postcheck_timeout_seconds": 30,
-      "postcheck": ["faster_whisper"]
+      "official_pack": "asr-other",
+      "postcheck": ["-c", "import faster_whisper"]
     },
     "markitdown": {
-      "probe": {"kind": "command", "name": "markitdown"},
-      "windows_component": "documents",
+      "kind": "command",
       "description": "local documents to Markdown",
       "home": "https://github.com/microsoft/markitdown",
-      "step_timeout_seconds": 600,
-      "postcheck_timeout_seconds": 30,
-      "postcheck": ["markitdown", "--help"]
+      "official_pack": "toolchain-base",
+      "postcheck": ["--help"]
     }
   }
 }

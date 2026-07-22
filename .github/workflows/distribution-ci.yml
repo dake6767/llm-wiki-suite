@@ -1,0 +1,71 @@
+name: distribution-ci
+
+on:
+  pull_request:
+    paths:
+      - 'AGENTS.md'
+      - 'README.md'
+      - 'registry/**'
+      - 'scripts/**'
+      - 'skills/**'
+      - 'apps/my-llm-wiki-browser/crates/llm-wiki-setup/**'
+      - '.github/workflows/distribution-ci.yml'
+      - '.github/workflows/release.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'registry/**'
+      - 'scripts/**'
+      - 'skills/**'
+      - 'apps/my-llm-wiki-browser/crates/llm-wiki-setup/**'
+      - '.github/workflows/distribution-ci.yml'
+      - '.github/workflows/release.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  setup-core:
+    name: Setup Core (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: apps/my-llm-wiki-browser
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: apps/my-llm-wiki-browser -> target
+      - run: cargo test -p llm-wiki-setup
+
+  skills-and-manifest:
+    name: Skills and manifest (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate release inputs
+        run: |
+          python -m json.tool registry/pack-build-posix.lock.json
+          python -m json.tool registry/pack-build-windows.lock.json
+          python -m json.tool skills/my-llm-wiki/references/toolchain.json
+          python scripts/build_distribution.py --help
+      - name: Compile and test Provider/pack code
+        run: |
+          python -m compileall -q scripts skills
+          python -m unittest scripts.test_distribution
+          python -m unittest discover -s skills/my-llm-wiki/scripts -p "test_*.py"
+          python -m unittest discover -s skills/my-llm-wiki-video/scripts -p "test_*.py"
+      - name: Check approval-clean examples
+        run: python scripts/check_approval_safety.py

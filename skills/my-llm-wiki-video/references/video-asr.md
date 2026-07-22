@@ -23,9 +23,10 @@ cue→anchor assembly (§3), and content verification (§4) stay in
 
 ## 1. Audio-only download
 
-Apply the loaded SKILL.md receipt-runner rule to every bare tool and Python
-example below. On macOS/Linux that means `tool_exec.py`; on Windows it means
-Setup `tools run` / `python run`. Download audio only with yt-dlp (never the video), e.g.
+Apply the loaded SKILL.md Provider Resolver rule to every external command
+below. Use `tool_exec.py --capability capture.video.captions yt-dlp -- ...`
+and `tool_exec.py --capability media.extract-audio ffmpeg -- ...` on every
+platform. Download audio only with yt-dlp (never the video), e.g.
 `yt-dlp -x --audio-format mp3 -o "<tmp>/audio.%(ext)s" <url>` — but see the
 Bilibili format trap in `video-bilibili-pitfalls.md` (on Bilibili, list formats
 and pick the audio-only stream id explicitly).
@@ -43,10 +44,10 @@ Guess from the title/author (a title with ≥4 CJK chars and more CJK than latin
 - **Chinese → SenseVoice** (FunASR `SenseVoiceSmall`,
   [github.com/FunAudioLLM/SenseVoice](https://github.com/FunAudioLLM/SenseVoice)
   via [FunASR](https://github.com/modelscope/FunASR)): ~15× faster than
-  Whisper on CPU and far better on Chinese proper nouns. Select the locked
-  `asr-zh` component in the Protocol 5 plan; the runner re-executes its private
-  Python from the receipt. Model weights are still a first-use download from
-  ModelScope, a domestic CDN.
+  Whisper on CPU and far better on Chinese proper nouns. The runner resolves
+  the `python.asr-zh` Provider and re-executes its isolated Python. If none is
+  available, offer `my-llm-wiki ensure-pack asr-zh`; model weights remain a
+  first-use download from ModelScope, a domestic CDN.
   It reads wav (not m4a — convert first, §1) and has **no native
   timestamps** — feeding it the whole file returns ONE cue stamped
   `00:00:00,000 --> 00:00:00,000` (a documented incident re-ran a 40-min
@@ -60,10 +61,11 @@ Guess from the title/author (a title with ≥4 CJK chars and more CJK than latin
   ([github.com/SYSTRAN/faster-whisper](https://github.com/SYSTRAN/faster-whisper);
   the CTranslate2 reimplementation — same models ~3-5× faster, makes
   `large-v3` affordable on CPU). It is a Python **library with no CLI**:
-  select the locked `asr-other` component and run the shipped runner in §3,
-  never an ad-hoc inline snippet. faster-whisper pulls its models from Hugging
-  Face; the installer records `HF_ENDPOINT=https://hf-mirror.com` for a
-  restricted route and the runner applies it at model load. Unlike the
+  resolve the `python.asr-other` Provider and run the shipped runner in §3,
+  never an ad-hoc inline snippet. If none is available, offer
+  `my-llm-wiki ensure-pack asr-other`. faster-whisper pulls its models from
+  Hugging Face; the official Provider supplies its scoped mirror environment
+  and the runner applies it at model load. Unlike the
   SenseVoice path it decodes
   m4a/mp3 itself (PyAV) — no wav conversion needed — and its segments carry
   native timestamps, so there is no VAD-first trick to apply.
@@ -108,11 +110,11 @@ background the command rather than generating another wrapper script, and do
 not reproduce either script's source in a heredoc, inline interpreter flag, or
 arbitrary-code tool.
 
-`$ASR_PYTHON` means the exact `python_profiles` entry in the active Protocol 5
-receipt. On macOS/Linux that entry is intentionally a small profile launcher,
-not `runtime/.../bin/python3`. Do not bypass it by selecting the shared runtime
-Python and constructing `PYTHONPATH` by hand; the shipped runner validates and
-enters the receipt-owned profile itself.
+Launch the shipped script with any Python capable of parsing its arguments; the
+script immediately resolves `python.asr-zh` or `python.asr-other` and re-executes
+under that Provider before importing the ASR library. Pass `--provider <id>`
+only when the user chose a Provider for this task. Do not select a shared Python
+or construct `PYTHONPATH` by hand.
 
 ### 3a. SenseVoice (Chinese) — VAD-first
 
@@ -122,7 +124,7 @@ SenseVoice the full audio and hope for cue times; it is non-autoregressive and
 will return a single untimed blob (see the bullet above):
 
 ```bash
-"$ASR_PYTHON" "$VIDEO_SKILL/scripts/sensevoice_to_srt.py" \
+python3 "$VIDEO_SKILL/scripts/sensevoice_to_srt.py" \
   "$TMPDIR/audio.wav" "$TMPDIR/transcript.srt" \
   --status "$TMPDIR/status.yaml" --language zh \
   --source-url "$URL" --original-id "$VIDEO_ID"
@@ -154,7 +156,7 @@ carry native timestamps; the runner just adds Silero VAD filtering (suppresses
 hallucinated cues in silence), SRT assembly, and the atomic status contract:
 
 ```bash
-"$ASR_PYTHON" "$VIDEO_SKILL/scripts/faster_whisper_to_srt.py" \
+python3 "$VIDEO_SKILL/scripts/faster_whisper_to_srt.py" \
   "$TMPDIR/audio.m4a" "$TMPDIR/transcript.srt" \
   --status "$TMPDIR/status.yaml" --model medium \
   --initial-prompt "<title + keywords + first description line>" \
@@ -230,7 +232,8 @@ make every downstream check lie:
   `--downloader aria2c`, see its pitfalls file) and re-check duration with
   ffprobe. It is NOT a VAD length limit — fsmn-vad handles 40+ min fine —
   so don't reach for chunked-VAD workarounds before ruling out a bad file.
-- **Never add FFmpeg to PATH as a workaround.** The managed yt-dlp runner
-  injects its receipt-owned FFmpeg location, and direct conversion goes through
-  the receipt runner. A missing executable means the `video` component needs a
-  new Protocol 5 plan or repair.
+- **Never mutate PATH as a workaround.** Resolve FFmpeg through
+  `tool_exec.py --capability media.extract-audio`. A damaged official Provider
+  calls for `my-llm-wiki repair`; an absent one can be installed with
+  `my-llm-wiki ensure-pack toolchain-base` after approval, or replaced by an
+  explicitly selected system/custom Provider.

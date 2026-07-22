@@ -16,20 +16,24 @@ function buildMcpPrompt(): string {
   const auth = token ? `Authorization: Bearer ${token}` : "";
   const loopbackHosts = new Set(["127.0.0.1", "localhost", "::1"]);
   const isLocal = loopbackHosts.has(location.hostname);
-  const python = /Windows/i.test(navigator.userAgent) ? "py -3" : "python3";
   if (isLocal) {
+    const cli = /Windows/i.test(navigator.userAgent)
+      ? "%USERPROFILE%\\.my-llm-wiki\\bin\\my-llm-wiki.exe"
+      : "~/.my-llm-wiki/bin/my-llm-wiki";
     return [
       "请把我的本机 LLM Wiki 知识库注册为 MCP 服务器。默认使用项目自带的 stdio bridge，",
       "不要把 127.0.0.1 HTTP 端点直接写进宿主配置；Hermes、WorkBuddy 等客户端可能会把",
       "loopback 错送进系统代理。bridge 会强制直连，并在运行时读取当前端口和 token。",
       "",
-      "请找到永久安装的 llm-wiki-suite checkout，在仓库根目录运行：",
-      `${python} scripts/install-browser.py --register-mcp`,
+      "Setup Core 已把无依赖 CLI 安装在用户目录。请按当前宿主使用它注册 stdio MCP：",
       "",
-      "安装器会识别 Claude Code、Hermes、Codex、WorkBuddy，并使用当前操作系统中实际的",
-      "Python 和 bridge 绝对路径生成配置；不要手工猜测 macOS app bundle、Windows 盘符或",
-      "Linux 安装目录。它只在确认后调用宿主自己的注册命令；WorkBuddy 没有注册 CLI，",
-      "安装器会打印需要人工合并到 ~/.workbuddy/mcp.json 的准确 JSON。",
+      `Claude Code: claude mcp add --scope user my-llm-wiki -- ${cli} mcp-bridge`,
+      `Codex: codex mcp add my-llm-wiki -- ${cli} mcp-bridge`,
+      `Hermes: hermes mcp add my-llm-wiki --command ${cli} --args mcp-bridge`,
+      "",
+      "如果宿主没有 MCP 注册命令，请把同一个可执行文件和参数 mcp-bridge 写入其 stdio",
+      "配置。不要直接注册 127.0.0.1 HTTP；bridge 会绕过系统代理，并在每次请求时读取",
+      "Browser 当前端口与 token。",
       "",
       "注册后请新开会话并验证 list_wikis。Browser 必须在运行，但后续端口变化或 token 重置",
       "不需要重新注册 MCP。",

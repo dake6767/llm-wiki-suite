@@ -1,19 +1,29 @@
-//! 应用自动更新：包一层 tauri-plugin-updater 的状态机，供 HTTP 设置页轮询。
+//! 应用自动更新：包一层 tauri-plugin-updater 的状态机，供内嵌 Setup 窗口轮询。
 //!
-//! 检查/下载都是异步长任务，HTTP 层（llm-wiki-server 的 /config/update）只读
-//! 这里的状态快照并触发后台任务，自身永不阻塞。签名验证由 updater 插件强制
+//! 检查/下载都是异步长任务，Setup GUI 只读这里的状态快照。签名验证由 updater 插件强制
 //! （minisign 公钥烧在 tauri.conf.json），清单/下载通道被劫持也装不进伪造包。
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use llm_wiki_server::UpdateStatus;
+use serde::Serialize;
 use tauri_plugin_updater::UpdaterExt as _;
 
 /// 启动后首次自动检查的延迟：等本地服务/托盘就绪，也避免拖慢启动路径。
 const FIRST_CHECK_DELAY: Duration = Duration::from_secs(10);
 /// 周期检查间隔。只改状态与托盘文案，不自动下载。
 const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UpdateStatus {
+    pub current_version: String,
+    pub state: String,
+    pub latest_version: Option<String>,
+    pub notes: Option<String>,
+    pub downloaded: Option<u64>,
+    pub total: Option<u64>,
+    pub error: Option<String>,
+}
 
 /// 内部状态机。`Available` 不缓存 Update 句柄——install 时重新 check 一次拿新鲜
 /// 句柄（一次网络往返，换来状态可全量序列化、无生命周期纠缠）。
@@ -161,24 +171,21 @@ impl UpdateManager {
         });
     }
 
-    /// 触发下载并安装。仅 `Available` 态可用；portable 恒 Err。
-    /// 安装完成置 ReadyToRestart，重启走既有的 /config/restart。
-    pub fn install(&self) -> Result<(), String> {
+    /// 检查并安装最新 Browser。Setup GUI 可以直接从 idle/error 状态发起，
+    /// 不需要先走一轮 HTTP 检查接口；进行中与已就绪状态保持幂等。
+    pub fn install_latest(&self) -> Result<(), String> {
         {
             let mut state = self.state.lock().unwrap();
             match &*state {
-                State::Available { version, .. } => {
-                    let version = version.clone();
-                    *state = State::Downloading {
-                        version,
-                        downloaded: 0,
-                        total: None,
-                    };
-                }
                 State::Portable { .. } => {
                     return Err("便携版不支持原地更新，请手动下载新版本".into());
                 }
-                _ => return Err("当前没有可安装的更新".into()),
+                State::Checking | State::Downloading { .. } | State::ReadyToRestart { .. } => {
+                    return Ok(());
+                }
+                State::Idle | State::UpToDate | State::Available { .. } | State::Error { .. } => {
+                    *state = State::Checking;
+                }
             }
         }
         let manager = self.clone();
@@ -208,6 +215,11 @@ impl UpdateManager {
             }
         };
         let version = update.version.clone();
+        *self.state.lock().unwrap() = State::Downloading {
+            version: version.clone(),
+            downloaded: 0,
+            total: None,
+        };
         let progress_state = self.state.clone();
         let progress_version = version.clone();
         let mut downloaded: u64 = 0;

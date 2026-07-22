@@ -52,12 +52,16 @@ def load_metadata(path: Path) -> Any:
         return json.load(handle)
 
 
-def run_ytdlp(url: str, browser: str | None, timeout: int) -> Any:
+def run_ytdlp(
+    url: str, browser: str | None, timeout: int, provider: str | None = None
+) -> Any:
     parsed = urlparse(url)
     if parsed.scheme != "https" or not parsed.netloc:
         raise ValueError("video URL must be an absolute HTTPS URL")
     try:
-        prefix = resolve_command_argv("yt-dlp")
+        prefix = resolve_command_argv(
+            "yt-dlp", capability="capture.video.metadata", provider=provider
+        )
     except ToolRuntimeError as exc:
         raise RuntimeError(str(exc)) from exc
     command = [
@@ -97,6 +101,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="explicit login-wall fallback; reads that browser's cookies",
     )
     parser.add_argument("--timeout", type=int, default=60)
+    parser.add_argument("--provider", help="explicit Provider id for this task only")
     parser.add_argument("--output", type=Path, help="write normalized JSON to this file")
     return parser
 
@@ -107,7 +112,7 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--cookies-from-browser requires --url")
     try:
         raw = (load_metadata(args.from_json) if args.from_json
-               else run_ytdlp(args.url, args.cookies_from_browser, args.timeout))
+               else run_ytdlp(args.url, args.cookies_from_browser, args.timeout, args.provider))
         metadata = normalize_metadata(raw)
     except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
         print(f"video_probe: {exc}", file=sys.stderr)

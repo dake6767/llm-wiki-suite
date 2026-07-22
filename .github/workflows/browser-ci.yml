@@ -70,4 +70,7 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: apps/my-llm-wiki-browser -> target
+      - name: Stage shared CLI sidecar
+        working-directory: ${{ github.workspace }}
+        run: python scripts/stage_cli.py --debug
       - run: cargo check -p llm-wiki-desktop

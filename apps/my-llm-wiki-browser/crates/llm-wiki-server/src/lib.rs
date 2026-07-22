@@ -31,9 +31,6 @@ use tower_http::{
 
 mod mcp;
 pub mod share;
-pub mod skill_version;
-
-pub use skill_version::{SkillState, SkillVersionConfig, SkillVersionInfo, SkillVersionManager};
 
 use share::{GrantAuth, GrantStore, Scope, ShareGrant};
 
@@ -71,10 +68,6 @@ pub struct ServerControl {
     pub restart: Arc<dyn Fn() + Send + Sync>,
     /// 开机自启控制；宿主不支持（如纯浏览器场景）时为 `None`。
     pub autostart: Option<AutostartControl>,
-    /// 应用更新控制；宿主不支持（如纯浏览器场景）时为 `None`。
-    pub update: Option<UpdateControl>,
-    /// 技能版本探测器（doc 21）；只读、无 mutating 端点。宿主不支持时为 `None`（前端隐藏面板）。
-    pub skill_version: Option<Arc<SkillVersionManager>>,
 }
 
 /// 开机自启的读写钩子，由桌面外壳注入（错误以文案形式透传给设置页）。
@@ -82,36 +75,6 @@ pub struct ServerControl {
 pub struct AutostartControl {
     pub is_enabled: Arc<dyn Fn() -> Result<bool, String> + Send + Sync>,
     pub set_enabled: Arc<dyn Fn(bool) -> Result<(), String> + Send + Sync>,
-}
-
-/// 应用更新钩子，由桌面外壳注入。检查/下载是异步长任务，这里不阻塞 HTTP 层：
-/// `check`/`install` 只是触发后台任务，进展一律通过 `status` 快照轮询。
-#[derive(Clone)]
-pub struct UpdateControl {
-    pub status: Arc<dyn Fn() -> UpdateStatus + Send + Sync>,
-    pub check: Arc<dyn Fn() + Send + Sync>,
-    /// 仅在 `available` 态可触发；其余状态返回 Err（文案透传给设置页）。
-    pub install: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
-}
-
-/// 更新状态快照。`state` 取值：
-/// `idle` | `checking` | `up-to-date` | `available` | `downloading` |
-/// `ready-to-restart` | `portable` | `error`。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UpdateStatus {
-    pub current_version: String,
-    pub state: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub latest_version: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub notes: Option<String>,
-    /// 下载进度（downloading 态）；`total` 未知时为 None。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub downloaded: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub total: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
 }
 
 #[derive(Clone)]
@@ -193,12 +156,6 @@ pub fn build_router(config: ServerConfig) -> Router {
             "/config/autostart",
             get(get_autostart_config).put(put_autostart_config),
         )
-        .route("/config/update", get(get_update_config))
-        .route("/config/update/check", post(post_update_check))
-        .route("/config/update/install", post(post_update_install))
-        .route("/config/skills", get(get_skills_config))
-        .route("/config/skills/check", post(post_skills_check))
-        .route("/config/skills/dismiss", post(post_skills_dismiss))
         .route("/config/restart", post(restart_server))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_owner));
     let api = shared.merge(owner_only);
@@ -427,17 +384,17 @@ fn apply_pending_changes(
     watcher: &Arc<Mutex<RecommendedWatcher>>,
     watched: &mut BTreeMap<PathBuf, WatchDepth>,
 ) {
-    if pending.reload_registry {
-        if let Some(config) = registry_config {
-            match reload_registry_index(config, manager, searcher) {
-                Ok(()) => sync_watches_from_manager(watcher, watched, manager, Some(config)),
-                Err(err) => {
-                    tracing::warn!(error = %err, "failed to reload wiki registry");
-                    refresh_pending_wikis(&pending.wiki_keys, manager, searcher);
-                }
+    if pending.reload_registry
+        && let Some(config) = registry_config
+    {
+        match reload_registry_index(config, manager, searcher) {
+            Ok(()) => sync_watches_from_manager(watcher, watched, manager, Some(config)),
+            Err(err) => {
+                tracing::warn!(error = %err, "failed to reload wiki registry");
+                refresh_pending_wikis(&pending.wiki_keys, manager, searcher);
             }
-            return;
         }
+        return;
     }
 
     refresh_pending_wikis(&pending.wiki_keys, manager, searcher);
@@ -1393,108 +1350,6 @@ async fn put_autostart_config(
     }))
 }
 
-/// 读取更新状态。宿主未注入钩子（纯浏览器/portable 之外的 web-only 场景）时
-/// `supported: false`，设置页据此隐藏更新面板。
-async fn get_update_config(State(state): State<AppState>) -> Json<UpdateConfigInfo> {
-    let Some(update) = state.control.as_ref().and_then(|c| c.update.as_ref()) else {
-        return Json(UpdateConfigInfo {
-            supported: false,
-            status: None,
-        });
-    };
-    Json(UpdateConfigInfo {
-        supported: true,
-        status: Some((update.status)()),
-    })
-}
-
-/// 触发一次后台更新检查（幂等：检查/下载进行中时宿主自行忽略），随后轮询 GET。
-async fn post_update_check(
-    State(state): State<AppState>,
-) -> Result<Json<UpdateConfigInfo>, ApiError> {
-    let update = state
-        .control
-        .as_ref()
-        .and_then(|c| c.update.as_ref())
-        .ok_or(ApiError::not_supported("当前环境不支持应用更新"))?;
-    (update.check)();
-    Ok(Json(UpdateConfigInfo {
-        supported: true,
-        status: Some((update.status)()),
-    }))
-}
-
-/// 触发下载并安装（仅 available 态）。完成后状态变为 ready-to-restart，
-/// 由设置页引导用户调 /config/restart。
-async fn post_update_install(
-    State(state): State<AppState>,
-) -> Result<Json<UpdateConfigInfo>, ApiError> {
-    let update = state
-        .control
-        .as_ref()
-        .and_then(|c| c.update.as_ref())
-        .ok_or(ApiError::not_supported("当前环境不支持应用更新"))?;
-    (update.install)().map_err(|_| ApiError::bad_request("当前没有可安装的更新"))?;
-    Ok(Json(UpdateConfigInfo {
-        supported: true,
-        status: Some((update.status)()),
-    }))
-}
-
-// ——— 技能版本探测（doc 21）：owner-only、只读、无 mutating 端点 ———
-
-/// 读取当前技能版本快照。宿主未注入 manager 时 `supported:false`，前端隐藏面板。
-async fn get_skills_config(State(state): State<AppState>) -> Json<SkillsConfigInfo> {
-    let Some(manager) = state
-        .control
-        .as_ref()
-        .and_then(|c| c.skill_version.as_ref())
-    else {
-        return Json(SkillsConfigInfo {
-            supported: false,
-            info: None,
-        });
-    };
-    Json(SkillsConfigInfo {
-        supported: true,
-        info: Some(manager.status()),
-    })
-}
-
-/// 强制刷新一次（解析源 + 拉取校验 latest），返回新快照。
-async fn post_skills_check(
-    State(state): State<AppState>,
-) -> Result<Json<SkillsConfigInfo>, ApiError> {
-    let manager = state
-        .control
-        .as_ref()
-        .and_then(|c| c.skill_version.as_ref())
-        .ok_or(ApiError::not_supported("当前环境不支持技能版本检查"))?
-        .clone();
-    let info = manager.check().await;
-    Ok(Json(SkillsConfigInfo {
-        supported: true,
-        info: Some(info),
-    }))
-}
-
-/// 「本版本不再提醒」。仅写等值去重锚，不触发任何文件系统写入（技能侧）。
-async fn post_skills_dismiss(
-    State(state): State<AppState>,
-    Json(body): Json<SkillsDismiss>,
-) -> Result<Json<SkillsConfigInfo>, ApiError> {
-    let manager = state
-        .control
-        .as_ref()
-        .and_then(|c| c.skill_version.as_ref())
-        .ok_or(ApiError::not_supported("当前环境不支持技能版本检查"))?;
-    manager.dismiss(&body.version);
-    Ok(Json(SkillsConfigInfo {
-        supported: true,
-        info: Some(manager.status()),
-    }))
-}
-
 /// 重启宿主进程，使新端口生效。
 async fn restart_server(State(state): State<AppState>) -> Result<Json<RestartResult>, ApiError> {
     let control = state
@@ -2349,26 +2204,6 @@ struct AutostartConfigInfo {
 #[derive(Debug, Deserialize)]
 struct AutostartUpdate {
     enabled: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct UpdateConfigInfo {
-    supported: bool,
-    #[serde(flatten, skip_serializing_if = "Option::is_none")]
-    status: Option<UpdateStatus>,
-}
-
-/// 技能版本探测响应（doc 21 §4）：`supported` + flatten 的 `SkillVersionInfo`。
-#[derive(Debug, Serialize)]
-struct SkillsConfigInfo {
-    supported: bool,
-    #[serde(flatten, skip_serializing_if = "Option::is_none")]
-    info: Option<SkillVersionInfo>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SkillsDismiss {
-    version: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3482,8 +3317,6 @@ mod tests {
             }),
             restart: Arc::new(move || restart_target.store(true, Ordering::SeqCst)),
             autostart: None,
-            update: None,
-            skill_version: None,
         };
         let app = build_router(ServerConfig {
             frontend_dist: None,
@@ -3550,8 +3383,6 @@ mod tests {
                     Ok(())
                 }),
             }),
-            update: None,
-            skill_version: None,
         };
         let app = build_router(ServerConfig {
             frontend_dist: None,
@@ -3588,203 +3419,6 @@ mod tests {
 
         let info: AutostartConfigInfo = get_json(&app, "/api/v1/config/autostart").await;
         assert!(info.enabled);
-    }
-
-    #[tokio::test]
-    async fn update_config_get_check_and_install() {
-        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-
-        let checked = Arc::new(AtomicUsize::new(0));
-        let installed = Arc::new(AtomicBool::new(false));
-        let check_target = checked.clone();
-        let install_state = installed.clone();
-        let status_state = installed.clone();
-        let control = ServerControl {
-            persist_port: Arc::new(|_| Ok(())),
-            restart: Arc::new(|| {}),
-            autostart: None,
-            update: Some(UpdateControl {
-                status: Arc::new(move || UpdateStatus {
-                    current_version: "1.0.3".into(),
-                    state: if status_state.load(Ordering::SeqCst) {
-                        "ready-to-restart".into()
-                    } else {
-                        "available".into()
-                    },
-                    latest_version: Some("1.0.4".into()),
-                    notes: None,
-                    downloaded: None,
-                    total: None,
-                    error: None,
-                }),
-                check: Arc::new(move || {
-                    check_target.fetch_add(1, Ordering::SeqCst);
-                }),
-                install: Arc::new(move || {
-                    install_state.store(true, Ordering::SeqCst);
-                    Ok(())
-                }),
-            }),
-            skill_version: None,
-        };
-        let app = build_router(ServerConfig {
-            frontend_dist: None,
-            index_manager: IndexManager::build(std::iter::empty::<WikiEntry>()).unwrap(),
-            searcher: FullTextSearcher::in_memory().unwrap(),
-            auth_token: String::new(),
-            watch_wikis: false,
-            registry_config: None,
-            port: 8800,
-            control: Some(control),
-            owner_online_url: None,
-            public_base_url: None,
-            grants_path: None,
-        });
-
-        let info: serde_json::Value = get_json(&app, "/api/v1/config/update").await;
-        assert_eq!(info["supported"], true);
-        assert_eq!(info["current_version"], "1.0.3");
-        assert_eq!(info["state"], "available");
-        assert_eq!(info["latest_version"], "1.0.4");
-
-        let post = |uri: &'static str| {
-            app.clone().oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(uri)
-                    .body(Body::empty())
-                    .expect("request"),
-            )
-        };
-
-        let check = post("/api/v1/config/update/check").await.expect("response");
-        assert_eq!(check.status(), StatusCode::OK);
-        assert_eq!(checked.load(Ordering::SeqCst), 1);
-
-        let install = post("/api/v1/config/update/install")
-            .await
-            .expect("response");
-        assert_eq!(install.status(), StatusCode::OK);
-        assert!(installed.load(Ordering::SeqCst));
-    }
-
-    #[tokio::test]
-    async fn update_config_reports_unsupported_without_hooks() {
-        let app = build_router(ServerConfig {
-            frontend_dist: None,
-            index_manager: IndexManager::build(std::iter::empty::<WikiEntry>()).unwrap(),
-            searcher: FullTextSearcher::in_memory().unwrap(),
-            auth_token: String::new(),
-            watch_wikis: false,
-            registry_config: None,
-            port: 8800,
-            control: None,
-            owner_online_url: None,
-            public_base_url: None,
-            grants_path: None,
-        });
-
-        let info: serde_json::Value = get_json(&app, "/api/v1/config/update").await;
-        assert_eq!(info["supported"], false);
-        assert!(info.get("state").is_none());
-
-        let check = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/v1/config/update/check")
-                    .body(Body::empty())
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
-        assert_eq!(check.status(), StatusCode::NOT_IMPLEMENTED);
-    }
-
-    #[tokio::test]
-    async fn skills_config_supported_and_owner_only() {
-        let manager = Arc::new(SkillVersionManager::new(SkillVersionConfig {
-            app_version: "1.0.0".into(),
-            builtin_slugs: vec![], // 无 slug → resolve 为 Absent（不发网络也稳定）
-            host_targets: vec![],
-            endpoints: vec![],
-            state_path: None,
-            on_change: None,
-            notify: None,
-        }));
-        let control = ServerControl {
-            persist_port: Arc::new(|_| Ok(())),
-            restart: Arc::new(|| {}),
-            autostart: None,
-            update: None,
-            skill_version: Some(manager),
-        };
-        let app = build_router(ServerConfig {
-            frontend_dist: None,
-            index_manager: IndexManager::build(std::iter::empty::<WikiEntry>()).unwrap(),
-            searcher: FullTextSearcher::in_memory().unwrap(),
-            auth_token: "secret".into(),
-            watch_wikis: false,
-            registry_config: None,
-            port: 8800,
-            control: Some(control),
-            owner_online_url: None,
-            public_base_url: None,
-            grants_path: None,
-        });
-
-        // Owner（master token）可读，supported:true。
-        let owner = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/api/v1/config/skills")
-                    .header(header::AUTHORIZATION, "Bearer secret")
-                    .body(Body::empty())
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
-        assert_eq!(owner.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(owner.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let info: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(info["supported"], true);
-        assert_eq!(info["changelogUrl"], skill_version::CHANGELOG_URL);
-
-        // 无令牌 → 401（owner-only）。
-        let anon = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/api/v1/config/skills")
-                    .body(Body::empty())
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
-        assert_eq!(anon.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn skills_config_reports_unsupported_without_hooks() {
-        let app = build_router(ServerConfig {
-            frontend_dist: None,
-            index_manager: IndexManager::build(std::iter::empty::<WikiEntry>()).unwrap(),
-            searcher: FullTextSearcher::in_memory().unwrap(),
-            auth_token: String::new(),
-            watch_wikis: false,
-            registry_config: None,
-            port: 8800,
-            control: None,
-            owner_online_url: None,
-            public_base_url: None,
-            grants_path: None,
-        });
-        let info: serde_json::Value = get_json(&app, "/api/v1/config/skills").await;
-        assert_eq!(info["supported"], false);
     }
 
     #[tokio::test]

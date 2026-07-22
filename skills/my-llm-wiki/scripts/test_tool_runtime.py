@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import shlex
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,242 +14,204 @@ import tool_runtime
 
 
 class ToolRuntimeTests(unittest.TestCase):
-    def test_non_windows_requires_protocol_receipt(self) -> None:
+    def test_open_skills_use_system_tool_without_setup_core(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaisesRegex(tool_runtime.ToolRuntimeError, "receipt is missing"):
-                tool_runtime.resolve_command_argv(
-                    "yt-dlp", system="Linux", receipt_path=Path(tmp) / "missing.json"
+            executable = Path(tmp) / "ffmpeg"
+            executable.write_bytes(b"tool")
+            with mock.patch.object(
+                tool_runtime.shutil, "which", return_value=str(executable)
+            ):
+                resolved = tool_runtime.resolve_command(
+                    "ffmpeg",
+                    state_path=Path(tmp) / "missing-state.json",
+                    providers_path=Path(tmp) / "missing-providers.json",
                 )
+            self.assertEqual(resolved.provider, "system")
+            self.assertEqual(resolved.argv, [str(executable.resolve())])
 
-    def test_windows_resolves_only_receipt_argv(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp)
-            node = home / "tools" / "opencli" / "node.exe"
-            node.parent.mkdir(parents=True)
-            node.write_bytes(b"MZ")
-            script = home / "tools" / "opencli" / "opencli.js"
-            script.write_text("", encoding="utf-8")
-            receipt = home / "install-state.json"
-            receipt.write_text(json.dumps({
-                "schema": 1,
-                "protocol": 5,
-                "platform": "windows",
-                "home": str(home),
-                "suite": str(home / "suite"),
-                "runtime": str(home / "runtime"),
-                "tools": {
-                    "opencli": {"argv": ["{home}/tools/opencli/node.exe", "{home}/tools/opencli/opencli.js"]}
-                },
-            }), encoding="utf-8")
-            resolved = tool_runtime.resolve_command_argv(
-                "opencli", system="Windows", receipt_path=receipt
-            )
-            self.assertEqual(resolved[0], str(node.resolve()))
-            self.assertEqual(Path(resolved[1]), script.resolve())
-
-    def test_windows_never_falls_back_to_path(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            receipt = Path(tmp) / "receipt.json"
-            receipt.write_text(json.dumps({
-                "schema": 1,
-                "protocol": 5,
-                "platform": "windows",
-                "home": tmp,
-                "tools": {},
-            }), encoding="utf-8")
-            with self.assertRaisesRegex(tool_runtime.ToolRuntimeError, "not installed"):
-                tool_runtime.resolve_command_argv(
-                    "opencli", system="Windows", receipt_path=receipt
-                )
-
-    def test_windows_rejects_executable_outside_managed_home(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as other:
-            executable = Path(other) / "tool.exe"
-            executable.write_bytes(b"MZ")
-            receipt = Path(tmp) / "receipt.json"
-            receipt.write_text(json.dumps({
-                "schema": 1,
-                "protocol": 5,
-                "platform": "windows",
-                "home": tmp,
-                "tools": {"tool": {"argv": [str(executable)]}},
-            }), encoding="utf-8")
-            with self.assertRaisesRegex(tool_runtime.ToolRuntimeError, "escapes install home"):
-                tool_runtime.resolve_command_argv(
-                    "tool", system="Windows", receipt_path=receipt
-                )
-
-    def test_non_windows_python_uses_managed_profile(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp)
-            profile = home / "components" / "asr-other" / "python-asr-other"
-            profile.parent.mkdir(parents=True)
-            profile.write_text("#!/bin/sh\n", encoding="utf-8")
-            receipt = home / "install-state.json"
-            receipt.write_text(json.dumps({
-                "schema": 1,
-                "protocol": 5,
-                "platform": "darwin",
-                "home": str(home),
-                "python_profiles": {"asr-other": str(profile)},
-            }), encoding="utf-8")
-            self.assertEqual(
-                tool_runtime.resolve_python(
-                    "asr-other", system="Darwin", receipt_path=receipt
-                ),
-                str(profile.resolve()),
-            )
-
-    def test_profile_launcher_reexec_marks_the_transition(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp)
-            profile = home / "components" / "asr-zh" / "python-asr-zh"
-            profile.parent.mkdir(parents=True)
-            profile.write_text("#!/bin/sh\n", encoding="utf-8")
-            receipt = home / "install-state.json"
-            receipt.write_text(json.dumps({
-                "schema": 1,
-                "protocol": 5,
-                "platform": tool_runtime._system_name(),
-                "home": str(home),
-                "python_profiles": {"asr-zh": str(profile)},
-                "runtime_env": {"asr-zh": {"MODEL_ROUTE": "managed"}},
-            }), encoding="utf-8")
-
-            with mock.patch.dict(os.environ, {
-                tool_runtime.INSTALL_RECEIPT_ENV: str(receipt),
-            }, clear=True), mock.patch.object(
-                tool_runtime.sys, "argv", ["runner.py", "audio.wav"]
-            ), mock.patch.object(tool_runtime.os, "execve") as execve:
-                tool_runtime.ensure_managed_python("asr-zh")
-
-            argv = execve.call_args.args
-            self.assertEqual(argv[0], str(profile.resolve()))
-            self.assertEqual(argv[1][0], str(profile.resolve()))
-            self.assertEqual(argv[1][-1], "audio.wav")
-            self.assertEqual(
-                argv[2][tool_runtime.ACTIVE_PYTHON_PROFILE_ENV], "asr-zh"
-            )
-            self.assertEqual(argv[2]["MODEL_ROUTE"], "managed")
-
-    def test_profile_launcher_does_not_reexec_after_managed_python_starts(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp)
-            runtime_python = home / "runtime" / "versions" / "3.12" / "bin" / "python3"
-            runtime_python.parent.mkdir(parents=True)
-            runtime_python.write_bytes(b"managed")
-            component = home / "components" / "asr-zh"
-            component.mkdir(parents=True)
-            profile = component / "python-asr-zh"
-            profile.write_text("#!/bin/sh\n", encoding="utf-8")
-            site = component / "site"
-            site.mkdir()
-            receipt = home / "install-state.json"
-            receipt.write_text(json.dumps({
-                "schema": 1,
-                "protocol": 5,
-                "platform": tool_runtime._system_name(),
-                "home": str(home),
-                "runtime": {"path": str(runtime_python.parents[2])},
-                "python_profiles": {"asr-zh": str(profile)},
-                "runtime_env": {"asr-zh": {"MODEL_ROUTE": "managed"}},
-            }), encoding="utf-8")
-
-            with mock.patch.dict(os.environ, {
-                tool_runtime.INSTALL_RECEIPT_ENV: str(receipt),
-                tool_runtime.ACTIVE_PYTHON_PROFILE_ENV: "asr-zh",
-                "PYTHONPATH": str(site),
-            }, clear=True), mock.patch.object(
-                tool_runtime.sys, "executable", str(runtime_python)
-            ), mock.patch.object(tool_runtime.os, "execve") as execve:
-                tool_runtime.ensure_managed_python("asr-zh")
-                self.assertEqual(os.environ["MODEL_ROUTE"], "managed")
-
-            execve.assert_not_called()
-
-    def test_profile_marker_cannot_select_python_outside_managed_home(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as other:
-            home = Path(tmp)
-            component = home / "components" / "asr-zh"
-            component.mkdir(parents=True)
-            profile = component / "python-asr-zh"
-            profile.write_text("#!/bin/sh\n", encoding="utf-8")
-            site = component / "site"
-            site.mkdir()
-            foreign_python = Path(other) / "python3"
-            foreign_python.write_bytes(b"foreign")
-            receipt = home / "install-state.json"
-            receipt.write_text(json.dumps({
-                "schema": 1,
-                "protocol": 5,
-                "platform": tool_runtime._system_name(),
-                "home": str(home),
-                "python_profiles": {"asr-zh": str(profile)},
-            }), encoding="utf-8")
-
-            with mock.patch.dict(os.environ, {
-                tool_runtime.INSTALL_RECEIPT_ENV: str(receipt),
-                tool_runtime.ACTIVE_PYTHON_PROFILE_ENV: "asr-zh",
-                "PYTHONPATH": str(site),
-            }, clear=True), mock.patch.object(
-                tool_runtime.sys, "executable", str(foreign_python)
-            ), mock.patch.object(tool_runtime.os, "execve") as execve:
-                tool_runtime.ensure_managed_python("asr-zh")
-
-            execve.assert_called_once()
-
-    @unittest.skipIf(os.name == "nt", "POSIX profile launchers use /bin/sh")
-    def test_legacy_profile_launcher_completes_one_real_process_transition(self) -> None:
+    def test_official_provider_is_preferred_over_system(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            component = root / "components" / "asr-zh"
-            site = component / "site"
-            site.mkdir(parents=True)
-            profile = component / "python-asr-zh"
-            profile.write_text(
-                "#!/bin/sh\n"
-                f"export PYTHONPATH={shlex.quote(str(site))}\n"
-                f"exec {shlex.quote(sys.executable)} \"$@\"\n",
+            official = root / "pack" / "bin" / "ffmpeg"
+            official.parent.mkdir(parents=True)
+            official.write_bytes(b"official")
+            system = root / "system-ffmpeg"
+            system.write_bytes(b"system")
+            state = self._state(root, commands={"ffmpeg": ["{pack}/bin/ffmpeg"]})
+            with mock.patch.object(tool_runtime.shutil, "which", return_value=str(system)):
+                resolved = tool_runtime.resolve_command(
+                    "ffmpeg", state_path=state, providers_path=root / "missing.json"
+                )
+            self.assertEqual(resolved.provider, "official")
+            self.assertEqual(resolved.argv[0], str(official.resolve()))
+
+    def test_explicit_system_provider_wins(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            official = root / "pack" / "bin" / "opencli"
+            official.parent.mkdir(parents=True)
+            official.write_bytes(b"official")
+            system = root / "opencli"
+            system.write_bytes(b"system")
+            state = self._state(root, commands={"opencli": ["{pack}/bin/opencli"]})
+            with mock.patch.object(tool_runtime.shutil, "which", return_value=str(system)):
+                resolved = tool_runtime.resolve_command(
+                    "opencli",
+                    provider="system",
+                    state_path=state,
+                    providers_path=root / "missing.json",
+                )
+            self.assertEqual(resolved.provider, "system")
+
+    def test_saved_custom_override_wins_and_uses_structured_argv(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            custom = root / "custom-opencli"
+            custom.write_bytes(b"custom")
+            providers = root / "providers.json"
+            providers.write_text(
+                json.dumps(
+                    {
+                        "schema": 1,
+                        "policy": "official-preferred",
+                        "overrides": {"capture.web": "my-browser"},
+                        "providers": {
+                            "my-browser": {
+                                "commands": {"opencli": [str(custom), "--profile", "wiki"]}
+                            }
+                        },
+                    }
+                ),
                 encoding="utf-8",
             )
-            profile.chmod(0o755)
-            result_path = root / "result.txt"
-            runner = root / "runner.py"
-            runner.write_text(
-                "from pathlib import Path\n"
-                "import sys\n"
-                f"sys.path.insert(0, {str(Path(tool_runtime.__file__).resolve().parent)!r})\n"
-                "from tool_runtime import ensure_managed_python\n"
-                "ensure_managed_python('asr-zh')\n"
-                "Path(sys.argv[1]).write_text('ok', encoding='utf-8')\n",
+            resolved = tool_runtime.resolve_command(
+                "opencli",
+                capability="capture.web",
+                state_path=root / "missing.json",
+                providers_path=providers,
+            )
+            self.assertEqual(resolved.provider, "my-browser")
+            self.assertEqual(resolved.argv, [str(custom.resolve()), "--profile", "wiki"])
+
+    def test_unhealthy_saved_override_falls_back_to_official(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            official = root / "pack" / "bin" / "tool"
+            official.parent.mkdir(parents=True)
+            official.write_bytes(b"official")
+            state = self._state(root, commands={"tool": ["{pack}/bin/tool"]})
+            providers = root / "providers.json"
+            providers.write_text(
+                json.dumps(
+                    {
+                        "schema": 1,
+                        "policy": "official-preferred",
+                        "overrides": {"tool.tool": "broken"},
+                        "providers": {
+                            "broken": {"commands": {"tool": [str(root / "missing")]}}
+                        },
+                    }
+                ),
                 encoding="utf-8",
             )
-            managed_home = os.path.commonpath(
-                [str(root.resolve()), str(Path(sys.executable).resolve())]
+            resolved = tool_runtime.resolve_command(
+                "tool", state_path=state, providers_path=providers
             )
-            receipt = root / "install-state.json"
-            receipt.write_text(json.dumps({
-                "schema": 1,
-                "protocol": 5,
-                "platform": tool_runtime._system_name(),
-                "home": managed_home,
-                "python_profiles": {"asr-zh": str(profile)},
-            }), encoding="utf-8")
-            env = os.environ.copy()
-            env[tool_runtime.INSTALL_RECEIPT_ENV] = str(receipt)
-            env.pop(tool_runtime.ACTIVE_PYTHON_PROFILE_ENV, None)
+            self.assertEqual(resolved.provider, "official")
 
-            completed = subprocess.run(
-                [str(profile), str(runner), str(result_path)],
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
+    def test_official_executable_cannot_escape_pack(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outside = root / "outside"
+            outside.write_bytes(b"foreign")
+            state = self._state(root, commands={"tool": [str(outside)]})
+            with self.assertRaisesRegex(tool_runtime.ToolRuntimeError, "escapes its pack"):
+                tool_runtime.resolve_command(
+                    "tool",
+                    provider="official",
+                    state_path=state,
+                    providers_path=root / "missing.json",
+                )
+
+    def test_python_provider_reexec_sets_identity_and_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            python = root / "pack" / "bin" / "python"
+            python.parent.mkdir(parents=True)
+            python.write_bytes(b"python")
+            state = self._state(
+                root,
+                python_profiles={"asr-zh": ["{pack}/bin/python"]},
+                environment={"asr-zh": {"MODEL_ROUTE": "official"}},
             )
+            with mock.patch.dict(
+                os.environ,
+                {tool_runtime.SETUP_STATE_ENV: str(state)},
+                clear=True,
+            ), mock.patch.object(
+                tool_runtime.sys, "argv", ["runner.py", "audio.wav"]
+            ), mock.patch.object(tool_runtime.os, "execve") as execve:
+                tool_runtime.ensure_provider_python("asr-zh")
+            executable, argv, environment = execve.call_args.args
+            self.assertEqual(executable, str(python.resolve()))
+            self.assertEqual(argv[-1], "audio.wav")
+            self.assertEqual(environment[tool_runtime.ACTIVE_PROVIDER_ENV], "official")
+            self.assertEqual(environment["MODEL_ROUTE"], "official")
 
-            self.assertEqual(completed.returncode, 0, completed.stderr)
-            self.assertEqual(result_path.read_text(encoding="utf-8"), "ok")
+    def test_active_python_provider_does_not_loop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            python = root / "pack" / "bin" / "python"
+            python.parent.mkdir(parents=True)
+            python.write_bytes(b"python")
+            state = self._state(
+                root,
+                python_profiles={"asr-other": ["{pack}/bin/python"]},
+            )
+            with mock.patch.dict(
+                os.environ,
+                {
+                    tool_runtime.SETUP_STATE_ENV: str(state),
+                    tool_runtime.ACTIVE_PYTHON_PROFILE_ENV: "asr-other",
+                    tool_runtime.ACTIVE_PROVIDER_ENV: "official",
+                },
+                clear=True,
+            ), mock.patch.object(
+                tool_runtime.sys, "executable", str(python)
+            ), mock.patch.object(tool_runtime.os, "execve") as execve:
+                tool_runtime.ensure_provider_python("asr-other")
+            execve.assert_not_called()
+
+    @staticmethod
+    def _state(
+        root: Path,
+        *,
+        commands: dict[str, list[str]] | None = None,
+        python_profiles: dict[str, list[str]] | None = None,
+        environment: dict[str, dict[str, str]] | None = None,
+    ) -> Path:
+        pack = root / "pack"
+        pack.mkdir(exist_ok=True)
+        state = root / "setup-state.json"
+        state.write_text(
+            json.dumps(
+                {
+                    "schema": 1,
+                    "packs": {
+                        "test": {
+                            "path": str(pack),
+                            "artifact": {
+                                "commands": commands or {},
+                                "python_profiles": python_profiles or {},
+                                "environment": environment or {},
+                            },
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        return state
 
 
 if __name__ == "__main__":

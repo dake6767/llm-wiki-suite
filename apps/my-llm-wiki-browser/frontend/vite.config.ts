@@ -7,6 +7,14 @@ export default defineConfig({
   // 配合 <base> 即可在根 / 或路径分租户 /<uid>/ 下都正确加载（见 docs/06 §5.4）。
   base: "./",
   plugins: [react(), tailwindcss()],
+  build: {
+    rollupOptions: {
+      input: {
+        browser: "index.html",
+        setup: "setup.html",
+      },
+    },
+  },
   server: {
     port: 5173,
     // 开发时把 API 代理到后端，避免跨域

@@ -100,7 +100,7 @@ fn tools_call(state: &AppState, params: &Value) -> Result<Value, (i64, String)> 
         .get("name")
         .and_then(|value| value.as_str())
         .ok_or((-32602, "missing tool name".to_string()))?;
-    let tool = ToolName::from_str(name).ok_or((-32602, format!("unknown tool: {name}")))?;
+    let tool = ToolName::parse(name).ok_or((-32602, format!("unknown tool: {name}")))?;
     let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
     let outcome = match tool {

@@ -1,274 +1,188 @@
-# Agent Installation Protocol 5
+# My LLM Wiki Agent Guide
 
-This repository has one installation interaction on every supported platform:
+My LLM Wiki has two supported product paths. Do not recreate the removed
+bootstrap, Protocol 5, component-selection, receipt, or Windows Setup flows.
 
-```text
-inspect (read-only) → one complete user selection → plan → apply → result
-```
+## 1. Choose the product path
 
-The agent owns the conversation. The deterministic installer owns paths,
-downloads, hashes, locks, backups, rollback, receipts, repair, and uninstall.
-Never reproduce installer policy in conversation or execute a tool recipe by
-hand. Protocol 4 flags and conversational install steps are unsupported.
+### Recommended: Browser one-click path
 
-## 1. Platform entry points
+Use the standard My LLM Wiki Browser package from the latest GitHub Release.
+The first launch opens an embedded Setup page before the loopback web service
+starts. The user selects only the Agent hosts that should receive the complete
+Skills Pack, reviews exact foreign-skill conflicts, and may opt out of the
+official toolchain. Setup then installs the project-tested toolchain, initializes
+the Wiki, and opens it in the same app.
 
-### macOS and Linux
+The Setup page is Tauri-local and calls the Rust Setup Core directly. It is not
+served from `127.0.0.1`, is not reachable through relay, and remains available
+later from the tray item **Skills 与工具链…**. The separate **Browser 设置…**
+item owns Wiki roots, server port, autostart, relay, and sharing.
 
-Use `bootstrap.sh` only to acquire/validate the suite and dispatch Protocol 5.
-Never pipe a remote script into a shell. For a URL-only install, download and
-inspect it first:
+### Open: Skills-only path
 
-```bash
-curl -fsSLo bootstrap.sh --connect-timeout 5 --max-time 30 --retry 1 \
-  https://raw.githubusercontent.com/dake6767/llm-wiki-suite/main/bootstrap.sh
-sed -n '1,240p' bootstrap.sh
-bash bootstrap.sh inspect --out inspection.json --json
-```
+Users may install one or more directories under `skills/` with their Agent's
+normal skill installer or by copying them. This path does not require Browser,
+Setup Core, or the official toolchain. Skills resolve capabilities through
+their Provider Resolver and may use Agent, system, or custom tools that satisfy
+the same SOP and RAW contracts. Do not claim that the project configures or
+supports those third-party environments.
 
-Mainland-China fallback:
+## 2. Headless Setup Core CLI
 
-```bash
-curl -fsSLo bootstrap.sh --connect-timeout 5 --max-time 30 --retry 1 \
-  https://gitee.com/dake6767/llm-wiki-suite/raw/main/bootstrap.sh
-sed -n '1,240p' bootstrap.sh
-bash bootstrap.sh --repo-url https://gitee.com/dake6767/llm-wiki-suite.git \
-  inspect --out inspection.json --json
-```
-
-When this checkout is explicitly intended, use:
-
-```bash
-bash bootstrap.sh --repo /absolute/path/to/llm-wiki-suite \
-  inspect --out inspection.json --json
-```
-
-An existing checkout is never pulled implicitly. `--update` only fast-forwards
-a clean `main` checkout. Python 3.10+ is the POSIX execution runtime; no Setup
-GUI is used.
-
-### Windows
-
-Windows uses the frozen native core without opening its GUI. Download the exact
-release named by `registry/bootstrap.json` → `agent_installer.release_tag`.
-Mainland-China networks try the project Worker first; GitHub Releases is the
-canonical fallback. Verify `SHA256SUMS-windows-setup.txt`, then invoke:
+Each Release publishes `My-LLM-Wiki-CLI_<version>_<platform>_<arch>.zip`. The
+Browser one-click path also installs the same binary at:
 
 ```text
-My-LLM-Wiki-Setup.exe inspect --out inspection.json --json
+~/.my-llm-wiki/bin/my-llm-wiki
 ```
 
-Current download routes:
+On Windows the file is `my-llm-wiki.exe`. The CLI and Browser GUI call the same
+Rust library and write the same state.
+
+For an Agent-driven headless setup, inspect before writing:
+
+```bash
+my-llm-wiki inspect --json
+```
+
+Show the user one complete choice containing:
+
+- one or more known host ids returned by inspection;
+- every exact `foreign` destination that would be backed up and replaced;
+- whether to use the recommended official toolchain or the open path.
+
+After one confirmation, run one command. Do not invent component or skill-subset
+choices; the one-click path always installs the complete Skills Pack and the
+official baseline is one product choice.
+
+```bash
+my-llm-wiki setup --host codex --replace /exact/foreign/path --json
+```
+
+Use `--without-toolchain` only when the user selected the open path. Setup Core
+owns downloads, SHA-256 verification, size/free-space checks, pack postchecks,
+exact backups, ownership markers, locking, and atomic activation. Never reproduce
+those steps with shell recipes or global package managers.
+
+## 3. State, repair, update, and uninstall
+
+The minimal state is:
 
 ```text
-https://wiki.htmlgo.to/_setup/latest/My-LLM-Wiki-Setup.exe
-https://wiki.htmlgo.to/_setup/latest/SHA256SUMS-windows-setup.txt
-https://github.com/dake6767/llm-wiki-suite/releases/latest/download/My-LLM-Wiki-Setup.exe
+~/.my-llm-wiki/setup-state.json
+~/.my-llm-wiki/providers.json
 ```
 
-Do not run `bootstrap.sh`, install Git Bash/Python/Node, or open Setup merely to
-drive the normal install. Double-clicking the EXE remains an optional recovery
-frontend; it is not the documented agent path.
-
-## 2. Inspect before asking
-
-Run `inspect` first. It is read-only. Do not create an agent home, Wiki,
-component directory, or selection file before showing the result.
-
-Inspection returns every `registry/bootstrap.json` → `agent_hosts` entry with:
-
-- expanded `detect_dir` and `skills_dir`;
-- detected/not-detected state;
-- every resolved skill destination and action;
-- exact conflict paths;
-- optional host configuration offers.
-
-Directory presence is context, not consent. Select no host by default unless
-the host UI can visibly mark the currently running agent as a recommendation
-without committing it.
-
-Inspection also returns the released managed components, download sizes,
-installed state, Browser choice, network route, Wiki state, warnings, and
-blockers. Global pip/npm/Homebrew/apt tools never satisfy a production
-component.
-
-## 3. Ask once
-
-Present one native selection surface containing every choice below. The user
-must be able to review the complete selection before confirming it:
-
-1. one or more named agent hosts;
-2. optional custom skills directories not represented by the registry;
-3. all skills or an explicit skill subset;
-4. every exact conflict destination that may be replaced;
-5. managed components: Documents, Web, Video, Chinese ASR, non-Chinese ASR;
-6. recommended, preselected Browser desktop app (still optional and removable
-   from the selection);
-7. optional Hermes hardening when Hermes is selected;
-8. optional-component failure policy (`continue` is recommended).
-
-Use registry host ids whenever possible. A custom target is only for a real
-host the registry does not name. Never translate a known host into a custom
-path. Start with no replacement authority; each conflict path must be selected
-explicitly.
-
-If the host supports a native multi-select/confirmation control, use it. Never
-split these choices into later questions and never demand typed `yes`/`no`.
-If a native control is unavailable, clearly present one complete structured
-choice and obtain one confirmation before writing the Selection object.
-
-Render Browser as a distinct recommended choice, not as one generic dependency
-row. When inspection reports it installable, use its `default_selected` value
-(normally `true`) and show the returned value proposition, main benefits, and
-decline impact in the user's language. Make it clear that installation opens
-the initialized Wiki immediately and that the app reads local Markdown. The
-user must be able to clear the choice before the one confirmation; preselection
-alone is never consent. Do not lead with the CLI fallback or describe Browser
-as unnecessary, though the decline impact must honestly preserve that path.
-
-The Selection schema is `registry/agent-install-v5.schema.json`. An empty
-`skills` list means every active skill. Production mode is always `copy`.
-
-## 4. Freeze, summarize, apply
-
-Write the confirmed Selection to a temporary file, then freeze it:
+Supported operations are:
 
 ```bash
-bash bootstrap.sh plan \
-  --inspection inspection.json \
-  --selection selection.json \
-  --out plan.json --json
+my-llm-wiki status --json
+my-llm-wiki repair --json
+my-llm-wiki update --check --json
+my-llm-wiki update --json
+my-llm-wiki ensure-pack asr-zh --json
+my-llm-wiki ensure-pack asr-other --json
+my-llm-wiki uninstall --host codex --json
+my-llm-wiki uninstall --all --json
 ```
 
-On Windows replace `bash bootstrap.sh` with `My-LLM-Wiki-Setup.exe`.
+`update --check` is read-only apart from network access. `update` reads one
+jointly tested distribution manifest and updates only owned artifacts. When a
+new Browser must replace the running app it returns `restart-required`; the
+embedded Setup page drives the signed platform updater and resumes after
+restart. `repair` restores the current distribution and never upgrades.
 
-Planning must fail if selection refers to another inspection, a conflict lacks
-exact replacement authority, an authority path is unused, a released component
-is unavailable, or a destination changed. Do not broaden the selection to make
-planning pass.
+Uninstall requires explicit hosts or `--all`. It removes only paths carrying
+the active ownership identity. Wiki, RAW, Provider configuration, and foreign
+Skills are user data and are never removed by these commands.
 
-After the user's single confirmation, run exactly one unattended apply:
+## 4. Official packs and network behavior
 
-```bash
-bash bootstrap.sh apply --plan plan.json --json-events
-```
-
-Do not ask questions while apply is running. Relay useful phase progress and
-keep monitoring until the terminal result exists. JSON events are informational;
-`result.json` is authoritative.
-
-## 5. Execution guarantees
-
-The installer, not the agent, guarantees:
-
-- closed stdin and argv-array execution;
-- plan hash/platform/source/destination revalidation before writes;
-- one non-waiting machine install lock;
-- immutable skill copies with provenance manifests;
-- exact-path backups and rollback;
-- required idempotent Wiki initialization before final doctor;
-- released per-platform component archives with size and SHA-256 verification;
-- pre-write free-space validation against download plus expanded component size;
-- private versioned Python/Node/tool roots under `~/.my-llm-wiki`;
-- component postchecks before receipt activation;
-- bounded project-mirror-first downloads and canonical GitHub fallback;
-- atomic session journal, result, and install receipt;
-- recovery of an interrupted core transaction on the next apply;
-- Browser failure isolation from the valid core.
-
-macOS/Linux never install global pip/npm packages or invoke brew, sudo, apt,
-dnf, or pacman. Windows never falls back to PATH, winget, pip, npm, or a
-development checkout. Skills on every OS resolve tools only from:
+The internal immutable packs are:
 
 ```text
-~/.my-llm-wiki/install-state.json
+toolchain-base  # FFmpeg, yt-dlp, Node/OpenCLI, document conversion
+asr-zh          # SenseVoice/FunASR runtime; installed on first need
+asr-other       # faster-whisper runtime; installed on first need
 ```
 
-The user may choose another Windows data root through the optional Setup
-recovery UI. Setup preserves the public `~/.my-llm-wiki` and `~/wikis` paths by
-using NTFS junctions; do not teach alternate profile paths.
+User machines never assemble these with pip, npm, Homebrew, apt, winget, or a
+PATH fallback. Release CI builds and postchecks them on each supported target.
+Setup downloads from the project CDN first and canonical GitHub Releases second,
+then verifies exact size and SHA-256 before extraction. Model weights remain a
+first-use download and use only pack-scoped environment; do not edit shell
+profiles or global proxy/package-manager configuration.
 
-## 6. Components and deferred actions
+## 5. Provider choice
 
-Stable component ids are:
+Skills follow this precedence:
 
 ```text
-documents  web  video  asr-zh  asr-other
+task-explicit Provider
+→ saved capability override
+→ healthy official Provider
+→ matching system Provider
+→ configured custom Provider
 ```
 
-The release component manifest is the user-install trust boundary. Each
-component is isolated and receipt-managed. ASR models may still download on
-first real use; the receipt supplies route-specific runtime environment such as
-`HF_ENDPOINT` without editing the user's shell profile.
+The official toolchain is recommended and preferred because it is tested with
+the published SOP. It is not mandatory. A task-level user choice always wins
+and is not persisted unless the user asks for a lasting preference. Custom
+providers use structured argv with an absolute executable; never store or run
+shell command strings.
 
-The OpenCLI Browser Bridge is packaged with `web`. Loading an unpacked Chrome
-extension requires the user's GUI identity, so apply does not pause for it. At
-the end, show the returned folder and instructions, then offer verification
-with the returned argv. A skipped or incomplete action yields
-`action-required`, not a failed core. Do not direct mainland-China users to the
-Chrome Web Store.
+If no Provider satisfies a capability, offer the relevant supported fallback:
 
-Browser is selected in the same initial surface. macOS/Linux use
-`install-browser.py --open-web`; Windows Setup uses the silent native Browser
-route. Browser launch/page-open failure is optional degradation and never
-invalidates skills or Wiki initialization. Never print a token-bearing local
-URL.
+```text
+my-llm-wiki ensure-pack toolchain-base
+my-llm-wiki ensure-pack asr-zh
+my-llm-wiki ensure-pack asr-other
+```
 
-## 7. Terminal results
+Do not silently install a large ASR pack during capture. Ask before a meaningful
+download, or use the Provider the user selected.
 
-Interpret states exactly:
+## 6. MCP boundary
 
-- `complete`: every selected automated item passed;
-- `degraded`: core is valid and an optional item failed;
-- `action-required`: automation finished and returned deferred manual work;
-- `rolled-back`: core activation was restored after failure;
-- `failed`: no valid new receipt was activated or rollback is incomplete.
+MCP configuration is separate from initial setup. The Browser owns the MCP
+server. Local stdio clients can use:
 
-Report the receipt path, session id, selected hosts/components, Wiki path,
-Browser result, and every returned manual action. Do not infer hidden success
-from console text.
+```text
+~/.my-llm-wiki/bin/my-llm-wiki mcp-bridge
+```
 
-For an installation-only request, finish with:
+The bridge forces proxy-free loopback and reads the current Browser port/token
+at runtime. Configure MCP only after an explicit request; never register it as a
+side effect of setup, doctor, capture, or update.
 
-> Send me one article, webpage, video, or note you want to preserve. I will save
-> it to RAW, compile it into your wiki, and show where to view it.
+## 7. Repository development
 
-Do not create a demonstration capture. Capture only when the user supplies a
-real source and asks for it.
+The product runtime lives in `apps/my-llm-wiki-browser/`; Skills live in
+`skills/`. Release-only pack inputs are the two files under `registry/`, and the
+small `scripts/` directory only builds/verifies release artifacts.
 
-## 8. Status, repair, and uninstall
-
-Status is read-only:
+Useful checks:
 
 ```bash
-bash bootstrap.sh status --json
-bash bootstrap.sh status --session SESSION_ID --json
+python3 -m unittest scripts.test_distribution scripts.test_approval_safe
+python3 -m unittest discover -s skills/my-llm-wiki/scripts -p 'test_*.py'
+python3 -m unittest discover -s skills/my-llm-wiki-video/scripts -p 'test_*.py'
+python3 scripts/check_approval_safety.py
+
+cd apps/my-llm-wiki-browser
+cargo test --workspace
+cd frontend && npm ci && npm run build
 ```
 
-Repair re-inspects and reapplies only receipt-owned selections. It may replace a
-mutated copy only when its Protocol 5 `install_id` still proves ownership:
+Before checking or building the desktop crate locally, stage the shared CLI
+sidecar from the repository root:
 
 ```bash
-bash bootstrap.sh repair --json-events
+python3 scripts/stage_cli.py --debug
 ```
 
-Uninstall requires an explicit structured selection or `--all`. It removes only
-paths carrying the active receipt's ownership identity. It preserves all Wikis
-and RAW data. A modified Hermes config is preserved rather than overwritten.
-
-```bash
-bash bootstrap.sh uninstall --selection uninstall-selection.json --json
-bash bootstrap.sh uninstall --all --json
-```
-
-Use the corresponding EXE commands on Windows.
-
-## 9. Boundaries outside installation
-
-MCP is not part of initial installation, Browser installation, doctor, or first
-capture. Configure or remove MCP only after a separate explicit user request.
-The existing suite-owned stdio bridge remains the local default; never register
-direct loopback HTTP or `npx mcp-remote` implicitly.
-
-Gitee is a pull-only source mirror. GitHub remains canonical. Never create
-mirror-only commits or silently substitute an undeclared third-party relay.
+Do not add compatibility readers, dual writes, old CLI flags, or alternate
+installation state machines. This major version intentionally starts from the
+new state model; an existing Wiki remains ordinary user data and can be opened
+without importing an old installer receipt.

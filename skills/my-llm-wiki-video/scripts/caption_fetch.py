@@ -146,12 +146,14 @@ def run_argv(argv: list[str], timeout: int) -> subprocess.CompletedProcess:
 
 
 def try_opencli(url: str, host: str, out: Path, timeout: int, warnings: list[str],
-                errors: list[str]) -> Path | None:
+                errors: list[str], provider: str | None) -> Path | None:
     """subs path, or None. Tool breakage goes to `errors`, a clean empty result
     ("this video has no captions") only to `warnings` — the caller uses the
     distinction to pick exit 2 (branch to ASR) vs exit 1 (fix the tool/auth)."""
     try:
-        prefix = resolve_command_argv("opencli")
+        prefix = resolve_command_argv(
+            "opencli", capability="capture.video.captions", provider=provider
+        )
     except ToolRuntimeError as exc:
         warnings.append(str(exc))
         return None
@@ -195,10 +197,13 @@ def pick_caption_file(files: list[Path], prefs: list[str]) -> Path:
 
 
 def try_ytdlp(url: str, out: Path, browser: str | None, timeout: int,
-              warnings: list[str], errors: list[str], prefs: list[str]) -> Path | None:
+              warnings: list[str], errors: list[str], prefs: list[str],
+              provider: str | None) -> Path | None:
     """Same error-vs-empty contract as try_opencli."""
     try:
-        prefix = resolve_command_argv("yt-dlp")
+        prefix = resolve_command_argv(
+            "yt-dlp", capability="capture.video.captions", provider=provider
+        )
     except ToolRuntimeError as exc:
         warnings.append(str(exc))
         return None
@@ -230,6 +235,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out", required=True, type=Path,
                         help="temp dir for the payload and subs (created if missing)")
     parser.add_argument("--tool", choices=("auto", "opencli", "yt-dlp"), default="auto")
+    parser.add_argument("--provider", help="explicit Provider id for this task only")
     parser.add_argument("--lang-pref", default="zh-Hans,zh-CN,zh,zh-Hant,en",
                         help="comma-separated language preference for multi-track results")
     parser.add_argument("--cookies-from-browser", metavar="BROWSER",
@@ -273,14 +279,16 @@ def main(argv: list[str] | None = None) -> int:
     tool = None
     attempted = False
     if args.tool in ("auto", "opencli") and host != "other":
-        subs = try_opencli(args.url, host, out, args.timeout, warnings, errors)
+        subs = try_opencli(
+            args.url, host, out, args.timeout, warnings, errors, args.provider
+        )
         attempted = True
         tool = "opencli" if subs else None
     elif args.tool == "opencli":
         warnings.append("opencli caption adapters cover YouTube/Bilibili only")
     if subs is None and args.tool in ("auto", "yt-dlp"):
         subs = try_ytdlp(args.url, out, args.cookies_from_browser,
-                         args.timeout, warnings, errors, prefs)
+                         args.timeout, warnings, errors, prefs, args.provider)
         attempted = True
         tool = "yt-dlp" if subs else None
 

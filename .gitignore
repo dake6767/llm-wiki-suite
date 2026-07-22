@@ -3,7 +3,9 @@ __pycache__/
 .DS_Store
 .setup-payload/
 setup-dist/
-windows-setup-dist/
+distribution-dist/
+cli-dist/
+apps/my-llm-wiki-browser/desktop/src-tauri/binaries/
 
 # Per-skill locally generated outputs (self-interpretation reports, render artifacts)
 skills/*/reports/
