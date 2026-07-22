@@ -463,7 +463,7 @@ def build_windows_asr(
         [str(stage / "runtime" / "python.exe"), *spec["postcheck"]],
         timeout=900,
     )
-    write_notice(stage / name, name, [
+    write_notice(stage, name, [
         "Python runtime: https://www.python.org/",
         "Resolved Python dependency inventory: pip-report.json",
     ])

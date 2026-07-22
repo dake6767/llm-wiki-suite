@@ -42,6 +42,26 @@ class DistributionBuilderTests(unittest.TestCase):
             self.assertEqual(spec["size"], archive.stat().st_size)
             self.assertEqual(spec["installed_size"], 4)
 
+    def test_windows_asr_notice_is_written_at_pack_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def fake_extract(_archive: Path, destination: Path) -> None:
+                destination.mkdir(parents=True)
+
+            with mock.patch.object(builder, "extract", side_effect=fake_extract), mock.patch.object(
+                builder, "enable_embedded_python"
+            ), mock.patch.object(builder, "pip_target"), mock.patch.object(builder, "checked"):
+                stage = builder.build_windows_asr(
+                    "asr-zh",
+                    {"packages": ["example==1"], "postcheck": ["-c", "pass"]},
+                    root / "python.zip",
+                    root,
+                )
+
+            self.assertTrue((stage / "THIRD-PARTY-NOTICES.txt").is_file())
+            self.assertFalse((stage / "asr-zh").exists())
+
     def test_merge_rejects_duplicate_platform_pack(self) -> None:
         row = {
             "schema": 1,

@@ -27,7 +27,7 @@ jobs:
     outputs:
       release_tag: ${{ steps.version.outputs.release_tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Resolve and validate one release version
         id: version
         shell: bash
@@ -77,7 +77,7 @@ jobs:
         id: create
         # 冒烟构建（workflow_dispatch）不建 release，输出空串，后续按 build-only 走。
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           result-encoding: string
           script: |
@@ -134,15 +134,16 @@ jobs:
             packs: toolchain-base,asr-zh,asr-other
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12.10'
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v9.0.0
         if: runner.os != 'Windows'
         with:
           version: '0.10.0'
-      - uses: actions/setup-node@v4
+          enable-cache: false
+      - uses: actions/setup-node@v7
         if: runner.os != 'Windows'
         with:
           node-version: '22.23.1'
@@ -153,7 +154,7 @@ jobs:
             --release-tag "${{ needs.validate-release.outputs.release_tag }}" \
             --dist distribution-dist \
             --packs "${{ matrix.packs }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: distribution-${{ matrix.artifact }}-${{ needs.validate-release.outputs.release_tag }}
           path: distribution-dist/*
@@ -185,8 +186,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           pattern: distribution-*-${{ needs.validate-release.outputs.release_tag }}
           path: distribution-parts
@@ -196,7 +197,7 @@ jobs:
           args=()
           for manifest in "${manifests[@]}"; do args+=(--input "$manifest"); done
           python scripts/merge_distribution_manifests.py "${args[@]}" --out distribution.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: distribution-manifest-${{ needs.validate-release.outputs.release_tag }}
           path: distribution.json
@@ -242,7 +243,7 @@ jobs:
     runs-on: ${{ matrix.platform }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Linux dependencies (Tauri v2)
         if: matrix.platform == 'ubuntu-22.04'
@@ -258,9 +259,9 @@ jobs:
             libssl-dev
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: apps/my-llm-wiki-browser/frontend/package-lock.json
 
@@ -298,7 +299,7 @@ jobs:
           updaterJsonPreferNsis: true
           args: ${{ matrix.args }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: cli-${{ matrix.target }}-${{ needs.validate-release.outputs.release_tag }}
           path: cli-dist/*.zip
