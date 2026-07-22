@@ -159,6 +159,12 @@ jobs:
           name: distribution-${{ matrix.artifact }}-${{ needs.validate-release.outputs.release_tag }}
           path: distribution-dist/*
           retention-days: 14
+      - name: Upload the small platform manifest separately
+        uses: actions/upload-artifact@v7
+        with:
+          name: distribution-index-${{ matrix.artifact }}-${{ needs.validate-release.outputs.release_tag }}
+          path: distribution-dist/distribution-*.json
+          retention-days: 14
       - name: Upload pack assets to draft release
         if: needs.create-release.outputs.release_id != ''
         shell: bash
@@ -189,7 +195,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
-          pattern: distribution-*-${{ needs.validate-release.outputs.release_tag }}
+          pattern: distribution-index-*-${{ needs.validate-release.outputs.release_tag }}
           path: distribution-parts
       - name: Merge platform manifests
         run: |
@@ -327,8 +333,8 @@ jobs:
       # （tauri.conf.json bundle.resources 把 frontend/dist 装到 exe 旁的 frontend/，
       # 运行期经 BaseDirectory::Resource 解析），所以把这两样打成 zip 即可免安装运行。
       # 上传走 uploads.github.com + releaseId，因为草稿 Release 无法用 gh 按 tag 定位。
-      - name: Package and upload Windows portable zip
-        if: matrix.platform == 'windows-latest' && needs.create-release.outputs.release_id != ''
+      - name: Package Windows portable zip and upload it for a release
+        if: matrix.platform == 'windows-latest'
         shell: pwsh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -354,11 +360,32 @@ jobs:
           Set-Content -Path (Join-Path $portable 'portable.flag') -Value 'portable'
           $zip = "My-LLM-Wiki-Browser_$($conf.version)_x64-portable.zip"
           Compress-Archive -Path $portable -DestinationPath $zip -Force
-          curl.exe -sSf -X POST `
-            -H "Authorization: Bearer $env:GITHUB_TOKEN" `
-            -H "Content-Type: application/zip" `
-            --data-binary "@$zip" `
-            "https://uploads.github.com/repos/${{ github.repository }}/releases/$env:RELEASE_ID/assets?name=$zip"
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archive = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $zip))
+          try {
+            $entries = @($archive.Entries | ForEach-Object { $_.FullName.Replace('\', '/') })
+            $required = @(
+              'My LLM Wiki Browser.exe',
+              'my-llm-wiki-x86_64-pc-windows-msvc.exe',
+              'frontend/index.html',
+              'frontend/setup.html',
+              'portable.flag'
+            )
+            foreach ($name in $required) {
+              if (-not ($entries | Where-Object { $_.EndsWith($name) })) {
+                throw "portable archive is missing $name"
+              }
+            }
+          } finally {
+            $archive.Dispose()
+          }
+          if ($env:RELEASE_ID) {
+            curl.exe -sSf -X POST `
+              -H "Authorization: Bearer $env:GITHUB_TOKEN" `
+              -H "Content-Type: application/zip" `
+              --data-binary "@$zip" `
+              "https://uploads.github.com/repos/${{ github.repository }}/releases/$env:RELEASE_ID/assets?name=$zip"
+          }
 
   publish-release:
     needs: [create-release, merge-distribution, build]
@@ -444,10 +471,14 @@ jobs:
           missing_cli = expected_cli - asset_names
           if missing_cli:
               raise SystemExit(f"standalone CLI assets are missing: {sorted(missing_cli)}")
+          portable = f"My-LLM-Wiki-Browser_{version}_x64-portable.zip"
+          if portable not in asset_names:
+              raise SystemExit(f"Windows portable asset is missing: {portable}")
           print({
               "updater_platforms": 4,
               "distribution_artifacts": len(identities),
               "standalone_clis": len(expected_cli),
+              "windows_portable": portable,
           })
           PY
       - name: Publish only after every platform and pack succeeds
