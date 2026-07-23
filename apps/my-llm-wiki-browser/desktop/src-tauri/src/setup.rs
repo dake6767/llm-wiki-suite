@@ -41,7 +41,7 @@ pub(crate) async fn setup_pick_wiki_directory(
         .file()
         .set_parent(&window)
         .set_title("选择 Wiki 存放文件夹");
-    if let Some(directory) = current.and_then(expand_home_path) {
+    if let Some(directory) = picker_start_dir(current) {
         picker = picker.set_directory(directory);
     }
     picker
@@ -180,6 +180,31 @@ fn require_setup_window(window: &WebviewWindow) -> Result<(), String> {
     } else {
         Err("Setup Core commands are only available to the embedded Setup window".into())
     }
+}
+
+/// Where the Wiki folder picker should open. The wiki path itself (e.g.
+/// ~/wikis/my-llm-wiki) usually does not exist yet at install time, and opening
+/// straight into that leaf hides the container the user actually wants to
+/// browse. Open at the parent's nearest existing ancestor (~/wikis, else ~)
+/// so the user lands one level up and picks or creates the wiki folder there.
+fn picker_start_dir(current: Option<PathBuf>) -> Option<PathBuf> {
+    let expanded = current.and_then(expand_home_path)?;
+    let parent = expanded
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or(expanded);
+    nearest_existing_dir(parent)
+}
+
+fn nearest_existing_dir(path: PathBuf) -> Option<PathBuf> {
+    let mut candidate = Some(path);
+    while let Some(dir) = candidate {
+        if dir.is_dir() {
+            return Some(dir);
+        }
+        candidate = dir.parent().map(Path::to_path_buf);
+    }
+    None
 }
 
 fn expand_home_path(path: PathBuf) -> Option<PathBuf> {

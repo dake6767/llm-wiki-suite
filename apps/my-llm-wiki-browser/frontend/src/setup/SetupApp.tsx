@@ -82,29 +82,6 @@ interface BrowserUpdateStatus {
   error?: string;
 }
 
-interface ProviderSpec {
-  commands: Record<string, string[]>;
-  python_profiles: Record<string, string[]>;
-  environment: Record<string, Record<string, string>>;
-}
-
-interface ProviderConfig {
-  schema: number;
-  policy: "official-preferred";
-  overrides: Record<string, string>;
-  providers: Record<string, ProviderSpec>;
-}
-
-const PROVIDER_CAPABILITIES = [
-  ["capture.web.authenticated", "登录态网页抓取"],
-  ["capture.video.captions", "视频字幕获取"],
-  ["capture.video.metadata", "视频元数据"],
-  ["media.extract-audio", "音频提取 / FFmpeg"],
-  ["document.to-markdown", "文档转 Markdown"],
-  ["python.asr-zh", "中文 ASR"],
-  ["python.asr-other", "非中文 ASR"],
-] as const;
-
 interface Progress {
   phase: string;
   message: string;
@@ -171,7 +148,6 @@ export default function SetupApp() {
   const [busy, setBusy] = useState(false);
   const [update, setUpdate] = useState<UpdateResult | null>(null);
   const [browserUpdate, setBrowserUpdate] = useState<BrowserUpdateStatus | null>(null);
-  const [providerConfig, setProviderConfig] = useState<ProviderConfig | null>(null);
   const [pickingWikiPath, setPickingWikiPath] = useState(false);
 
   useEffect(() => {
@@ -179,19 +155,22 @@ export default function SetupApp() {
     let mounted = true;
     const unlisten = listen<Progress>("setup-progress", (event) => {
       if (mounted) setProgress(event.payload);
+    }).catch((reason: unknown) => {
+      // A rejected listen() means the setup window lacks the core:event ACL
+      // grant; surface it instead of silently freezing the progress bar.
+      console.error("failed to subscribe to setup-progress events", reason);
+      return () => undefined;
     });
     Promise.all([
       invoke<SetupInspection>("setup_inspect"),
       invoke<SetupResult>("setup_status"),
       invoke<BrowserUpdateStatus>("setup_browser_update_status"),
-      invoke<ProviderConfig>("setup_provider_config"),
     ])
-      .then(([nextInspection, nextStatus, nextBrowserUpdate, nextProviderConfig]) => {
+      .then(([nextInspection, nextStatus, nextBrowserUpdate]) => {
         if (!mounted) return;
         setInspection(nextInspection);
         setStatus(nextStatus);
         setBrowserUpdate(nextBrowserUpdate);
-        setProviderConfig(nextProviderConfig);
         setSelectedHosts(new Set());
         setWikiPath(nextInspection.wiki.path);
         setView(nextStatus.state === "not-configured" ? "welcome" : "manage");
@@ -329,18 +308,6 @@ export default function SetupApp() {
     }
   }
 
-  async function saveProviderConfig(config: ProviderConfig) {
-    setBusy(true);
-    setError(null);
-    try {
-      setProviderConfig(await invoke<ProviderConfig>("setup_save_provider_config", { config }));
-    } catch (reason) {
-      setError(messageOf(reason));
-    } finally {
-      setBusy(false);
-    }
-  }
-
   if (view === "loading") return <LoadingScreen />;
   if (view === "manage") {
     return (
@@ -348,14 +315,12 @@ export default function SetupApp() {
         status={status}
         update={update}
         browserUpdate={browserUpdate}
-        providerConfig={providerConfig}
         busy={busy}
         error={error}
         onRepair={() => void repair()}
         onCheck={() => void checkUpdate(false)}
         onUpdate={() => void checkUpdate(true)}
         onRestart={() => void restartForUpdate()}
-        onSaveProvider={saveProviderConfig}
       />
     );
   }
@@ -445,7 +410,7 @@ function Welcome({ onContinue }: { onContinue: () => void }) {
       </p>
       <div className="setup-principles">
         <Principle number="01" title="默认有保证" body="FFmpeg、OpenCLI、文档转换与视频基础能力采用固定发布组合。" />
-        <Principle number="02" title="替换有自由" body="任务中的明确选择和长期 Provider 偏好始终优先。" />
+        <Principle number="02" title="替换有自由" body="任务里你明确指定的工具始终优先；不想用推荐工具链时，也可以随时换成自己的。" />
         <Principle number="03" title="数据留在本地" body="Wiki 与 RAW 不会随修复、更新或卸载被删除。" />
       </div>
       <div className="setup-actions"><PrimaryButton onClick={onContinue}>开始设置</PrimaryButton></div>
@@ -674,7 +639,7 @@ function Complete({ status, onManage, onOpenWiki }: {
       <div className="completion-seal">就绪</div>
       <p className="eyebrow">05 / Ready</p>
       <h1>工作台已经备好。</h1>
-      <p className="setup-lead">{Object.keys(status?.hosts ?? {}).length} 个 Agent 宿主已获得完整 Skills Pack，Wiki 已打开。官方工具链会作为默认 Provider，但不会限制你的选择。</p>
+      <p className="setup-lead">{Object.keys(status?.hosts ?? {}).length} 个 Agent 宿主已获得完整 Skills Pack，Wiki 已打开。官方工具链会作为默认工具，但不会限制你的选择。</p>
       {status?.backups.length ? <p className="backup-note">已保留 {status.backups.length} 份外来 Skill 备份。</p> : null}
       {status?.actions.length ? <section className="manual-actions"><p className="eyebrow">还需你完成</p>{status.actions.map((action) => <article key={action.id}><h2>{action.title}</h2><p>{action.detail}</p></article>)}</section> : null}
       <div className="setup-actions"><SecondaryButton onClick={onManage}>查看 Skills 与工具链</SecondaryButton><PrimaryButton onClick={onOpenWiki}>打开 Wiki</PrimaryButton></div>
@@ -682,18 +647,16 @@ function Complete({ status, onManage, onOpenWiki }: {
   );
 }
 
-function Management({ status, update, browserUpdate, providerConfig, busy, error, onRepair, onCheck, onUpdate, onRestart, onSaveProvider }: {
+function Management({ status, update, browserUpdate, busy, error, onRepair, onCheck, onUpdate, onRestart }: {
   status: SetupResult | null;
   update: UpdateResult | null;
   browserUpdate: BrowserUpdateStatus | null;
-  providerConfig: ProviderConfig | null;
   busy: boolean;
   error: string | null;
   onRepair: () => void;
   onCheck: () => void;
   onUpdate: () => void;
   onRestart: () => void;
-  onSaveProvider: (config: ProviderConfig) => Promise<void>;
 }) {
   const ready = status?.state === "ready";
   const browserBusy = browserUpdate?.state === "checking" || browserUpdate?.state === "downloading";
@@ -713,7 +676,7 @@ function Management({ status, update, browserUpdate, providerConfig, busy, error
         </StatusPanel>
         <StatusPanel index="02" title="官方工具链" healthy={status?.official_toolchain.healthy ?? false}>
           <p className="panel-version">{status?.official_toolchain.installed ? `v${status.official_toolchain.version}` : "未安装 · 开放路径"}</p>
-          <p>Provider policy: <b>official-preferred</b></p>
+          <p>默认优先使用官方工具链，可被系统或任务级工具替换。</p>
           {Object.entries(status?.packs ?? {}).filter(([id]) => id !== "toolchain-base").map(([id, pack]) => <div className="pack-status" key={id}><b>{id}</b><span>{pack.healthy ? `v${pack.version}` : "需要修复"}</span></div>)}
         </StatusPanel>
         <StatusPanel index="03" title="Wiki" healthy={status?.wiki.ready ?? false}>
@@ -730,7 +693,6 @@ function Management({ status, update, browserUpdate, providerConfig, busy, error
           </div>
         </StatusPanel>
       </section>
-      {providerConfig ? <ProviderPanel config={providerConfig} busy={busy} onSave={onSaveProvider} /> : null}
       {status?.actions.length ? <section className="manual-actions"><p className="eyebrow">Manual actions</p>{status.actions.map((action) => <article key={action.id}><h2>{action.title}</h2><p>{action.detail}</p></article>)}</section> : null}
       {!ready ? <footer className="repair-bar"><div><b>状态不完整或文件已损坏</b><span>Repair 只恢复当前版本，不会升级或触碰 Wiki。</span></div><PrimaryButton disabled={busy} onClick={onRepair}>{busy ? "处理中…" : "修复当前版本"}</PrimaryButton></footer> : null}
     </main>
@@ -792,84 +754,4 @@ function browserUpdateText(browser: BrowserUpdateStatus | null, update: UpdateRe
 function UpdateProgress({ status }: { status: BrowserUpdateStatus }) {
   const percent = status.total ? Math.min(100, Math.round(((status.downloaded ?? 0) / status.total) * 100)) : 12;
   return <div className="manage-update-progress"><i style={{ width: `${percent}%` }} /><span>{status.total ? `${percent}%` : "下载中…"}</span></div>;
-}
-
-function ProviderPanel({ config, busy, onSave }: {
-  config: ProviderConfig;
-  busy: boolean;
-  onSave: (config: ProviderConfig) => Promise<void>;
-}) {
-  const [providerId, setProviderId] = useState("");
-  const [entry, setEntry] = useState("opencli");
-  const [executable, setExecutable] = useState("");
-  const [fixedArgs, setFixedArgs] = useState("");
-  const customIds = Object.keys(config.providers).sort();
-
-  function setOverride(capability: string, provider: string) {
-    const overrides = { ...config.overrides };
-    if (provider) overrides[capability] = provider; else delete overrides[capability];
-    void onSave({ ...config, overrides });
-  }
-
-  function removeProvider(id: string) {
-    const providers = { ...config.providers };
-    delete providers[id];
-    const overrides = Object.fromEntries(
-      Object.entries(config.overrides).filter(([, provider]) => provider !== id),
-    );
-    void onSave({ ...config, providers, overrides });
-  }
-
-  function addProvider(event: React.FormEvent) {
-    event.preventDefault();
-    const id = providerId.trim();
-    const path = executable.trim();
-    if (!id || !path) return;
-    const argv = [path, ...fixedArgs.split(/\r?\n/).map((value) => value.trim()).filter(Boolean)];
-    const pythonProfile = entry === "asr-zh" || entry === "asr-other";
-    const current = config.providers[id] ?? { commands: {}, python_profiles: {}, environment: {} };
-    const spec: ProviderSpec = {
-      commands: pythonProfile ? current.commands : { ...current.commands, [entry]: argv },
-      python_profiles: pythonProfile ? { ...current.python_profiles, [entry]: argv } : current.python_profiles,
-      environment: current.environment,
-    };
-    void onSave({ ...config, providers: { ...config.providers, [id]: spec } });
-    setProviderId("");
-    setExecutable("");
-    setFixedArgs("");
-  }
-
-  return (
-    <section className="provider-panel">
-      <header>
-        <div><p className="eyebrow">Provider resolver</p><h2>默认有保证，替换有自由</h2></div>
-        <span>official-preferred</span>
-      </header>
-      <p className="provider-intro">留空时优先使用官方验证工具链，再回退到系统与自定义 Provider。这里只保存长期偏好；单次任务中的明确选择仍然优先。</p>
-      <div className="provider-routes">
-        {PROVIDER_CAPABILITIES.map(([capability, label]) => (
-          <label key={capability}>
-            <span><b>{label}</b><small>{capability}</small></span>
-            <select disabled={busy} value={config.overrides[capability] ?? ""} onChange={(event) => setOverride(capability, event.target.value)}>
-              <option value="">自动（推荐）</option>
-              <option value="official">固定使用官方工具链</option>
-              <option value="system">固定使用系统工具</option>
-              {customIds.map((id) => <option key={id} value={id}>{id}</option>)}
-            </select>
-          </label>
-        ))}
-      </div>
-      {customIds.length ? <div className="custom-provider-list">{customIds.map((id) => <div key={id}><span><b>{id}</b><small>{Object.keys(config.providers[id].commands).concat(Object.keys(config.providers[id].python_profiles)).join(" · ")}</small></span><button disabled={busy} onClick={() => removeProvider(id)}>移除</button></div>)}</div> : null}
-      <details className="provider-builder">
-        <summary>注册自定义 Provider</summary>
-        <form onSubmit={addProvider}>
-          <label><span>Provider ID</span><input value={providerId} onChange={(event) => setProviderId(event.target.value)} placeholder="my-whisper-server" /></label>
-          <label><span>提供能力</span><select value={entry} onChange={(event) => setEntry(event.target.value)}><option value="opencli">OpenCLI / 网页抓取</option><option value="yt-dlp">yt-dlp / 视频</option><option value="ffmpeg">FFmpeg / 音频</option><option value="markitdown">MarkItDown / 文档</option><option value="asr-zh">中文 ASR Python</option><option value="asr-other">非中文 ASR Python</option></select></label>
-          <label className="provider-path"><span>可执行文件绝对路径</span><input value={executable} onChange={(event) => setExecutable(event.target.value)} placeholder="/absolute/path/to/executable" /></label>
-          <label className="provider-path"><span>固定 argv（每行一个参数，可留空）</span><textarea value={fixedArgs} onChange={(event) => setFixedArgs(event.target.value)} rows={3} /></label>
-          <PrimaryButton disabled={busy || !providerId.trim() || !executable.trim()}>保存 Provider</PrimaryButton>
-        </form>
-      </details>
-    </section>
-  );
 }

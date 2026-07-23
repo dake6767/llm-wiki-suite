@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Grant the Browser and Setup windows the core event permissions. Without core:event:default the frontend's listen() call is denied by the Tauri v2 ACL and silently receives nothing, which froze the install progress bar at 0% (setup-progress events never arrived). Application invoke() commands are ACL-exempt, so only the event system needs an explicit grant here.",
+  "windows": ["main", "setup"],
+  "permissions": ["core:event:default"]
+}
