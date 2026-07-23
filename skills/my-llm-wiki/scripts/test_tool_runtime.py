@@ -158,6 +158,67 @@ class ToolRuntimeTests(unittest.TestCase):
             self.assertEqual(environment[tool_runtime.ACTIVE_PROVIDER_ENV], "official")
             self.assertEqual(environment["MODEL_ROUTE"], "official")
 
+    def test_reexec_pack_pythonpath_wins_over_inherited(self) -> None:
+        # A PYTHONPATH already in the launching environment (even empty) must not
+        # shadow the pack's isolated site dir when the runner re-execs.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            python = root / "pack" / "bin" / "python"
+            python.parent.mkdir(parents=True)
+            python.write_bytes(b"python")
+            site = "{pack}/asr-zh/site"
+            resolved_site = str((root / "pack" / "asr-zh" / "site").resolve())
+            state = self._state(
+                root,
+                python_profiles={"asr-zh": ["{pack}/bin/python"]},
+                environment={"asr-zh": {"PYTHONPATH": site}},
+            )
+            for inherited in ("", "/some/user/path"):
+                with mock.patch.dict(
+                    os.environ,
+                    {tool_runtime.SETUP_STATE_ENV: str(state), "PYTHONPATH": inherited},
+                    clear=True,
+                ), mock.patch.object(
+                    tool_runtime.sys, "argv", ["runner.py", "audio.wav"]
+                ), mock.patch.object(tool_runtime.os, "execve") as execve:
+                    tool_runtime.ensure_provider_python("asr-zh")
+                _, _, environment = execve.call_args.args
+                parts = environment["PYTHONPATH"].split(os.pathsep)
+                self.assertEqual(parts[0], resolved_site)
+                self.assertNotIn("", parts)
+                if inherited:
+                    self.assertIn(inherited, parts)
+
+    def test_reexec_pythonpath_merge_is_idempotent_when_active(self) -> None:
+        # The re-exec'd process re-enters ensure_provider_python; folding the pack
+        # PYTHONPATH again must not duplicate the site entry.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            python = root / "pack" / "bin" / "python"
+            python.parent.mkdir(parents=True)
+            python.write_bytes(b"python")
+            resolved_site = str((root / "pack" / "asr-zh" / "site").resolve())
+            state = self._state(
+                root,
+                python_profiles={"asr-zh": ["{pack}/bin/python"]},
+                environment={"asr-zh": {"PYTHONPATH": "{pack}/asr-zh/site"}},
+            )
+            with mock.patch.dict(
+                os.environ,
+                {
+                    tool_runtime.SETUP_STATE_ENV: str(state),
+                    tool_runtime.ACTIVE_PYTHON_PROFILE_ENV: "asr-zh",
+                    tool_runtime.ACTIVE_PROVIDER_ENV: "official",
+                    "PYTHONPATH": resolved_site,
+                },
+                clear=True,
+            ), mock.patch.object(
+                tool_runtime.sys, "executable", str(python)
+            ), mock.patch.object(tool_runtime.os, "execve") as execve:
+                tool_runtime.ensure_provider_python("asr-zh")
+                execve.assert_not_called()
+                self.assertEqual(os.environ["PYTHONPATH"], resolved_site)
+
     def test_active_python_provider_does_not_loop(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -182,18 +182,14 @@ fn require_setup_window(window: &WebviewWindow) -> Result<(), String> {
     }
 }
 
-/// Where the Wiki folder picker should open. The wiki path itself (e.g.
-/// ~/wikis/my-llm-wiki) usually does not exist yet at install time, and opening
-/// straight into that leaf hides the container the user actually wants to
-/// browse. Open at the parent's nearest existing ancestor (~/wikis, else ~)
-/// so the user lands one level up and picks or creates the wiki folder there.
+/// Where the Wiki folder picker should open. `current` is the wiki collection
+/// root the user is choosing (e.g. ~/wikis), which may not exist yet at install
+/// time. Open at that directory, or — since a fresh machine has no ~/wikis — at
+/// its nearest existing ancestor (~), so the user can pick or create the
+/// collection folder there.
 fn picker_start_dir(current: Option<PathBuf>) -> Option<PathBuf> {
     let expanded = current.and_then(expand_home_path)?;
-    let parent = expanded
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or(expanded);
-    nearest_existing_dir(parent)
+    nearest_existing_dir(expanded)
 }
 
 fn nearest_existing_dir(path: PathBuf) -> Option<PathBuf> {

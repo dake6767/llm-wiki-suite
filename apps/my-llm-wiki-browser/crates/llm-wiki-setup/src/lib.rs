@@ -18,7 +18,12 @@ use sha2::{Digest as _, Sha256};
 static BUNDLED_SKILLS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../../../skills");
 
 const DISTRIBUTION_VERSION: &str = env!("CARGO_PKG_VERSION");
-const DEFAULT_WIKI_RELATIVE: &str = "wikis/my-llm-wiki";
+/// The wiki collection root the user picks by default — the parent that holds
+/// every wiki volume.
+const DEFAULT_WIKI_COLLECTION_RELATIVE: &str = "wikis";
+/// The default volume created inside the collection root on first setup. Later
+/// siblings (e.g. `ai-wiki`) are created next to it via the agent skills.
+const DEFAULT_WIKI_NAME: &str = "my-llm-wiki";
 
 pub struct SetupCore {
     home: PathBuf,
@@ -57,7 +62,9 @@ impl SetupCore {
                 .join(if cfg!(windows) { "my-llm-wiki.exe" } else { "my-llm-wiki" }),
             cli_source: None,
             registry_path: suite_home.join("wikis.json"),
-            wiki_path: home.join(DEFAULT_WIKI_RELATIVE),
+            wiki_path: home
+                .join(DEFAULT_WIKI_COLLECTION_RELATIVE)
+                .join(DEFAULT_WIKI_NAME),
             suite_home,
             home,
             current_manifest_sources: vec![
@@ -333,17 +340,30 @@ impl SetupCore {
         Ok(result)
     }
 
+    /// Resolve the wiki volume from the collection root the user selected.
+    ///
+    /// The user picks the parent directory (e.g. `~/wikis`); the default
+    /// `my-llm-wiki` volume is created beneath it. A path that already *is* an
+    /// initialized volume (`schema.md` present) or already ends with the volume
+    /// name is used verbatim, so re-runs and paths typed by hand never nest a
+    /// `my-llm-wiki/my-llm-wiki`.
     fn resolve_wiki_path(&self, path: &Path) -> Result<PathBuf> {
-        if path == Path::new("~") {
-            return Ok(self.home.clone());
+        let root = if path == Path::new("~") {
+            self.home.clone()
+        } else if let Ok(relative) = path.strip_prefix("~") {
+            self.home.join(relative)
+        } else if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            return Err(SetupError::InvalidWikiPath(path.to_path_buf()));
+        };
+        let already_a_volume = root.join("schema.md").is_file()
+            || root.file_name().and_then(|name| name.to_str()) == Some(DEFAULT_WIKI_NAME);
+        if already_a_volume {
+            Ok(root)
+        } else {
+            Ok(root.join(DEFAULT_WIKI_NAME))
         }
-        if let Ok(relative) = path.strip_prefix("~") {
-            return Ok(self.home.join(relative));
-        }
-        if path.is_absolute() {
-            return Ok(path.to_path_buf());
-        }
-        Err(SetupError::InvalidWikiPath(path.to_path_buf()))
     }
 
     pub fn repair(&self) -> Result<SetupResult> {
@@ -1289,23 +1309,38 @@ mod tests {
     }
 
     #[test]
-    fn setup_uses_and_persists_custom_wiki_path() {
+    fn setup_creates_default_volume_under_selected_collection_root() {
         let temp = tempfile::tempdir().unwrap();
-        let custom = temp.path().join("knowledge/team-wiki");
+        // The user selects a collection root; the my-llm-wiki volume is created
+        // beneath it and that collection root is what Setup surfaces back.
+        let collection = temp.path().join("knowledge");
+        let volume = collection.join("my-llm-wiki");
         let core = SetupCore::new(temp.path().to_path_buf());
         let mut setup = request("codex");
-        setup.wiki_path = Some(custom.clone());
+        setup.wiki_path = Some(collection.clone());
 
         let result = core.setup(setup).unwrap();
 
-        assert_eq!(result.wiki.path, custom);
+        assert_eq!(result.wiki.path, volume);
+        assert_eq!(result.wiki.collection_root, collection);
         assert!(result.wiki.ready);
-        assert_eq!(core.inspect().unwrap().wiki.path, custom);
-        assert_eq!(core.status().unwrap().wiki.path, custom);
+        assert!(volume.join("schema.md").is_file());
+        assert_eq!(core.inspect().unwrap().wiki.path, volume);
+        assert_eq!(core.inspect().unwrap().wiki.collection_root, collection);
+        assert_eq!(core.status().unwrap().wiki.path, volume);
     }
 
     #[test]
-    fn setup_expands_home_relative_wiki_path() {
+    fn default_inspect_surfaces_collection_root_not_volume() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = SetupCore::new(temp.path().to_path_buf());
+        let wiki = core.inspect().unwrap().wiki;
+        assert_eq!(wiki.collection_root, temp.path().join("wikis"));
+        assert_eq!(wiki.path, temp.path().join("wikis/my-llm-wiki"));
+    }
+
+    #[test]
+    fn setup_expands_home_relative_collection_root() {
         let temp = tempfile::tempdir().unwrap();
         let core = SetupCore::new(temp.path().to_path_buf());
         let mut setup = request("codex");
@@ -1313,8 +1348,27 @@ mod tests {
 
         let result = core.setup(setup).unwrap();
 
-        assert_eq!(result.wiki.path, temp.path().join("knowledge/wiki"));
+        assert_eq!(
+            result.wiki.path,
+            temp.path().join("knowledge/wiki/my-llm-wiki")
+        );
         assert!(result.wiki.ready);
+    }
+
+    #[test]
+    fn setup_does_not_nest_when_path_is_already_a_volume() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = SetupCore::new(temp.path().to_path_buf());
+        // A path that already ends with the volume name is used verbatim, so a
+        // hand-typed full path or an older stored path never double-nests.
+        let volume = temp.path().join("wikis/my-llm-wiki");
+        let mut setup = request("codex");
+        setup.wiki_path = Some(volume.clone());
+
+        let result = core.setup(setup).unwrap();
+
+        assert_eq!(result.wiki.path, volume);
+        assert!(!volume.join("my-llm-wiki").exists());
     }
 
     #[test]
