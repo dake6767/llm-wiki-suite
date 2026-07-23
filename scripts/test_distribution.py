@@ -42,6 +42,61 @@ class DistributionBuilderTests(unittest.TestCase):
             self.assertEqual(spec["size"], archive.stat().st_size)
             self.assertEqual(spec["installed_size"], 4)
 
+    def test_client_probes_only_start_lightweight_runtimes(self) -> None:
+        probes = builder.toolchain_client_probes()
+        self.assertEqual(
+            probes,
+            [
+                {"command": "python-runtime", "args": ["--version"]},
+                {"command": "node-runtime", "args": ["--version"]},
+                {"command": "ffmpeg", "args": ["-version"]},
+            ],
+        )
+        self.assertEqual(
+            builder.python_client_probe(),
+            [{"command": "python-runtime", "args": ["--version"]}],
+        )
+        managed_apps = {
+            "markitdown",
+            "opencli",
+            "yt-dlp",
+            "asr-zh-postcheck",
+            "asr-other-postcheck",
+        }
+        self.assertTrue(managed_apps.isdisjoint(row["command"] for row in probes))
+
+    def test_pack_spec_deep_checks_the_final_extracted_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            stage = root / "stage"
+            stage.mkdir()
+            executable = stage / "probe"
+            executable.write_text("verified", encoding="utf-8")
+            executable.chmod(0o755)
+            observed: list[list[str]] = []
+
+            def verify(argv: list[str], **_kwargs: object) -> str:
+                observed.append(argv)
+                extracted = Path(argv[0])
+                self.assertTrue(extracted.is_file())
+                self.assertEqual(extracted.read_text(encoding="utf-8"), "verified")
+                self.assertNotEqual(extracted, executable)
+                return ""
+
+            with mock.patch.object(builder, "checked", side_effect=verify):
+                builder.pack_spec(
+                    stage,
+                    root / "dist",
+                    "toolchain-base",
+                    "darwin",
+                    "arm64",
+                    commands={"deep": ["{pack}/probe"]},
+                    release_checks=[{"command": "deep", "args": ["--check"]}],
+                )
+
+            self.assertEqual(len(observed), 1)
+            self.assertEqual(observed[0][1:], ["--check"])
+
     def test_linux_asr_uses_the_official_cpu_wheels(self) -> None:
         spec = {
             "packages": ["torch==2.11.0", "torchaudio==2.11.0"],

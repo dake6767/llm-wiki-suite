@@ -350,24 +350,29 @@ fn check_pack(root: &Path, artifact: &PackArtifact) -> Result<()> {
 }
 
 fn resolve_argv(root: &Path, argv: &[String]) -> Result<Vec<String>> {
-    let resolved: Vec<_> = argv.iter().map(|value| expand(root, value)).collect();
-    let executable = PathBuf::from(&resolved[0]);
     let canonical_root = root
         .canonicalize()
         .map_err(|err| SetupError::io(root, err))?;
-    let canonical_executable = executable
-        .canonicalize()
-        .map_err(|err| SetupError::io(&executable, err))?;
-    if canonical_executable != canonical_root && !canonical_executable.starts_with(&canonical_root)
-    {
-        return Err(SetupError::Probe {
-            pack: root.display().to_string(),
-            detail: format!("executable escapes pack: {}", executable.display()),
-        });
+    let mut resolved = Vec::with_capacity(argv.len());
+    for value in argv {
+        let expanded = expand(root, value);
+        if value.starts_with("{pack}/") || value.starts_with("{pack}\\") {
+            let path = PathBuf::from(&expanded);
+            let canonical = path
+                .canonicalize()
+                .map_err(|err| SetupError::io(&path, err))?;
+            if canonical != canonical_root && !canonical.starts_with(&canonical_root) {
+                return Err(SetupError::Probe {
+                    pack: root.display().to_string(),
+                    detail: format!("command path escapes pack: {}", path.display()),
+                });
+            }
+            resolved.push(canonical.to_string_lossy().into_owned());
+        } else {
+            resolved.push(expanded);
+        }
     }
-    let mut safe = resolved;
-    safe[0] = canonical_executable.to_string_lossy().into_owned();
-    Ok(safe)
+    Ok(resolved)
 }
 
 fn expand(root: &Path, value: &str) -> String {
@@ -647,4 +652,51 @@ pub(crate) fn target() -> (String, String) {
         value => value,
     };
     (platform.to_owned(), architecture.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolves_every_declared_pack_path_and_rejects_missing_members() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("pack");
+        let runtime = root.join("runtime");
+        let runner = root.join("documents/runner.py");
+        fs::create_dir_all(&runtime).unwrap();
+        fs::create_dir_all(runner.parent().unwrap()).unwrap();
+        fs::write(runtime.join("python"), b"python").unwrap();
+        fs::write(&runner, b"runner").unwrap();
+        let argv = vec![
+            "{pack}/runtime/python".into(),
+            "{pack}/documents/runner.py".into(),
+            "--version".into(),
+        ];
+
+        let resolved = resolve_argv(&root, &argv).unwrap();
+        assert_eq!(
+            Path::new(&resolved[0]),
+            runtime.join("python").canonicalize().unwrap()
+        );
+        assert_eq!(Path::new(&resolved[1]), runner.canonicalize().unwrap());
+        assert_eq!(resolved[2], "--version");
+
+        fs::remove_file(root.join("documents/runner.py")).unwrap();
+        assert!(resolve_argv(&root, &argv).is_err());
+    }
+
+    #[test]
+    fn rejects_declared_pack_paths_that_escape_the_pack() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("pack");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(temporary.path().join("outside"), b"outside").unwrap();
+        let argv = vec!["{pack}/../outside".into()];
+
+        assert!(matches!(
+            resolve_argv(&root, &argv),
+            Err(SetupError::Probe { .. })
+        ));
+    }
 }

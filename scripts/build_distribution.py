@@ -92,6 +92,13 @@ def extract(archive: Path, destination: Path) -> None:
             if path != root and root not in path.parents:
                 raise BuildError(f"unsafe archive member: {item.filename}")
         bundle.extractall(destination)
+        if os.name != "nt":
+            for item in bundle.infolist():
+                if item.is_dir():
+                    continue
+                mode = (item.external_attr >> 16) & 0o777
+                if mode:
+                    (destination / item.filename).chmod(mode)
 
 
 def copy_tree(source: Path, destination: Path) -> None:
@@ -513,6 +520,8 @@ def build_posix(
         for name, source in stages.items():
             copy_tree(source, base / name)
         commands = {
+            "python-runtime": ["{pack}/runtime/bin/python3"],
+            "node-runtime": ["{pack}/web/node"],
             "markitdown": ["{pack}/runtime/bin/python3", "{pack}/documents/markitdown_runner.py"],
             "opencli": [
                 "{pack}/web/node",
@@ -521,7 +530,7 @@ def build_posix(
             "yt-dlp": ["{pack}/runtime/bin/python3", "{pack}/video/yt_dlp_runner.py"],
             "ffmpeg": ["{pack}/video/ffmpeg"],
         }
-        probes = [
+        release_checks = [
             {"command": "markitdown", "args": ["--help"]},
             {"command": "opencli", "args": ["--version"]},
             {"command": "yt-dlp", "args": ["--version"]},
@@ -534,7 +543,8 @@ def build_posix(
             system,
             architecture,
             commands=commands,
-            probes=probes,
+            probes=toolchain_client_probes(),
+            release_checks=release_checks,
             capabilities=[
                 "capture.web.authenticated",
                 "capture.video.captions",
@@ -558,6 +568,7 @@ def build_posix(
         copy_tree(component, stage / pack_id)
         environment = {pack_id: {"PYTHONPATH": f"{{pack}}/{pack_id}/site"}}
         commands = {
+            "python-runtime": ["{pack}/runtime/bin/python3"],
             f"{pack_id}-postcheck": [
                 "{pack}/runtime/bin/python3",
                 *lock["components"][pack_id]["postcheck"],
@@ -572,7 +583,8 @@ def build_posix(
             commands=commands,
             python_profiles={pack_id: ["{pack}/runtime/bin/python3"]},
             environment=environment,
-            probes=[{"command": f"{pack_id}-postcheck", "args": []}],
+            probes=python_client_probe(),
+            release_checks=[{"command": f"{pack_id}-postcheck", "args": []}],
             capabilities=["transcribe.audio.timestamped"],
         )
     return artifacts
@@ -597,6 +609,8 @@ def build_windows(
         build_windows_web(base, lock["components"]["web"], downloads, work)
         build_windows_video(base, lock["components"]["video"], downloads, work)
         commands = {
+            "python-runtime": ["{pack}/runtime/python.exe"],
+            "node-runtime": ["{pack}/web/node/node.exe"],
             "markitdown": ["{pack}/runtime/python.exe", "{pack}/documents/markitdown_runner.py"],
             "opencli": [
                 "{pack}/web/node/node.exe",
@@ -612,7 +626,8 @@ def build_windows(
             system,
             architecture,
             commands=commands,
-            probes=[
+            probes=toolchain_client_probes(),
+            release_checks=[
                 {"command": "markitdown", "args": ["--help"]},
                 {"command": "opencli", "args": ["--version"]},
                 {"command": "yt-dlp", "args": ["--version"]},
@@ -637,6 +652,7 @@ def build_windows(
             pack_id, lock["components"][pack_id], python_zip, work
         )
         commands = {
+            "python-runtime": ["{pack}/runtime/python.exe"],
             f"{pack_id}-postcheck": [
                 "{pack}/runtime/python.exe",
                 *lock["components"][pack_id]["postcheck"],
@@ -651,7 +667,8 @@ def build_windows(
             commands=commands,
             python_profiles={pack_id: ["{pack}/runtime/python.exe"]},
             environment={},
-            probes=[{"command": f"{pack_id}-postcheck", "args": []}],
+            probes=python_client_probe(),
+            release_checks=[{"command": f"{pack_id}-postcheck", "args": []}],
             capabilities=["transcribe.audio.timestamped"],
         )
     return artifacts
@@ -668,6 +685,7 @@ def pack_spec(
     python_profiles: dict[str, list[str]] | None = None,
     environment: dict[str, dict[str, str]] | None = None,
     probes: list[dict] | None = None,
+    release_checks: list[dict] | None = None,
     capabilities: list[str] | None = None,
     manual_actions: list[dict] | None = None,
 ) -> dict:
@@ -675,6 +693,12 @@ def pack_spec(
         stage, dist / f"My-LLM-Wiki-{pack_id}_{system}_{architecture}.zip"
     )
     validate_release_asset_size(pack_id, asset.stat().st_size)
+    verify_release_archive(
+        asset,
+        commands,
+        environment or {},
+        release_checks or [],
+    )
     return {
         "asset": asset.name,
         "sha256": sha256(asset),
@@ -687,6 +711,44 @@ def pack_spec(
         "probes": probes or [],
         "manual_actions": manual_actions or [],
     }
+
+
+def python_client_probe() -> list[dict]:
+    return [{"command": "python-runtime", "args": ["--version"]}]
+
+
+def toolchain_client_probes() -> list[dict]:
+    return [
+        *python_client_probe(),
+        {"command": "node-runtime", "args": ["--version"]},
+        {"command": "ffmpeg", "args": ["-version"]},
+    ]
+
+
+def verify_release_archive(
+    asset: Path,
+    commands: dict[str, list[str]],
+    environment: dict[str, dict[str, str]],
+    checks: list[dict],
+) -> None:
+    if not checks:
+        return
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary) / "pack"
+        extract(asset, root)
+        check_environment = os.environ.copy()
+        for values in environment.values():
+            for key, value in values.items():
+                check_environment[key] = value.replace("{pack}", str(root))
+        for check in checks:
+            name = check["command"]
+            if name not in commands:
+                raise BuildError(f"release check references undeclared command: {name}")
+            argv = [
+                value.replace("{pack}", str(root))
+                for value in [*commands[name], *check.get("args", [])]
+            ]
+            checked(argv, env=check_environment, timeout=900)
 
 
 def validate_release_asset_size(pack_id: str, size: int) -> None:
