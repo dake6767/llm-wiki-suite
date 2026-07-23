@@ -58,6 +58,8 @@ pub struct SetupRequest {
     pub replace: BTreeSet<PathBuf>,
     #[serde(default = "default_true")]
     pub install_official_toolchain: bool,
+    #[serde(default)]
+    pub wiki_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

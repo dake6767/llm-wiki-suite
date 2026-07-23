@@ -118,13 +118,50 @@ type View = "loading" | "welcome" | "hosts" | "review" | "progress" | "complete"
 const STEP_LABELS = ["欢迎", "选择宿主", "确认", "安装", "完成"];
 
 export default function SetupApp() {
-  const [view, setView] = useState<View>("loading");
-  const [inspection, setInspection] = useState<SetupInspection | null>(null);
+  const preview = ["127.0.0.1", "localhost"].includes(window.location.hostname)
+    ? new URLSearchParams(window.location.search).get("preview")
+    : null;
+  const previewReview = preview === "review";
+  const previewToolchain = preview === "progress-toolchain";
+  const previewProgress = preview === "progress" || previewToolchain;
+  const previewMode = previewReview || previewProgress;
+  const previewHost = previewProgress
+    ? { id: "workbuddy", label: "WorkBuddy", skills_dir: "~/.workbuddy/skills" }
+    : { id: "codex", label: "Codex", skills_dir: "~/.codex/skills" };
+  const previewInspection: SetupInspection | null = previewMode ? {
+    distribution_version: "preview",
+    state_path: "",
+    cli_path: null,
+    hosts: [{
+      id: previewHost.id,
+      label: previewHost.label,
+      detected: true,
+      skills_dir: previewHost.skills_dir,
+      destinations: [],
+    }],
+    wiki: { path: "~/wikis/my-llm-wiki", registry_path: "", ready: false },
+    official_toolchain: { id: "toolchain-base", version: null, installed: false, healthy: false },
+  } : null;
+  const [view, setView] = useState<View>(previewProgress ? "progress" : previewReview ? "review" : "loading");
+  const [inspection, setInspection] = useState<SetupInspection | null>(previewInspection);
   const [status, setStatus] = useState<SetupResult | null>(null);
-  const [selectedHosts, setSelectedHosts] = useState<Set<string>>(new Set());
+  const [selectedHosts, setSelectedHosts] = useState<Set<string>>(new Set(previewMode ? [previewHost.id] : []));
   const [approvedConflicts, setApprovedConflicts] = useState<Set<string>>(new Set());
   const [installToolchain, setInstallToolchain] = useState(true);
-  const [progress, setProgress] = useState<Progress>({
+  const [wikiPath, setWikiPath] = useState(previewMode ? "~/wikis/my-llm-wiki" : "");
+  const [progress, setProgress] = useState<Progress>(previewToolchain ? {
+    phase: "toolchain",
+    message: "正在下载推荐工具链",
+    current: 2,
+    total: 3,
+    detail_percent: 64,
+  } : previewProgress ? {
+    phase: "skills",
+    message: "正在为 WorkBuddy 激活 my-llm-wiki-video",
+    current: 0,
+    total: 3,
+    detail_percent: 57,
+  } : {
     phase: "preparing",
     message: "安装任务已启动",
     current: 0,
@@ -135,8 +172,10 @@ export default function SetupApp() {
   const [update, setUpdate] = useState<UpdateResult | null>(null);
   const [browserUpdate, setBrowserUpdate] = useState<BrowserUpdateStatus | null>(null);
   const [providerConfig, setProviderConfig] = useState<ProviderConfig | null>(null);
+  const [pickingWikiPath, setPickingWikiPath] = useState(false);
 
   useEffect(() => {
+    if (previewMode) return;
     let mounted = true;
     const unlisten = listen<Progress>("setup-progress", (event) => {
       if (mounted) setProgress(event.payload);
@@ -154,6 +193,7 @@ export default function SetupApp() {
         setBrowserUpdate(nextBrowserUpdate);
         setProviderConfig(nextProviderConfig);
         setSelectedHosts(new Set());
+        setWikiPath(nextInspection.wiki.path);
         setView(nextStatus.state === "not-configured" ? "welcome" : "manage");
       })
       .catch((reason: unknown) => {
@@ -214,6 +254,7 @@ export default function SetupApp() {
           hosts: [...selectedHosts],
           replace: [...approvedConflicts],
           install_official_toolchain: installToolchain,
+          wiki_path: wikiPath.trim(),
         },
       });
       setStatus(result);
@@ -223,6 +264,22 @@ export default function SetupApp() {
       setView("review");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function pickWikiPath() {
+    if (previewMode) return;
+    setPickingWikiPath(true);
+    setError(null);
+    try {
+      const selected = await invoke<string | null>("setup_pick_wiki_directory", {
+        current: wikiPath.trim() || null,
+      });
+      if (selected) setWikiPath(selected);
+    } catch (reason) {
+      setError(messageOf(reason));
+    } finally {
+      setPickingWikiPath(false);
     }
   }
 
@@ -325,11 +382,15 @@ export default function SetupApp() {
             conflicts={conflicts}
             approved={approvedConflicts}
             installToolchain={installToolchain}
+            wikiPath={wikiPath}
+            pickingWikiPath={pickingWikiPath}
             onToggleConflict={toggleConflict}
             onToggleToolchain={() => setInstallToolchain((value) => !value)}
+            onWikiPathChange={setWikiPath}
+            onPickWikiPath={() => void pickWikiPath()}
             onBack={() => setView("hosts")}
             onApply={() => void apply()}
-            disabled={busy || !selectedHosts.size || !conflictsApproved}
+            disabled={busy || !selectedHosts.size || !conflictsApproved || !wikiPath.trim()}
           />
         ) : view === "progress" ? (
           <ProgressView
@@ -339,7 +400,7 @@ export default function SetupApp() {
                 .sort((left, right) => left.id.localeCompare(right.id))
                 .map((host) => `为 ${host.label} 激活 Skills Pack`),
               "初始化 Wiki 与 RAW 目录",
-              ...(installToolchain ? ["安装并校验官方工具链"] : []),
+              ...(installToolchain ? ["安装并校验推荐工具链"] : []),
             ]}
           />
         ) : (
@@ -425,25 +486,29 @@ function HostSelection({ hosts, selected, onToggle, onBack, onContinue }: {
   );
 }
 
-function Review({ hosts, conflicts, approved, installToolchain, onToggleConflict, onToggleToolchain, onBack, onApply, disabled }: {
+function Review({ hosts, conflicts, approved, installToolchain, wikiPath, pickingWikiPath, onToggleConflict, onToggleToolchain, onWikiPathChange, onPickWikiPath, onBack, onApply, disabled }: {
   hosts: HostInspection[];
   conflicts: SkillDestination[];
   approved: Set<string>;
   installToolchain: boolean;
+  wikiPath: string;
+  pickingWikiPath: boolean;
   onToggleConflict: (path: string) => void;
   onToggleToolchain: () => void;
+  onWikiPathChange: (path: string) => void;
+  onPickWikiPath: () => void;
   onBack: () => void;
   onApply: () => void;
   disabled: boolean;
 }) {
   return (
-    <div className="setup-copy reveal">
+    <div className="setup-copy review-copy reveal">
       <p className="eyebrow">03 / One confirmation</p>
       <h1>一次确认，之后无人值守。</h1>
       <div className="review-sheet">
         <ReviewRow label="Skills Pack" value={`完整安装 · ${hosts.length} 个宿主`} note={hosts.map((host) => host.label).join("、")} />
-        <ReviewRow label="官方工具链" value={installToolchain ? "安装并默认优先" : "不安装"} note={installToolchain ? "Web、Video、Documents 基线；ASR 按需下载" : "Skills 将使用 Agent、系统或自定义 Provider"} action={<button className="text-toggle" onClick={onToggleToolchain}>{installToolchain ? "改用开放路径" : "恢复推荐设置"}</button>} />
-        <ReviewRow label="Wiki" value="初始化或复用" note="~/wikis/my-llm-wiki" />
+        <RecommendedToolchain install={installToolchain} onToggle={onToggleToolchain} />
+        <WikiLocation path={wikiPath} picking={pickingWikiPath} onChange={onWikiPathChange} onPick={onPickWikiPath} />
       </div>
       {conflicts.length ? (
         <section className="conflict-box">
@@ -463,9 +528,76 @@ function ReviewRow({ label, value, note, action }: { label: string; value: strin
   return <div><span>{label}</span><div><b>{value}</b><small>{note}</small></div>{action}</div>;
 }
 
+function WikiLocation({ path, picking, onChange, onPick }: {
+  path: string;
+  picking: boolean;
+  onChange: (path: string) => void;
+  onPick: () => void;
+}) {
+  return (
+    <div className="wiki-location-row">
+      <span>Wiki</span>
+      <div className="wiki-location-copy">
+        <b>初始化或复用</b>
+        <div className="wiki-path-control">
+          <input
+            aria-label="Wiki 存放路径"
+            value={path}
+            onChange={(event) => onChange(event.target.value)}
+            placeholder="~/wikis/my-llm-wiki"
+            spellCheck={false}
+          />
+          <button type="button" onClick={onPick} disabled={picking}>
+            {picking ? "正在打开…" : "选择文件夹"}
+          </button>
+        </div>
+        <small>使用系统文件夹选择器，或填写绝对路径 / 以 ~/ 开头；已有 Wiki 将直接复用。</small>
+      </div>
+    </div>
+  );
+}
+
+function RecommendedToolchain({ install, onToggle }: { install: boolean; onToggle: () => void }) {
+  const tools = [
+    ["OpenCLI", "采集网页及需要登录态的社交内容"],
+    ["yt-dlp", "获取在线视频的字幕、元数据与音频"],
+    ["FFmpeg", "完成音视频转码与音频提取"],
+    ["MarkItDown", "将 PDF、DOCX、PPTX、XLSX、EPUB 转为 Markdown"],
+  ];
+
+  return (
+    <div className="toolchain-review">
+      <span>推荐工具链</span>
+      <div className="toolchain-review-copy">
+        <b>{install ? "安装并默认优先" : "不安装"}</b>
+        {install ? (
+          <>
+            <p>为了保证 Agent 运行效果，推荐安装以下工具套装：</p>
+            <p className="toolchain-isolation-note">
+              <strong>隔离安装</strong>
+              <span>安装在 My LLM Wiki 私有目录，不覆盖已有的同名工具，也不修改全局 PATH。</span>
+            </p>
+            <ul>
+              {tools.map(([name, purpose]) => (
+                <li key={name}><strong>{name}</strong><small>{purpose}</small></li>
+              ))}
+            </ul>
+            <small className="toolchain-asr-note">
+              处理中文类视频时，Agent 会先提取音频，再将语音转写为文本。首次需要中文转写时，会先准备 FunASR 运行环境；转写所需的 SenseVoice 模型文件较大，将在首次转写时下载，本次安装暂不安装。
+            </small>
+          </>
+        ) : (
+          <small>不会安装推荐工具套装，将使用你已经安装好的工具。</small>
+        )}
+      </div>
+          <button className="text-toggle" onClick={onToggle}>{install ? "不装这些工具，用我已经安装好的工具" : "恢复推荐设置"}</button>
+    </div>
+  );
+}
+
 function ProgressView({ progress, tasks }: { progress: Progress; tasks: string[] }) {
   const ratio = progress.total ? Math.round((progress.current / progress.total) * 100) : 0;
-  const starting = progress.current === 0;
+  const starting = progress.total === 0;
   const complete = progress.total > 0 && progress.current >= progress.total;
   const [elapsed, setElapsed] = useState(0);
 
@@ -496,14 +628,16 @@ function ProgressView({ progress, tasks }: { progress: Progress; tasks: string[]
         <span>整体进度 {progress.current} / {progress.total}</span>
         <span>{formatElapsed(elapsed)}</span>
       </div>
-      {progress.detail_percent !== undefined ? (
-        <div className="detail-progress">
+      {!complete ? (
+        <div className="detail-progress" aria-live="polite">
           <div>
-            <span>当前操作</span>
-            <b>{progress.detail_percent > 0 ? `${progress.detail_percent}%` : "正在连接…"}</b>
+            <span>{progress.phase === "toolchain" ? "推荐工具链" : "当前操作"}</span>
+            <b>{progress.detail_percent !== undefined ? `${progress.detail_percent}%` : "处理中"}</b>
           </div>
-          <div className={progress.detail_percent === 0 ? "is-indeterminate" : ""}>
-            <i style={progress.detail_percent === 0 ? undefined : { width: `${progress.detail_percent}%` }} />
+          <p>{progress.message}</p>
+          {progress.phase === "toolchain" ? <small>包含 OpenCLI · yt-dlp · FFmpeg · MarkItDown</small> : null}
+          <div className={progress.detail_percent === undefined ? "is-indeterminate" : ""}>
+            <i style={progress.detail_percent === undefined ? undefined : { width: `${progress.detail_percent}%` }} />
           </div>
         </div>
       ) : null}
@@ -513,7 +647,7 @@ function ProgressView({ progress, tasks }: { progress: Progress; tasks: string[]
           return (
             <li className={state} key={`${index}-${task}`}>
               <i aria-hidden="true">{state === "done" ? "✓" : String(index + 1).padStart(2, "0")}</i>
-              <span>{task}</span>
+              <span><b>{task}</b>{state === "active" ? <em>{progress.message}</em> : null}</span>
               <small>{state === "done" ? "已完成" : state === "active" ? "正在处理" : "等待"}</small>
             </li>
           );

@@ -88,6 +88,10 @@ impl SetupCore {
     pub fn inspect(&self) -> Result<SetupInspection> {
         let state = self.load_state()?;
         let install_id = state.as_ref().map(|state| state.install_id.as_str());
+        let wiki_path = state
+            .as_ref()
+            .map(|state| state.wiki_path.as_path())
+            .unwrap_or(&self.wiki_path);
         let hosts = host_definitions(&self.home)
             .into_iter()
             .map(|host| HostInspection {
@@ -117,7 +121,7 @@ impl SetupCore {
                 .and_then(|state| state.cli_path.clone())
                 .or_else(|| self.cli_source.as_ref().map(|_| self.cli_path.clone())),
             hosts,
-            wiki: wiki::status(&self.wiki_path, &self.registry_path),
+            wiki: wiki::status(wiki_path, &self.registry_path),
             official_toolchain: self.toolchain_status(state.as_ref()),
         })
     }
@@ -182,7 +186,15 @@ impl SetupCore {
         let total = request.hosts.len() as u32 + 1 + u32::from(request.install_official_toolchain);
         report(&progress, "preparing", "正在校验目标与所有权", 0, total);
         let _lock = self.lock()?;
-        let mut state = self.load_state()?.unwrap_or_else(|| SetupState {
+        let existing_state = self.load_state()?;
+        let wiki_path = match request.wiki_path.as_deref() {
+            Some(path) => self.resolve_wiki_path(path)?,
+            None => existing_state
+                .as_ref()
+                .map(|state| state.wiki_path.clone())
+                .unwrap_or_else(|| self.wiki_path.clone()),
+        };
+        let mut state = existing_state.unwrap_or_else(|| SetupState {
             schema: STATE_SCHEMA,
             install_id: new_install_id(),
             distribution_version: DISTRIBUTION_VERSION.to_owned(),
@@ -194,6 +206,7 @@ impl SetupCore {
             wiki_path: self.wiki_path.clone(),
         });
         state.official_toolchain = request.install_official_toolchain;
+        state.wiki_path = wiki_path;
         self.install_cli(&mut state)?;
         let definitions: BTreeMap<_, _> = host_definitions(&self.home)
             .into_iter()
@@ -235,8 +248,23 @@ impl SetupCore {
                 completed,
                 total,
             );
-            let owned =
-                self.install_host(host, &state.install_id, &mut replacements, &mut backups)?;
+            let owned = self.install_host(
+                host,
+                &state.install_id,
+                &mut replacements,
+                &mut backups,
+                |slug, skill_current, skill_total| {
+                    report_skill_progress(
+                        &progress,
+                        &host.label,
+                        slug,
+                        completed,
+                        total,
+                        skill_current,
+                        skill_total,
+                    )
+                },
+            )?;
             state.hosts.insert(host_id, owned);
             self.save_state(&state)?;
             completed += 1;
@@ -282,7 +310,7 @@ impl SetupCore {
                     report_pack_progress(
                         &progress,
                         "toolchain",
-                        "官方工具链",
+                        "推荐工具链",
                         completed,
                         total,
                         event,
@@ -293,7 +321,7 @@ impl SetupCore {
             report(
                 &progress,
                 "toolchain",
-                "官方工具链已通过健康检查",
+                "推荐工具链已通过健康检查",
                 completed,
                 total,
             );
@@ -303,6 +331,19 @@ impl SetupCore {
         let mut result = self.status()?;
         result.backups = backups;
         Ok(result)
+    }
+
+    fn resolve_wiki_path(&self, path: &Path) -> Result<PathBuf> {
+        if path == Path::new("~") {
+            return Ok(self.home.clone());
+        }
+        if let Ok(relative) = path.strip_prefix("~") {
+            return Ok(self.home.join(relative));
+        }
+        if path.is_absolute() {
+            return Ok(path.to_path_buf());
+        }
+        Err(SetupError::InvalidWikiPath(path.to_path_buf()))
     }
 
     pub fn repair(&self) -> Result<SetupResult> {
@@ -347,8 +388,23 @@ impl SetupCore {
                 completed,
                 total,
             );
-            let owned =
-                self.install_host(host, &state.install_id, &mut replacements, &mut backups)?;
+            let owned = self.install_host(
+                host,
+                &state.install_id,
+                &mut replacements,
+                &mut backups,
+                |slug, skill_current, skill_total| {
+                    report_skill_progress(
+                        &progress,
+                        &host.label,
+                        slug,
+                        completed,
+                        total,
+                        skill_current,
+                        skill_total,
+                    )
+                },
+            )?;
             state.hosts.insert(host_id, owned);
             completed += 1;
             report(
@@ -528,8 +584,13 @@ impl SetupCore {
                     return Err(SetupError::OwnershipLost(path));
                 }
             }
-            let owned =
-                self.install_host(host, &state.install_id, &mut replacements, &mut backups)?;
+            let owned = self.install_host(
+                host,
+                &state.install_id,
+                &mut replacements,
+                &mut backups,
+                |_, _, _| {},
+            )?;
             state.hosts.insert(host_id, owned);
         }
         let pack_ids: Vec<_> = state.packs.keys().cloned().collect();
@@ -650,11 +711,15 @@ impl SetupCore {
         install_id: &str,
         replacements: &mut BTreeSet<PathBuf>,
         backups: &mut Vec<PathBuf>,
+        progress: impl Fn(&str, u32, u32),
     ) -> Result<OwnedHost> {
         fs::create_dir_all(&host.skills_dir)
             .map_err(|err| SetupError::io(&host.skills_dir, err))?;
         let mut skills = BTreeMap::new();
-        for slug in bundled_skill_slugs() {
+        let slugs = bundled_skill_slugs();
+        let total = slugs.len() as u32;
+        for (index, slug) in slugs.into_iter().enumerate() {
+            progress(&slug, index as u32, total);
             let destination = host.skills_dir.join(&slug);
             let current = destination_state(&destination, Some(install_id));
             if current == DestinationState::Foreign && !replacements.remove(&destination) {
@@ -720,6 +785,7 @@ impl SetupCore {
                 },
             );
         }
+        progress("", total, total);
         Ok(OwnedHost {
             skills_dir: host.skills_dir.clone(),
             skills,
@@ -1059,6 +1125,21 @@ fn report_pack_progress(
         pack::PackProgress::VerifyingArchive => (format!("正在校验{label}下载文件"), None),
         pack::PackProgress::Extracting(percent) => (format!("正在解压{label}"), Some(percent)),
         pack::PackProgress::HealthChecking => (format!("正在检查{label}可用性"), None),
+        pack::PackProgress::VerifyingTool {
+            name,
+            current,
+            total: tool_total,
+        } => {
+            let percent = step_percent(current, tool_total);
+            if current >= tool_total {
+                (format!("{label}中的工具均已验证"), Some(100))
+            } else {
+                (
+                    format!("正在验证{label}中的{}", friendly_tool_name(&name)),
+                    Some(percent),
+                )
+            }
+        }
     };
     sink(SetupProgress {
         phase: phase.to_owned(),
@@ -1067,6 +1148,50 @@ fn report_pack_progress(
         total,
         detail_percent,
     });
+}
+
+fn report_skill_progress(
+    sink: &impl Fn(SetupProgress),
+    host: &str,
+    slug: &str,
+    current: u32,
+    total: u32,
+    skill_current: u32,
+    skill_total: u32,
+) {
+    let finished = skill_current >= skill_total;
+    sink(SetupProgress {
+        phase: "skills".into(),
+        message: if finished {
+            format!("{host} 的 Skills Pack 即将完成")
+        } else {
+            format!("正在为 {host} 激活 {slug}")
+        },
+        current,
+        total,
+        detail_percent: Some(step_percent(skill_current, skill_total)),
+    });
+}
+
+fn step_percent(current: u32, total: u32) -> u8 {
+    if total == 0 {
+        return 100;
+    }
+    ((current.saturating_mul(100) / total).min(100)) as u8
+}
+
+fn friendly_tool_name(name: &str) -> &str {
+    match name {
+        "python-runtime" => "Python 运行时",
+        "node-runtime" => "Node.js / OpenCLI 运行时",
+        "markitdown" => "MarkItDown",
+        "opencli" => "OpenCLI",
+        "yt-dlp" => "yt-dlp",
+        "ffmpeg" => "FFmpeg",
+        "asr-zh-postcheck" => "FunASR",
+        "asr-other-postcheck" => "Whisper",
+        _ => name,
+    }
 }
 
 fn validate_provider_config(config: &ProviderConfig) -> Result<()> {
@@ -1126,6 +1251,7 @@ mod tests {
             hosts: BTreeSet::from([host.to_owned()]),
             replace: BTreeSet::new(),
             install_official_toolchain: false,
+            wiki_path: None,
         }
     }
 
@@ -1163,6 +1289,48 @@ mod tests {
     }
 
     #[test]
+    fn setup_uses_and_persists_custom_wiki_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let custom = temp.path().join("knowledge/team-wiki");
+        let core = SetupCore::new(temp.path().to_path_buf());
+        let mut setup = request("codex");
+        setup.wiki_path = Some(custom.clone());
+
+        let result = core.setup(setup).unwrap();
+
+        assert_eq!(result.wiki.path, custom);
+        assert!(result.wiki.ready);
+        assert_eq!(core.inspect().unwrap().wiki.path, custom);
+        assert_eq!(core.status().unwrap().wiki.path, custom);
+    }
+
+    #[test]
+    fn setup_expands_home_relative_wiki_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = SetupCore::new(temp.path().to_path_buf());
+        let mut setup = request("codex");
+        setup.wiki_path = Some(PathBuf::from("~/knowledge/wiki"));
+
+        let result = core.setup(setup).unwrap();
+
+        assert_eq!(result.wiki.path, temp.path().join("knowledge/wiki"));
+        assert!(result.wiki.ready);
+    }
+
+    #[test]
+    fn setup_rejects_relative_wiki_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = SetupCore::new(temp.path().to_path_buf());
+        let mut setup = request("codex");
+        setup.wiki_path = Some(PathBuf::from("relative/wiki"));
+
+        assert!(matches!(
+            core.setup(setup),
+            Err(SetupError::InvalidWikiPath(path)) if path == Path::new("relative/wiki")
+        ));
+    }
+
+    #[test]
     fn setup_reports_real_stage_progress() {
         let temp = tempfile::tempdir().unwrap();
         let core = SetupCore::new(temp.path().to_path_buf());
@@ -1170,19 +1338,26 @@ mod tests {
         core.setup_with_progress(request("codex"), |event| events.borrow_mut().push(event))
             .unwrap();
         let events = events.into_inner();
-        assert_eq!(
-            events
-                .iter()
-                .map(|event| event.phase.as_str())
-                .collect::<Vec<_>>(),
-            ["preparing", "skills", "skills", "wiki", "wiki"]
-        );
         assert_eq!((events[0].current, events[0].total), (0, 2));
         assert_eq!(
-            events.iter().map(|event| event.current).collect::<Vec<_>>(),
-            [0, 0, 1, 1, 2]
+            (events.last().unwrap().current, events.last().unwrap().total),
+            (2, 2)
         );
-        assert!(events.iter().all(|event| event.detail_percent.is_none()));
+        assert!(events.iter().any(|event| {
+            event.phase == "skills"
+                && event.message.contains("my-llm-wiki-video")
+                && event.detail_percent.is_some()
+        }));
+        assert!(
+            events
+                .iter()
+                .any(|event| { event.phase == "skills" && event.detail_percent == Some(0) })
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| { event.phase == "skills" && event.detail_percent == Some(100) })
+        );
     }
 
     #[test]
@@ -1375,18 +1550,23 @@ mod tests {
         assert!(result.official_toolchain.healthy);
         assert!(setup_events.iter().any(|event| {
             event.phase == "toolchain"
-                && event.message == "正在下载官方工具链"
+                && event.message == "正在下载推荐工具链"
                 && event.detail_percent == Some(100)
         }));
         assert!(setup_events.iter().any(|event| {
             event.phase == "toolchain"
-                && event.message == "正在解压官方工具链"
+                && event.message == "正在解压推荐工具链"
                 && event.detail_percent == Some(100)
         }));
         assert!(setup_events.iter().any(|event| {
             event.phase == "toolchain"
-                && event.message == "正在检查官方工具链可用性"
+                && event.message == "正在检查推荐工具链可用性"
                 && event.detail_percent.is_none()
+        }));
+        assert!(setup_events.iter().any(|event| {
+            event.phase == "toolchain"
+                && event.message == "推荐工具链中的工具均已验证"
+                && event.detail_percent == Some(100)
         }));
 
         let state = core.load_state().unwrap().unwrap();

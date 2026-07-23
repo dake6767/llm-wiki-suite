@@ -40,6 +40,8 @@ struct SetupArgs {
     hosts: Vec<String>,
     #[arg(long = "replace", value_name = "EXACT_PATH")]
     replace: Vec<PathBuf>,
+    #[arg(long, value_name = "PATH")]
+    wiki_path: Option<PathBuf>,
     #[arg(long)]
     without_toolchain: bool,
     #[arg(long)]
@@ -98,6 +100,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 hosts: args.hosts.into_iter().collect(),
                 replace: args.replace.into_iter().collect(),
                 install_official_toolchain: !args.without_toolchain,
+                wiki_path: args.wiki_path,
             })?,
             args.json,
         )?,

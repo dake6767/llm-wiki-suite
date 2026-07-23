@@ -90,7 +90,45 @@
 .review-sheet > div > div { display: grid; gap: 4px; }
 .review-sheet b { font: 600 17px var(--font-display); }
 .review-sheet small { color: var(--color-ink-faint); font-size: 11px; }
+.review-sheet > .toolchain-review { align-items: start; padding-block: 20px; }
+.toolchain-review-copy > p { margin-top: 8px; color: var(--color-ink-soft); font-size: 12px; line-height: 1.7; }
+.toolchain-review-copy > .toolchain-isolation-note { display: flex; align-items: baseline; gap: 8px; margin-top: 11px; padding: 7px 9px; border-left: 2px solid #6f8a74; color: #41634b; background: rgba(65,99,75,.07); font-size: 11px; }
+.toolchain-isolation-note strong { flex: 0 0 auto; font: 600 9px var(--font-mono); letter-spacing: .08em; text-transform: uppercase; }
+.toolchain-review-copy > ul { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px 22px; margin-top: 14px; }
+.toolchain-review-copy li { display: grid; grid-template-columns: 76px minmax(0,1fr); align-items: baseline; gap: 8px; padding-top: 8px; border-top: 1px solid var(--rule); }
+.toolchain-review-copy li strong { color: var(--color-ink); font: 600 11px var(--font-mono); }
+.toolchain-review-copy li small { line-height: 1.55; }
+.toolchain-review-copy > .toolchain-asr-note { margin-top: 12px; color: var(--color-brass); }
+.toolchain-review > .text-toggle { margin-top: 3px; white-space: nowrap; }
+.review-sheet > .wiki-location-row { align-items: start; padding-block: 18px; }
+.wiki-path-control { display: grid; grid-template-columns: minmax(0,1fr) auto; margin-top: 7px; }
+.wiki-location-copy input { width: 100%; min-height: 38px; padding: 0 10px; border: 1px solid var(--rule); border-right: 0; border-radius: 0; color: var(--color-ink); background: rgba(255,255,255,.24); font: 11px var(--font-mono); outline: none; transition: border-color .16s ease, box-shadow .16s ease, background .16s ease; }
+.wiki-location-copy input:focus { border-color: var(--color-cinnabar); background: rgba(255,255,255,.45); box-shadow: 3px 3px 0 rgba(178,63,51,.12); }
+.wiki-location-copy input::placeholder { color: var(--color-ink-faint); opacity: .7; }
+.wiki-path-control button { min-width: 90px; padding: 0 12px; border: 1px solid var(--color-ink); color: var(--color-paper); background: var(--color-spine); font: 600 11px var(--font-serif); transition: color .16s ease, background .16s ease, opacity .16s ease; }
+.wiki-path-control button:hover:not(:disabled) { color: white; background: var(--color-cinnabar); }
+.wiki-path-control button:disabled { cursor: wait; opacity: .55; }
+.wiki-location-copy > small { line-height: 1.55; }
 .text-toggle { color: var(--color-cinnabar); font: 600 11px var(--font-serif); text-decoration: underline; text-underline-offset: 4px; }
+
+.review-copy { width: min(820px, 100%); }
+.review-copy > h1 { margin-top: 9px; font-size: clamp(38px, 4.4vw, 54px); }
+.review-copy > .review-sheet { margin-top: 20px; }
+.review-copy .review-sheet > div { grid-template-columns: 112px minmax(0,1fr); gap: 14px; min-height: 58px; }
+.review-copy .review-sheet > .toolchain-review { padding-block: 12px; }
+.review-copy .toolchain-review-copy > p { margin-top: 5px; line-height: 1.5; }
+.review-copy .toolchain-review-copy > .toolchain-isolation-note { margin-top: 7px; padding: 5px 8px; }
+.review-copy .toolchain-review-copy > ul { gap: 4px 18px; margin-top: 8px; }
+.review-copy .toolchain-review-copy li { grid-template-columns: 70px minmax(0,1fr); gap: 6px; padding-top: 5px; }
+.review-copy .toolchain-review-copy li small { line-height: 1.4; }
+.review-copy .toolchain-review-copy > .toolchain-asr-note { margin-top: 7px; line-height: 1.45; }
+.review-copy .toolchain-review > .text-toggle { grid-column: 2; justify-self: start; margin-top: 4px; white-space: normal; text-align: left; }
+.review-copy .review-sheet > .wiki-location-row { padding-block: 10px; }
+.review-copy .wiki-path-control { margin-top: 4px; }
+.review-copy .wiki-location-copy input { min-height: 34px; }
+.review-copy .wiki-location-copy > small { line-height: 1.4; }
+.review-copy > .setup-actions { margin-top: 18px; }
+
 .conflict-box { margin-top: 22px; padding: 20px; border: 1px solid rgba(178,63,51,.4); background: rgba(178,63,51,.045); }
 .conflict-box h2 { font: 600 18px var(--font-display); color: var(--color-cinnabar-deep); }
 .conflict-box > p { margin: 5px 0 12px; color: var(--color-ink-soft); font-size: 12px; }
@@ -116,12 +154,16 @@
 .detail-progress { margin-top: 22px; padding: 14px 16px; border-left: 2px solid var(--color-brass); background: rgba(151,113,63,.07); }
 .detail-progress > div:first-child { display: flex; justify-content: space-between; color: var(--color-ink-faint); font: 10px var(--font-mono); }
 .detail-progress b { color: var(--color-ink-soft); font-weight: 600; }
+.detail-progress > p { margin-top: 8px; color: var(--color-ink); font: 600 13px var(--font-display); }
+.detail-progress > small { display: block; margin-top: 3px; color: var(--color-ink-faint); font: 9px var(--font-mono); }
 .detail-progress > div:last-child { position: relative; height: 2px; margin-top: 10px; overflow: hidden; background: rgba(151,113,63,.18); }
 .detail-progress > div:last-child > i { display: block; height: 100%; background: var(--color-brass); transition: width .25s ease-out; }
 .progress-tasks { display: grid; margin-top: 26px; border-top: 1px solid var(--rule); }
 .progress-tasks li { display: grid; grid-template-columns: 38px minmax(0,1fr) auto; align-items: center; min-height: 46px; border-bottom: 1px solid var(--rule); color: var(--color-ink-faint); }
 .progress-tasks li > i { font: 600 9px var(--font-mono); font-style: normal; }
-.progress-tasks li > span { overflow: hidden; font: 600 13px var(--font-display); text-overflow: ellipsis; white-space: nowrap; }
+.progress-tasks li > span { display: grid; min-width: 0; gap: 2px; overflow: hidden; }
+.progress-tasks li > span > b { overflow: hidden; font: 600 13px var(--font-display); text-overflow: ellipsis; white-space: nowrap; }
+.progress-tasks li > span > em { overflow: hidden; color: var(--color-ink-faint); font: 9px var(--font-mono); font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
 .progress-tasks li > small { font: 9px var(--font-mono); }
 .progress-tasks li.active { color: var(--color-ink); }
 .progress-tasks li.active > i { color: var(--color-cinnabar); animation: task-blink 1.3s ease-in-out infinite; }
@@ -211,6 +253,9 @@
   .setup-stage { padding-inline: 34px; }
   .setup-principles { grid-template-columns: 1fr; }
   .setup-principles article, .setup-principles article + article { min-height: auto; padding: 17px 0; border-right: 0; border-bottom: 1px solid var(--rule); }
+  .review-sheet > .toolchain-review { grid-template-columns: 130px minmax(0,1fr); }
+  .toolchain-review > .text-toggle { grid-column: 2; justify-self: start; margin-top: 8px; }
+  .toolchain-review-copy > ul { grid-template-columns: 1fr; }
   .manage-grid { grid-template-columns: 1fr; }
   .provider-routes, .custom-provider-list { grid-template-columns: 1fr; }
 }

@@ -14,6 +14,8 @@ pub enum SetupError {
     ConflictingUninstallSelection,
     #[error("provider configuration is invalid: {0}")]
     InvalidProviderConfig(String),
+    #[error("wiki path must be absolute or start with ~/: {0}")]
+    InvalidWikiPath(PathBuf),
     #[error("foreign skill destination requires explicit replacement authority: {0}")]
     ForeignDestination(PathBuf),
     #[error("replacement authority was not used: {0}")]

@@ -75,6 +75,7 @@ Obsidian 或 CLI。分享授权当前以整个 Wiki 为边界，不是单页授�
 完整 Skills Pack → 官方验证工具链 → Wiki 初始化 → 打开 Browser
 ```
 
+确认页可以修改 Wiki 的存放路径；默认仍为 `~/wikis/my-llm-wiki`，已有 Wiki 目录会直接复用。
 首次界面不再要求用户组合 Documents、Web、Video、中文/非中文 ASR 或失败策略。
 `toolchain-base` 包含 FFmpeg、yt-dlp、Node/OpenCLI 和文档转换；ASR runtime 在第一次遇到
 无字幕视频时按需下载。所有 pack 都由 CI 预构建和验证，用户机器只下载、校验 SHA-256、
@@ -97,7 +98,7 @@ CLI 与 GUI 调用同一个 Rust Setup Core：
 
 ```bash
 my-llm-wiki inspect --json
-my-llm-wiki setup --host codex --json
+my-llm-wiki setup --host codex --wiki-path ~/wikis/my-llm-wiki --json
 my-llm-wiki status --json
 my-llm-wiki update --check --json
 my-llm-wiki update --json

@@ -88,11 +88,13 @@ fn main() {
             MacosLauncher::LaunchAgent,
             None,
         ))
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             setup::setup_inspect,
             setup::setup_status,
+            setup::setup_pick_wiki_directory,
             setup::setup_apply,
             setup::setup_repair,
             setup::setup_open_wiki,

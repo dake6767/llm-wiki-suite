@@ -124,7 +124,7 @@ Setup Core 应位于 Browser 的 Rust workspace 中，作为独立 library/CLI �
 目标命令面保持很小：
 
 ```bash
-my-llm-wiki setup --host codex --json
+my-llm-wiki setup --host codex [--wiki-path /absolute/wiki/path] --json
 my-llm-wiki status --json
 my-llm-wiki update --check --json
 my-llm-wiki update --json
@@ -192,7 +192,7 @@ Browser 启动
 
 1. **欢迎**：说明一键路径与开放路径；
 2. **宿主选择**：检测 Codex、Claude 等已知宿主，只选择 skill 安装目标；
-3. **一次确认**：展示下载体积、官方工具链、目标路径和准确冲突；
+3. **一次确认**：展示下载体积、官方工具链、可编辑的 Wiki 存放路径和准确冲突；
 4. **执行进度**：只展示 Skills、Toolchain、Wiki 等产品阶段，不暴露 pip/npm 实现；
 5. **完成与人工动作**：打开 Wiki，并集中展示 Chrome 扩展等必须由用户完成的步骤。
 

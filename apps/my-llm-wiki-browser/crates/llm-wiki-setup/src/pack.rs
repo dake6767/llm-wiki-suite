@@ -18,13 +18,18 @@ const ARCHIVE_OVERHEAD_BYTES: u64 = 1;
 const PACK_IO_BUFFER_BYTES: usize = 1024 * 1024;
 const PACK_MARKER: &str = ".my-llm-wiki-pack.json";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PackProgress {
     CheckingExisting,
     Downloading(u8),
     VerifyingArchive,
     Extracting(u8),
     HealthChecking,
+    VerifyingTool {
+        name: String,
+        current: u32,
+        total: u32,
+    },
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -198,7 +203,7 @@ pub(crate) fn install_pack_with_progress(
     })
     .and_then(|()| {
         progress(PackProgress::HealthChecking);
-        check_pack(&stage, artifact)
+        check_pack_with_progress(&stage, artifact, &progress)
     })
     .and_then(|()| write_pack_marker(&stage, artifact));
     if let Err(error) = prepared {
@@ -310,11 +315,30 @@ fn render_action(action: &PackManualAction, root: &Path) -> ManualAction {
 }
 
 fn check_pack(root: &Path, artifact: &PackArtifact) -> Result<()> {
+    check_pack_with_progress(root, artifact, &|_| {})
+}
+
+fn check_pack_with_progress(
+    root: &Path,
+    artifact: &PackArtifact,
+    progress: &impl Fn(PackProgress),
+) -> Result<()> {
+    let total = artifact
+        .commands
+        .len()
+        .saturating_add(artifact.python_profiles.len())
+        .saturating_add(artifact.probes.len()) as u32;
+    let mut completed = 0u32;
     for (name, argv) in artifact
         .commands
         .iter()
         .chain(artifact.python_profiles.iter())
     {
+        progress(PackProgress::VerifyingTool {
+            name: name.clone(),
+            current: completed,
+            total,
+        });
         let resolved = resolve_argv(root, argv)?;
         let executable = Path::new(&resolved[0]);
         if !executable.is_file() {
@@ -323,8 +347,14 @@ fn check_pack(root: &Path, artifact: &PackArtifact) -> Result<()> {
                 detail: format!("{} executable is missing: {}", name, executable.display()),
             });
         }
+        completed += 1;
     }
     for probe in &artifact.probes {
+        progress(PackProgress::VerifyingTool {
+            name: probe.command.clone(),
+            current: completed,
+            total,
+        });
         let base = artifact
             .commands
             .get(&probe.command)
@@ -370,6 +400,14 @@ fn check_pack(root: &Path, artifact: &PackArtifact) -> Result<()> {
                 detail: format!("{} exited with {status}", probe.command),
             });
         }
+        completed += 1;
+    }
+    if total > 0 {
+        progress(PackProgress::VerifyingTool {
+            name: String::new(),
+            current: total,
+            total,
+        });
     }
     Ok(())
 }
