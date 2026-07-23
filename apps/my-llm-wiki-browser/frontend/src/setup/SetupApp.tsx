@@ -110,6 +110,7 @@ interface Progress {
   message: string;
   current: number;
   total: number;
+  detail_percent?: number;
 }
 
 type View = "loading" | "welcome" | "hosts" | "review" | "progress" | "complete" | "manage";
@@ -125,9 +126,9 @@ export default function SetupApp() {
   const [installToolchain, setInstallToolchain] = useState(true);
   const [progress, setProgress] = useState<Progress>({
     phase: "preparing",
-    message: "正在准备…",
+    message: "安装任务已启动",
     current: 0,
-    total: 4,
+    total: 1,
   });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -152,10 +153,7 @@ export default function SetupApp() {
         setStatus(nextStatus);
         setBrowserUpdate(nextBrowserUpdate);
         setProviderConfig(nextProviderConfig);
-        const detected = nextInspection.hosts
-          .filter((host) => host.detected)
-          .map((host) => host.id);
-        setSelectedHosts(new Set(detected));
+        setSelectedHosts(new Set());
         setView(nextStatus.state === "not-configured" ? "welcome" : "manage");
       })
       .catch((reason: unknown) => {
@@ -204,7 +202,12 @@ export default function SetupApp() {
     setBusy(true);
     setError(null);
     setView("progress");
-    setProgress({ phase: "preparing", message: "正在准备…", current: 0, total: 4 });
+    setProgress({
+      phase: "preparing",
+      message: "安装任务已启动",
+      current: 0,
+      total: selectedHosts.size + 1 + Number(installToolchain),
+    });
     try {
       const result = await invoke<SetupResult>("setup_apply", {
         request: {
@@ -329,7 +332,16 @@ export default function SetupApp() {
             disabled={busy || !selectedHosts.size || !conflictsApproved}
           />
         ) : view === "progress" ? (
-          <ProgressView progress={progress} />
+          <ProgressView
+            progress={progress}
+            tasks={[
+              ...[...selected]
+                .sort((left, right) => left.id.localeCompare(right.id))
+                .map((host) => `为 ${host.label} 激活 Skills Pack`),
+              "初始化 Wiki 与 RAW 目录",
+              ...(installToolchain ? ["安装并校验官方工具链"] : []),
+            ]}
+          />
         ) : (
           <Complete status={status} onManage={() => setView("manage")} onOpenWiki={() => void openWiki()} />
         )}
@@ -397,7 +409,7 @@ function HostSelection({ hosts, selected, onToggle, onBack, onContinue }: {
     <div className="setup-copy reveal">
       <p className="eyebrow">02 / Agent hosts</p>
       <h1>Skills 要出现在哪里？</h1>
-      <p className="setup-lead">已检测到的宿主已选中。你可以同时安装到多个 Agent；每个目录独立激活。</p>
+      <p className="setup-lead">请选择需要接收完整 Skills Pack 的 Agent。检测状态仅作提示，不会代你选择。</p>
       <div className="host-ledger">
         {hosts.map((host) => (
           <label key={host.id} className={selected.has(host.id) ? "selected" : ""}>
@@ -451,17 +463,71 @@ function ReviewRow({ label, value, note, action }: { label: string; value: strin
   return <div><span>{label}</span><div><b>{value}</b><small>{note}</small></div>{action}</div>;
 }
 
-function ProgressView({ progress }: { progress: Progress }) {
+function ProgressView({ progress, tasks }: { progress: Progress; tasks: string[] }) {
   const ratio = progress.total ? Math.round((progress.current / progress.total) * 100) : 0;
+  const starting = progress.current === 0;
+  const complete = progress.total > 0 && progress.current >= progress.total;
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setElapsed((value) => value + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   return (
     <div className="progress-view rise">
       <p className="eyebrow">04 / Applying</p>
-      <div className="progress-number">{String(ratio).padStart(2, "0")}<small>%</small></div>
-      <h1>{progress.message}</h1>
-      <div className="progress-track"><i style={{ width: `${ratio}%` }} /></div>
-      <p>可以关闭此窗口；后台操作会继续。重新打开“Skills 与工具链”即可查看状态。</p>
+      <div className={`progress-number${starting ? " is-active" : ""}`}>
+        {starting ? <>进行中<span className="working-dots" aria-hidden="true"><i /><i /><i /></span></> : <>{String(ratio).padStart(2, "0")}<small>%</small></>}
+      </div>
+      <h1 aria-live="polite">{progress.message}</h1>
+      <div
+        className={`progress-track${starting ? " is-indeterminate" : ""}${complete ? " is-complete" : ""}`}
+        role="progressbar"
+        aria-label="安装整体进度"
+        aria-valuemin={0}
+        aria-valuemax={progress.total}
+        aria-valuenow={starting ? undefined : progress.current}
+        aria-valuetext={starting ? "安装已经开始" : `已完成 ${progress.current} / ${progress.total}`}
+      >
+        <i style={starting ? undefined : { width: `${ratio}%` }} />
+      </div>
+      <div className="progress-meta">
+        <span>整体进度 {progress.current} / {progress.total}</span>
+        <span>{formatElapsed(elapsed)}</span>
+      </div>
+      {progress.detail_percent !== undefined ? (
+        <div className="detail-progress">
+          <div>
+            <span>当前操作</span>
+            <b>{progress.detail_percent > 0 ? `${progress.detail_percent}%` : "正在连接…"}</b>
+          </div>
+          <div className={progress.detail_percent === 0 ? "is-indeterminate" : ""}>
+            <i style={progress.detail_percent === 0 ? undefined : { width: `${progress.detail_percent}%` }} />
+          </div>
+        </div>
+      ) : null}
+      <ol className="progress-tasks" aria-label="安装任务">
+        {tasks.map((task, index) => {
+          const state = index < progress.current ? "done" : index === progress.current ? "active" : "pending";
+          return (
+            <li className={state} key={`${index}-${task}`}>
+              <i aria-hidden="true">{state === "done" ? "✓" : String(index + 1).padStart(2, "0")}</i>
+              <span>{task}</span>
+              <small>{state === "done" ? "已完成" : state === "active" ? "正在处理" : "等待"}</small>
+            </li>
+          );
+        })}
+      </ol>
+      <p>下载、完整性校验或首次健康检查可能需要几分钟；活动指示持续闪动即表示安装仍在进行。</p>
     </div>
   );
+}
+
+function formatElapsed(seconds: number) {
+  if (seconds < 5) return "刚刚开始";
+  if (seconds < 60) return `已用时 ${seconds} 秒`;
+  return `已用时 ${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
 }
 
 function Complete({ status, onManage, onOpenWiki }: {

@@ -102,10 +102,40 @@
 .progress-view { width: min(680px,100%); margin: auto; }
 .progress-number { margin-top: 28px; color: var(--color-cinnabar); font: 500 clamp(92px,15vw,170px)/.8 var(--font-display); letter-spacing: -.08em; }
 .progress-number small { margin-left: 12px; font: 500 20px var(--font-mono); letter-spacing: 0; }
+.progress-number.is-active { display: flex; align-items: flex-end; gap: 20px; font-size: clamp(58px,9vw,92px); letter-spacing: -.055em; }
+.working-dots { display: flex; gap: 6px; padding-bottom: 6px; }
+.working-dots i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; animation: working-dot 1.15s ease-in-out infinite; }
+.working-dots i:nth-child(2) { animation-delay: .14s; }
+.working-dots i:nth-child(3) { animation-delay: .28s; }
 .progress-view > h1 { margin-top: 40px; font-size: 34px; }
-.progress-track { height: 3px; margin-top: 28px; overflow: hidden; background: var(--color-paper-3); }
-.progress-track i { display: block; height: 100%; background: var(--color-cinnabar); transition: width .5s cubic-bezier(.2,.7,.2,1); }
+.progress-track { position: relative; height: 4px; margin-top: 28px; overflow: hidden; background: var(--color-paper-3); }
+.progress-track > i { position: relative; display: block; height: 100%; background: var(--color-cinnabar); transition: width .5s cubic-bezier(.2,.7,.2,1); }
+.progress-track:not(.is-indeterminate):not(.is-complete) > i::after { content: ""; position: absolute; top: -3px; right: -4px; width: 10px; height: 10px; border-radius: 50%; background: var(--color-cinnabar); animation: progress-pulse 1.25s ease-out infinite; }
+.progress-track.is-indeterminate > i, .detail-progress > div:last-child.is-indeterminate > i { position: absolute; width: 30%; animation: progress-scan 1.35s cubic-bezier(.45,0,.55,1) infinite; }
+.progress-meta { display: flex; justify-content: space-between; gap: 16px; margin-top: 10px; color: var(--color-ink-faint); font: 10px var(--font-mono); letter-spacing: .04em; }
+.detail-progress { margin-top: 22px; padding: 14px 16px; border-left: 2px solid var(--color-brass); background: rgba(151,113,63,.07); }
+.detail-progress > div:first-child { display: flex; justify-content: space-between; color: var(--color-ink-faint); font: 10px var(--font-mono); }
+.detail-progress b { color: var(--color-ink-soft); font-weight: 600; }
+.detail-progress > div:last-child { position: relative; height: 2px; margin-top: 10px; overflow: hidden; background: rgba(151,113,63,.18); }
+.detail-progress > div:last-child > i { display: block; height: 100%; background: var(--color-brass); transition: width .25s ease-out; }
+.progress-tasks { display: grid; margin-top: 26px; border-top: 1px solid var(--rule); }
+.progress-tasks li { display: grid; grid-template-columns: 38px minmax(0,1fr) auto; align-items: center; min-height: 46px; border-bottom: 1px solid var(--rule); color: var(--color-ink-faint); }
+.progress-tasks li > i { font: 600 9px var(--font-mono); font-style: normal; }
+.progress-tasks li > span { overflow: hidden; font: 600 13px var(--font-display); text-overflow: ellipsis; white-space: nowrap; }
+.progress-tasks li > small { font: 9px var(--font-mono); }
+.progress-tasks li.active { color: var(--color-ink); }
+.progress-tasks li.active > i { color: var(--color-cinnabar); animation: task-blink 1.3s ease-in-out infinite; }
+.progress-tasks li.active > small { color: var(--color-cinnabar); }
+.progress-tasks li.done { color: var(--color-ink-soft); }
+.progress-tasks li.done > i { color: #41634b; }
 .progress-view > p { margin-top: 16px; color: var(--color-ink-faint); font-size: 12px; }
+@keyframes working-dot { 0%, 65%, 100% { opacity: .22; transform: translateY(0); } 32% { opacity: 1; transform: translateY(-7px); } }
+@keyframes progress-scan { 0% { transform: translateX(-110%); } 100% { transform: translateX(440%); } }
+@keyframes progress-pulse { 0% { opacity: .75; transform: scale(.5); } 100% { opacity: 0; transform: scale(2.1); } }
+@keyframes task-blink { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) {
+  .working-dots i, .progress-track > i, .progress-track > i::after, .detail-progress i, .progress-tasks li.active > i { animation: none !important; }
+}
 .complete-view { position: relative; }
 .completion-seal { position: absolute; top: -70px; right: 0; display: grid; width: 96px; height: 96px; place-items: center; rotate: 8deg; border: 4px double rgba(178,63,51,.7); border-radius: 50%; color: var(--color-cinnabar); font: 600 22px var(--font-serif); }
 .backup-note { margin-top: 16px; color: var(--color-cinnabar-deep); font-size: 12px; }

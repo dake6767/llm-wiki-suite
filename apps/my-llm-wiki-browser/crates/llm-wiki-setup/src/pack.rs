@@ -17,6 +17,15 @@ const MANIFEST_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const ARCHIVE_OVERHEAD_BYTES: u64 = 1;
 const PACK_MARKER: &str = ".my-llm-wiki-pack.json";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PackProgress {
+    CheckingExisting,
+    Downloading(u8),
+    VerifyingArchive,
+    Extracting(u8),
+    HealthChecking,
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 struct PackMarker {
     schema: u32,
@@ -145,13 +154,22 @@ pub(crate) fn select_artifact<'a>(
 }
 
 pub(crate) fn install_pack(suite_home: &Path, artifact: &PackArtifact) -> Result<OwnedPack> {
+    install_pack_with_progress(suite_home, artifact, |_| {})
+}
+
+pub(crate) fn install_pack_with_progress(
+    suite_home: &Path,
+    artifact: &PackArtifact,
+    progress: impl Fn(PackProgress),
+) -> Result<OwnedPack> {
     let versions = suite_home.join("packs").join(&artifact.id).join("versions");
     let destination = versions.join(&artifact.version);
+    progress(PackProgress::CheckingExisting);
     if destination.is_dir() && check_pack_installation(&destination, artifact).is_ok() {
         return Ok(owned_pack(destination, artifact));
     }
 
-    let archive = download_archive(suite_home, artifact)?;
+    let archive = download_archive(suite_home, artifact, &progress)?;
     fs::create_dir_all(&versions).map_err(|err| SetupError::io(&versions, err))?;
     let available =
         fs2::available_space(&versions).map_err(|error| SetupError::io(&versions, error))?;
@@ -173,10 +191,16 @@ pub(crate) fn install_pack(suite_home: &Path, artifact: &PackArtifact) -> Result
         fs::remove_dir_all(&stage).map_err(|err| SetupError::io(&stage, err))?;
     }
     fs::create_dir_all(&stage).map_err(|err| SetupError::io(&stage, err))?;
-    if let Err(error) = extract_zip(&archive, &stage, artifact.installed_size)
-        .and_then(|()| check_pack(&stage, artifact))
-        .and_then(|()| write_pack_marker(&stage, artifact))
-    {
+    progress(PackProgress::Extracting(0));
+    let prepared = extract_zip(&archive, &stage, artifact.installed_size, |percent| {
+        progress(PackProgress::Extracting(percent))
+    })
+    .and_then(|()| {
+        progress(PackProgress::HealthChecking);
+        check_pack(&stage, artifact)
+    })
+    .and_then(|()| write_pack_marker(&stage, artifact));
+    if let Err(error) = prepared {
         let _ = fs::remove_dir_all(&stage);
         return Err(error);
     }
@@ -379,11 +403,16 @@ fn expand(root: &Path, value: &str) -> String {
     value.replace("{pack}", &root.to_string_lossy())
 }
 
-fn download_archive(suite_home: &Path, artifact: &PackArtifact) -> Result<PathBuf> {
+fn download_archive(
+    suite_home: &Path,
+    artifact: &PackArtifact,
+    progress: &impl Fn(PackProgress),
+) -> Result<PathBuf> {
     let downloads = suite_home.join("downloads");
     fs::create_dir_all(&downloads).map_err(|err| SetupError::io(&downloads, err))?;
     let destination = downloads.join(format!("{}.zip", artifact.sha256.to_ascii_lowercase()));
     if destination.is_file() {
+        progress(PackProgress::VerifyingArchive);
         if verify_sha256(&destination, &artifact.sha256).is_ok() {
             return Ok(destination);
         }
@@ -408,6 +437,7 @@ fn download_archive(suite_home: &Path, artifact: &PackArtifact) -> Result<PathBu
         &temporary,
         artifact.size,
         &artifact.sha256,
+        progress,
     )?;
     fs::rename(&temporary, &destination).map_err(|err| SetupError::io(&temporary, err))?;
     Ok(destination)
@@ -419,11 +449,20 @@ fn download_from_sources(
     destination: &Path,
     exact_bytes: u64,
     expected_sha256: &str,
+    progress: &impl Fn(PackProgress),
 ) -> Result<()> {
     let client = download_client(label)?;
     let mut errors = Vec::new();
     for source in sources {
-        match stream_source(&client, source, destination, exact_bytes, expected_sha256) {
+        progress(PackProgress::Downloading(0));
+        match stream_source(
+            &client,
+            source,
+            destination,
+            exact_bytes,
+            expected_sha256,
+            progress,
+        ) {
             Ok(()) => return Ok(()),
             Err(error) => {
                 let _ = fs::remove_file(destination);
@@ -443,6 +482,7 @@ fn stream_source(
     destination: &Path,
     exact_bytes: u64,
     expected_sha256: &str,
+    progress: &impl Fn(PackProgress),
 ) -> std::result::Result<(), String> {
     let reader: Box<dyn Read> = if let Some(path) = source.strip_prefix("file://") {
         Box::new(File::open(path).map_err(|error| error.to_string())?)
@@ -466,6 +506,7 @@ fn stream_source(
     let mut output = File::create(destination).map_err(|error| error.to_string())?;
     let mut hash = Sha256::new();
     let mut total = 0u64;
+    let mut reported_percent = 0;
     let mut buffer = [0u8; 1024 * 1024];
     loop {
         let read = reader
@@ -484,6 +525,11 @@ fn stream_source(
         output
             .write_all(&buffer[..read])
             .map_err(|error| error.to_string())?;
+        let percent = percent(total, exact_bytes);
+        if percent != reported_percent {
+            reported_percent = percent;
+            progress(PackProgress::Downloading(percent));
+        }
     }
     output.sync_all().map_err(|error| error.to_string())?;
     if total != exact_bytes {
@@ -594,7 +640,12 @@ impl Write for HashWriter<'_> {
     }
 }
 
-fn extract_zip(archive: &Path, destination: &Path, expected_size: u64) -> Result<()> {
+fn extract_zip(
+    archive: &Path,
+    destination: &Path,
+    expected_size: u64,
+    progress: impl Fn(u8),
+) -> Result<()> {
     let file = File::open(archive).map_err(|err| SetupError::io(archive, err))?;
     let mut zip =
         ZipArchive::new(file).map_err(|err| SetupError::InvalidManifest(err.to_string()))?;
@@ -611,6 +662,9 @@ fn extract_zip(archive: &Path, destination: &Path, expected_size: u64) -> Result
             "archive expanded size mismatch: expected {expected_size}, got {actual_size}"
         )));
     }
+    let mut extracted_size = 0u64;
+    let mut reported_percent = 0;
+    let mut buffer = [0u8; 1024 * 1024];
     for index in 0..zip.len() {
         let mut entry = zip
             .by_index(index)
@@ -630,7 +684,25 @@ fn extract_zip(archive: &Path, destination: &Path, expected_size: u64) -> Result
             fs::create_dir_all(parent).map_err(|err| SetupError::io(parent, err))?;
         }
         let mut output = File::create(&path).map_err(|err| SetupError::io(&path, err))?;
-        std::io::copy(&mut entry, &mut output).map_err(|err| SetupError::io(&path, err))?;
+        loop {
+            let read = entry
+                .read(&mut buffer)
+                .map_err(|err| SetupError::io(&path, err))?;
+            if read == 0 {
+                break;
+            }
+            output
+                .write_all(&buffer[..read])
+                .map_err(|err| SetupError::io(&path, err))?;
+            extracted_size = extracted_size.checked_add(read as u64).ok_or_else(|| {
+                SetupError::InvalidManifest("archive expanded size overflows u64".into())
+            })?;
+            let percent = percent(extracted_size, expected_size);
+            if percent != reported_percent {
+                reported_percent = percent;
+                progress(percent);
+            }
+        }
         #[cfg(unix)]
         if let Some(mode) = entry.unix_mode() {
             use std::os::unix::fs::PermissionsExt as _;
@@ -639,6 +711,13 @@ fn extract_zip(archive: &Path, destination: &Path, expected_size: u64) -> Result
         }
     }
     Ok(())
+}
+
+fn percent(current: u64, total: u64) -> u8 {
+    if total == 0 {
+        return 0;
+    }
+    ((u128::from(current) * 100 / u128::from(total)).min(100)) as u8
 }
 
 pub(crate) fn target() -> (String, String) {

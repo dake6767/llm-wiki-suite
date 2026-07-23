@@ -66,6 +66,8 @@ pub struct SetupProgress {
     pub message: String,
     pub current: u32,
     pub total: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail_percent: Option<u8>,
 }
 
 fn default_true() -> bool {

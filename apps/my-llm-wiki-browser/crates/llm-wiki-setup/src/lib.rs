@@ -228,6 +228,13 @@ impl SetupCore {
             let host = definitions
                 .get(&host_id)
                 .ok_or_else(|| SetupError::UnknownHost(host_id.clone()))?;
+            report(
+                &progress,
+                "skills",
+                &format!("正在为 {} 激活 Skills Pack", host.label),
+                completed,
+                total,
+            );
             let owned =
                 self.install_host(host, &state.install_id, &mut replacements, &mut backups)?;
             state.hosts.insert(host_id, owned);
@@ -247,16 +254,40 @@ impl SetupCore {
         let schema = BUNDLED_SKILLS
             .get_file("my-llm-wiki/assets/schema.md")
             .ok_or_else(|| SetupError::InvalidState("bundled schema.md is missing".into()))?;
+        report(
+            &progress,
+            "wiki",
+            "正在初始化 Wiki 与 RAW 目录",
+            completed,
+            total,
+        );
         wiki::ensure(&state.wiki_path, &self.registry_path, schema.contents())?;
         completed += 1;
         report(&progress, "wiki", "Wiki 已初始化", completed, total);
         state.distribution_version = DISTRIBUTION_VERSION.to_owned();
         state.skills_pack_version = DISTRIBUTION_VERSION.to_owned();
         if request.install_official_toolchain {
+            report(
+                &progress,
+                "toolchain",
+                "正在获取官方工具链清单",
+                completed,
+                total,
+            );
             let manifest = pack::fetch_manifest(&self.current_manifest_sources)?;
             self.require_current_distribution(&manifest)?;
             let artifact = pack::select_artifact(&manifest, "toolchain-base")?;
-            let installed = pack::install_pack(&self.suite_home, artifact)?;
+            let installed =
+                pack::install_pack_with_progress(&self.suite_home, artifact, |event| {
+                    report_pack_progress(
+                        &progress,
+                        "toolchain",
+                        "官方工具链",
+                        completed,
+                        total,
+                        event,
+                    )
+                })?;
             state.packs.insert("toolchain-base".into(), installed);
             completed += 1;
             report(
@@ -309,6 +340,13 @@ impl SetupCore {
                     DestinationState::Absent | DestinationState::Owned => {}
                 }
             }
+            report(
+                &progress,
+                "skills",
+                &format!("正在校验 {} 的 Skills Pack", host.label),
+                completed,
+                total,
+            );
             let owned =
                 self.install_host(host, &state.install_id, &mut replacements, &mut backups)?;
             state.hosts.insert(host_id, owned);
@@ -324,6 +362,13 @@ impl SetupCore {
         let schema = BUNDLED_SKILLS
             .get_file("my-llm-wiki/assets/schema.md")
             .ok_or_else(|| SetupError::InvalidState("bundled schema.md is missing".into()))?;
+        report(
+            &progress,
+            "wiki",
+            "正在校验 Wiki 与 RAW 目录",
+            completed,
+            total,
+        );
         wiki::ensure(&state.wiki_path, &self.registry_path, schema.contents())?;
         completed += 1;
         report(&progress, "wiki", "Wiki 状态已校验", completed, total);
@@ -332,14 +377,44 @@ impl SetupCore {
                 if pack::check_owned_pack(existing).is_ok() {
                     None
                 } else {
-                    Some(pack::install_pack(&self.suite_home, &existing.artifact)?)
+                    Some(pack::install_pack_with_progress(
+                        &self.suite_home,
+                        &existing.artifact,
+                        |event| {
+                            report_pack_progress(
+                                &progress,
+                                "pack",
+                                &format!("{id} 能力包"),
+                                completed,
+                                total,
+                                event,
+                            )
+                        },
+                    )?)
                 }
             } else {
+                report(
+                    &progress,
+                    "pack",
+                    &format!("正在获取 {id} 能力包清单"),
+                    completed,
+                    total,
+                );
                 let manifest = pack::fetch_manifest(&self.current_manifest_sources)?;
                 self.require_current_distribution(&manifest)?;
-                Some(pack::install_pack(
+                Some(pack::install_pack_with_progress(
                     &self.suite_home,
                     pack::select_artifact(&manifest, &id)?,
+                    |event| {
+                        report_pack_progress(
+                            &progress,
+                            "pack",
+                            &format!("{id} 能力包"),
+                            completed,
+                            total,
+                            event,
+                        )
+                    },
                 )?)
             };
             if let Some(installed) = installed {
@@ -376,7 +451,9 @@ impl SetupCore {
         let manifest = pack::fetch_manifest(&self.current_manifest_sources)?;
         self.require_current_distribution(&manifest)?;
         let artifact = pack::select_artifact(&manifest, id)?;
-        let installed = pack::install_pack(&self.suite_home, artifact)?;
+        let installed = pack::install_pack_with_progress(&self.suite_home, artifact, |event| {
+            report_pack_progress(&progress, "pack", &format!("{id} 能力包"), 0, 1, event)
+        })?;
         state.packs.insert(id.to_owned(), installed);
         if id == "toolchain-base" {
             state.official_toolchain = true;
@@ -964,6 +1041,31 @@ fn report(sink: &impl Fn(SetupProgress), phase: &str, message: &str, current: u3
         message: message.to_owned(),
         current,
         total,
+        detail_percent: None,
+    });
+}
+
+fn report_pack_progress(
+    sink: &impl Fn(SetupProgress),
+    phase: &str,
+    label: &str,
+    current: u32,
+    total: u32,
+    event: pack::PackProgress,
+) {
+    let (message, detail_percent) = match event {
+        pack::PackProgress::CheckingExisting => (format!("正在检查本地{label}"), None),
+        pack::PackProgress::Downloading(percent) => (format!("正在下载{label}"), Some(percent)),
+        pack::PackProgress::VerifyingArchive => (format!("正在校验{label}下载文件"), None),
+        pack::PackProgress::Extracting(percent) => (format!("正在解压{label}"), Some(percent)),
+        pack::PackProgress::HealthChecking => (format!("正在检查{label}可用性"), None),
+    };
+    sink(SetupProgress {
+        phase: phase.to_owned(),
+        message,
+        current,
+        total,
+        detail_percent,
     });
 }
 
@@ -1073,10 +1175,14 @@ mod tests {
                 .iter()
                 .map(|event| event.phase.as_str())
                 .collect::<Vec<_>>(),
-            ["preparing", "skills", "wiki"]
+            ["preparing", "skills", "skills", "wiki", "wiki"]
         );
         assert_eq!((events[0].current, events[0].total), (0, 2));
-        assert_eq!((events[2].current, events[2].total), (2, 2));
+        assert_eq!(
+            events.iter().map(|event| event.current).collect::<Vec<_>>(),
+            [0, 0, 1, 1, 2]
+        );
+        assert!(events.iter().all(|event| event.detail_percent.is_none()));
     }
 
     #[test]
@@ -1260,9 +1366,28 @@ mod tests {
         );
         let mut setup = request("codex");
         setup.install_official_toolchain = true;
-        let result = core.setup(setup).unwrap();
+        let setup_events = RefCell::new(Vec::new());
+        let result = core
+            .setup_with_progress(setup, |event| setup_events.borrow_mut().push(event))
+            .unwrap();
+        let setup_events = setup_events.into_inner();
         assert_eq!(result.state, SetupHealth::Ready);
         assert!(result.official_toolchain.healthy);
+        assert!(setup_events.iter().any(|event| {
+            event.phase == "toolchain"
+                && event.message == "正在下载官方工具链"
+                && event.detail_percent == Some(100)
+        }));
+        assert!(setup_events.iter().any(|event| {
+            event.phase == "toolchain"
+                && event.message == "正在解压官方工具链"
+                && event.detail_percent == Some(100)
+        }));
+        assert!(setup_events.iter().any(|event| {
+            event.phase == "toolchain"
+                && event.message == "正在检查官方工具链可用性"
+                && event.detail_percent.is_none()
+        }));
 
         let state = core.load_state().unwrap().unwrap();
         let tool = state.packs["toolchain-base"].path.join("bin/tool");
