@@ -2,7 +2,9 @@ use llm_wiki_setup::{
     ProviderConfig, SetupCore, SetupInspection, SetupProgress, SetupRequest, SetupResult,
     UpdateResult,
 };
+use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter as _, Manager as _, WebviewWindow};
+use tauri_plugin_dialog::DialogExt as _;
 
 use crate::update::UpdateStatus;
 
@@ -25,6 +27,27 @@ pub(crate) async fn setup_inspect(
 pub(crate) async fn setup_status(window: WebviewWindow) -> Result<SetupResult, String> {
     require_setup_window(&window)?;
     run(|| SetupCore::from_environment()?.status()).await
+}
+
+#[tauri::command]
+pub(crate) async fn setup_pick_wiki_directory(
+    app: AppHandle,
+    window: WebviewWindow,
+    current: Option<PathBuf>,
+) -> Result<Option<PathBuf>, String> {
+    require_setup_window(&window)?;
+    let mut picker = app
+        .dialog()
+        .file()
+        .set_parent(&window)
+        .set_title("选择 Wiki 存放文件夹");
+    if let Some(directory) = current.and_then(expand_home_path) {
+        picker = picker.set_directory(directory);
+    }
+    picker
+        .blocking_pick_folder()
+        .map(|path| path.into_path().map_err(|error| error.to_string()))
+        .transpose()
 }
 
 #[tauri::command]
@@ -157,6 +180,19 @@ fn require_setup_window(window: &WebviewWindow) -> Result<(), String> {
     } else {
         Err("Setup Core commands are only available to the embedded Setup window".into())
     }
+}
+
+fn expand_home_path(path: PathBuf) -> Option<PathBuf> {
+    if path.is_absolute() {
+        return Some(path);
+    }
+    let home = dirs::home_dir()?;
+    if path == Path::new("~") {
+        return Some(home);
+    }
+    path.strip_prefix("~")
+        .ok()
+        .map(|relative| home.join(relative))
 }
 
 fn sidecar_cli_source(app: &AppHandle) -> Option<std::path::PathBuf> {
