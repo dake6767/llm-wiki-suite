@@ -8,7 +8,12 @@ are in `references/video-asr.md`.
 
 - **`-x` is not audio-only on Bilibili.** `yt-dlp -x` can pick a merged
   video+audio DASH format (280 MiB, 30-min download) whose audio extraction
-  silently truncates to ~2 min. **List formats and force the audio stream id:**
+  silently truncates to ~2 min. **Force an audio-only stream id.** The §2
+  `video_probe.py` metadata already carries `audio_format_id` (best lossy
+  audio-only stream, Hi-Res FLAC / Dolby deprioritized) plus a ranked
+  `audio_formats` list — pass it straight to `yt-dlp -f <audio_format_id> …`,
+  no separate `--list-formats` pass needed. Manual fallback if the probe found
+  nothing (or you want a different tier):
   `yt-dlp --cookies-from-browser chrome --list-formats <url> | grep audio` →
   `yt-dlp -f <audio-id> …`. Always ffprobe the result against the expected
   duration.

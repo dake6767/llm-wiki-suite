@@ -141,7 +141,9 @@ python3 "$VIDEO_SKILL/scripts/video_probe.py" --url "$URL" \
 On a confirmed auth/bot wall, retry with `--cookies-from-browser chrome` only
 after the user allows browser-login access. Its `subtitle_languages` /
 `automatic_caption_languages` fields tell you up front whether Path A can
-succeed. Thumbnail:
+succeed; on Path B, `audio_format_id` is the pre-picked audio-only stream to
+pass to `yt-dlp -f` (with the ranked `audio_formats` list as backup) — no
+separate `--list-formats` pass needed. Thumbnail:
 `yt-dlp --skip-download --write-thumbnail --convert-thumbnails jpg -o "<tmp>/images/cover" <url>`.
 
 ### Path B — no captions: audio-only download + local ASR

@@ -13,6 +13,7 @@ import json
 import os
 import shutil
 import sys
+from collections.abc import MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -187,6 +188,36 @@ def runtime_env(
     ).environment
 
 
+# Provider env vars that locate the pack's own code and must therefore win over
+# anything the caller inherited. A stray PYTHONPATH in the launching shell — even
+# an empty string, which some shells and agent runtimes export — otherwise
+# shadows the pack's isolated `site` dir under plain setdefault and breaks every
+# `import` in the re-exec'd interpreter.
+_PACK_PATH_VARS = frozenset({"PYTHONPATH"})
+
+
+def _merge_provider_environment(
+    environment: MutableMapping[str, str], provider_env: dict[str, str]
+) -> None:
+    """Fold a Provider's declared environment into the re-exec environment.
+
+    Path vars that point into the pack (PYTHONPATH) are authoritative: the pack
+    value goes first, then any distinct non-empty inherited entries, so the
+    pack's own code is always importable and the merge is idempotent across the
+    self re-exec. Every other var stays user-overridable via setdefault.
+    """
+    for key, value in provider_env.items():
+        if key in _PACK_PATH_VARS:
+            inherited = environment.get(key, "")
+            ordered: list[str] = []
+            for part in [value, *inherited.split(os.pathsep)]:
+                if part and part not in ordered:
+                    ordered.append(part)
+            environment[key] = os.pathsep.join(ordered)
+        else:
+            environment.setdefault(key, value)
+
+
 def ensure_provider_python(profile: str, *, provider: str | None = None) -> None:
     """Re-exec an ASR entry point with the selected Provider's Python."""
     resolved = resolve_python_provider(profile, provider=provider)
@@ -201,14 +232,12 @@ def ensure_provider_python(profile: str, *, provider: str | None = None) -> None
         and os.environ.get(ACTIVE_PROVIDER_ENV) == resolved.provider
     )
     if already_active:
-        for key, value in resolved.environment.items():
-            os.environ.setdefault(key, value)
+        _merge_provider_environment(os.environ, resolved.environment)
         return
     environment = os.environ.copy()
     environment[ACTIVE_PYTHON_PROFILE_ENV] = profile
     environment[ACTIVE_PROVIDER_ENV] = resolved.provider
-    for key, value in resolved.environment.items():
-        environment.setdefault(key, value)
+    _merge_provider_environment(environment, resolved.environment)
     os.execve(
         str(target),
         [*resolved.argv, str(Path(sys.argv[0]).resolve()), *sys.argv[1:]],

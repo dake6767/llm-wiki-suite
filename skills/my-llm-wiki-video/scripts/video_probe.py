@@ -20,6 +20,79 @@ sys.path.insert(0, str(CORE_SCRIPTS))
 from tool_runtime import ToolRuntimeError, resolve_command_argv  # noqa: E402
 
 
+# Audio-only stream selection --------------------------------------------------
+# On Bilibili (and others) `yt-dlp -x` can grab a merged video+audio DASH format
+# whose audio extraction silently truncates; forcing an audio-only stream id
+# avoids it. The `--dump-single-json` probe already carries every `formats`
+# entry, so the recommended id costs no extra request. Lossless / premium tiers
+# (Hi-Res FLAC, Dolby Atmos) are huge, usually gated behind a paid account, and
+# buy ASR nothing over a plain AAC/Opus stream, so they are deprioritized —
+# kept only as a last resort so the recommendation is never empty.
+_DEPRIORITIZED_ACODEC_PREFIXES = ("flac", "alac", "ec-3", "eac3", "ec3", "true")
+
+
+def _is_audio_only(fmt: dict[str, Any]) -> bool:
+    vcodec = fmt.get("vcodec")
+    acodec = fmt.get("acodec")
+    return (
+        (vcodec is None or vcodec == "none")
+        and acodec is not None
+        and acodec != "none"
+    )
+
+
+def _audio_bitrate(fmt: dict[str, Any]) -> float:
+    for key in ("abr", "tbr"):
+        value = fmt.get(key)
+        if isinstance(value, (int, float)):
+            return float(value)
+    return 0.0
+
+
+def _audio_filesize(fmt: dict[str, Any]) -> int:
+    for key in ("filesize", "filesize_approx"):
+        value = fmt.get(key)
+        if isinstance(value, int):
+            return value
+    return 0
+
+
+def _prefers_lossy(fmt: dict[str, Any]) -> bool:
+    acodec = str(fmt.get("acodec") or "").lower()
+    return not acodec.startswith(_DEPRIORITIZED_ACODEC_PREFIXES)
+
+
+def select_audio_formats(formats: Any) -> tuple[str, list[dict[str, Any]]]:
+    """Pick the best audio-only stream id and a compact candidate list.
+
+    Ordering: lossy before lossless/premium, then higher bitrate, then larger
+    file. The recommended id is the first candidate; the list lets the SOP fall
+    back (e.g. to a Hi-Res stream) or override without a second probe.
+    """
+    if not isinstance(formats, list):
+        return "", []
+    candidates = [
+        fmt for fmt in formats
+        if isinstance(fmt, dict) and fmt.get("format_id") and _is_audio_only(fmt)
+    ]
+    candidates.sort(
+        key=lambda fmt: (_prefers_lossy(fmt), _audio_bitrate(fmt), _audio_filesize(fmt)),
+        reverse=True,
+    )
+    compact = [
+        {
+            "format_id": str(fmt.get("format_id")),
+            "ext": fmt.get("ext") or "",
+            "acodec": fmt.get("acodec") or "",
+            "abr": fmt.get("abr"),
+            "filesize": fmt.get("filesize") or fmt.get("filesize_approx"),
+        }
+        for fmt in candidates
+    ]
+    recommended = compact[0]["format_id"] if compact else ""
+    return recommended, compact
+
+
 def normalize_metadata(data: Any) -> dict[str, Any]:
     """Return the fields the capture SOP needs from a yt-dlp record."""
     if isinstance(data, list):
@@ -31,6 +104,8 @@ def normalize_metadata(data: Any) -> dict[str, Any]:
 
     def languages(value: Any) -> list[str]:
         return sorted(str(key) for key in value) if isinstance(value, dict) else []
+
+    audio_format_id, audio_formats = select_audio_formats(data.get("formats"))
 
     return {
         "id": data.get("id") or "",
@@ -44,6 +119,8 @@ def normalize_metadata(data: Any) -> dict[str, Any]:
         "thumbnail": data.get("thumbnail") or "",
         "subtitle_languages": languages(data.get("subtitles")),
         "automatic_caption_languages": languages(data.get("automatic_captions")),
+        "audio_format_id": audio_format_id,
+        "audio_formats": audio_formats,
     }
 
 

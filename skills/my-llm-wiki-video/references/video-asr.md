@@ -27,9 +27,13 @@ Apply the loaded SKILL.md Provider Resolver rule to every external command
 below. Use `tool_exec.py --capability capture.video.captions yt-dlp -- ...`
 and `tool_exec.py --capability media.extract-audio ffmpeg -- ...` on every
 platform. Download audio only with yt-dlp (never the video), e.g.
-`yt-dlp -x --audio-format mp3 -o "<tmp>/audio.%(ext)s" <url>` — but see the
-Bilibili format trap in `video-bilibili-pitfalls.md` (on Bilibili, list formats
-and pick the audio-only stream id explicitly).
+`yt-dlp -x --audio-format mp3 -o "<tmp>/audio.%(ext)s" <url>` — but prefer the
+`audio_format_id` the §2 probe (`video_probe.py`) already picked from the
+metadata's `formats` and force it: `yt-dlp -f <audio_format_id> -o "<tmp>/audio.%(ext)s" <url>`.
+This avoids the Bilibili format trap in `video-bilibili-pitfalls.md`, where a
+bare `-x` grabs a merged DASH stream whose audio silently truncates. If the
+probe returned no `audio_format_id` (rare extractor gap), fall back to listing
+formats manually as that file describes.
 
 **Convert m4a → wav for Python-API ASR backends** (librosa/soundfile can't
 read m4a): `ffmpeg -i audio.m4a -ar 16000 -ac 1 audio.wav` anywhere, or
