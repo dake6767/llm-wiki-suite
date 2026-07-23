@@ -1427,7 +1427,7 @@ mod tests {
             core.uninstall(&BTreeSet::new(), false),
             Err(SetupError::UninstallSelectionRequired)
         ));
-        let cli_path = temp.path().join(".my-llm-wiki/bin/my-llm-wiki");
+        let cli_path = core.cli_path.clone();
         assert!(cli_path.is_file());
         core.uninstall(&BTreeSet::new(), true).unwrap();
 
@@ -1449,7 +1449,13 @@ mod tests {
                 ProviderSpec {
                     commands: BTreeMap::from([(
                         "ffmpeg".into(),
-                        vec!["/opt/media/bin/ffmpeg".into(), "-nostdin".into()],
+                        vec![
+                            temp.path()
+                                .join("media/bin/ffmpeg")
+                                .to_string_lossy()
+                                .into_owned(),
+                            "-nostdin".into(),
+                        ],
                     )]),
                     ..ProviderSpec::default()
                 },
