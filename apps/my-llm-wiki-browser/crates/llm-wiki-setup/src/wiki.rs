@@ -40,6 +40,9 @@ struct RegistryEntry {
 
 pub(crate) fn status(root: &Path, registry_path: &Path) -> WikiStatus {
     WikiStatus {
+        // The collection root is the volume's parent; fall back to the volume
+        // itself only for a filesystem root with no parent.
+        collection_root: root.parent().unwrap_or(root).to_path_buf(),
         path: root.to_path_buf(),
         registry_path: registry_path.to_path_buf(),
         ready: root.join("schema.md").is_file() && root.join("wiki").is_dir(),

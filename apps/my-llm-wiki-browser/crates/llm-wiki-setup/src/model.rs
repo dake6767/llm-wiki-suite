@@ -110,7 +110,12 @@ pub struct HostResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WikiStatus {
+    /// The wiki volume itself — where `schema.md`, `wiki/`, and `raw/` live.
     pub path: PathBuf,
+    /// The parent directory that holds one or more wiki volumes. This is what
+    /// the user picks and sees in Setup; the default `my-llm-wiki` volume is
+    /// created beneath it, and later siblings (e.g. `ai-wiki`) join it here.
+    pub collection_root: PathBuf,
     pub registry_path: PathBuf,
     pub ready: bool,
 }

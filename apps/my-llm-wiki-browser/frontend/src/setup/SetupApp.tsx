@@ -28,6 +28,7 @@ interface PackStatus {
 
 interface WikiStatus {
   path: string;
+  collection_root: string;
   registry_path: string;
   ready: boolean;
 }
@@ -116,7 +117,7 @@ export default function SetupApp() {
       skills_dir: previewHost.skills_dir,
       destinations: [],
     }],
-    wiki: { path: "~/wikis/my-llm-wiki", registry_path: "", ready: false },
+    wiki: { path: "~/wikis/my-llm-wiki", collection_root: "~/wikis", registry_path: "", ready: false },
     official_toolchain: { id: "toolchain-base", version: null, installed: false, healthy: false },
   } : null;
   const [view, setView] = useState<View>(previewProgress ? "progress" : previewReview ? "review" : "loading");
@@ -125,7 +126,7 @@ export default function SetupApp() {
   const [selectedHosts, setSelectedHosts] = useState<Set<string>>(new Set(previewMode ? [previewHost.id] : []));
   const [approvedConflicts, setApprovedConflicts] = useState<Set<string>>(new Set());
   const [installToolchain, setInstallToolchain] = useState(true);
-  const [wikiPath, setWikiPath] = useState(previewMode ? "~/wikis/my-llm-wiki" : "");
+  const [wikiPath, setWikiPath] = useState(previewMode ? "~/wikis" : "");
   const [progress, setProgress] = useState<Progress>(previewToolchain ? {
     phase: "toolchain",
     message: "正在下载推荐工具链",
@@ -172,7 +173,7 @@ export default function SetupApp() {
         setStatus(nextStatus);
         setBrowserUpdate(nextBrowserUpdate);
         setSelectedHosts(new Set());
-        setWikiPath(nextInspection.wiki.path);
+        setWikiPath(nextInspection.wiki.collection_root);
         setView(nextStatus.state === "not-configured" ? "welcome" : "manage");
       })
       .catch((reason: unknown) => {
@@ -503,20 +504,20 @@ function WikiLocation({ path, picking, onChange, onPick }: {
     <div className="wiki-location-row">
       <span>Wiki</span>
       <div className="wiki-location-copy">
-        <b>初始化或复用</b>
+        <b>选择存放 Wiki 的目录</b>
         <div className="wiki-path-control">
           <input
-            aria-label="Wiki 存放路径"
+            aria-label="Wiki 存放目录"
             value={path}
             onChange={(event) => onChange(event.target.value)}
-            placeholder="~/wikis/my-llm-wiki"
+            placeholder="~/wikis"
             spellCheck={false}
           />
           <button type="button" onClick={onPick} disabled={picking}>
             {picking ? "正在打开…" : "选择文件夹"}
           </button>
         </div>
-        <small>使用系统文件夹选择器，或填写绝对路径 / 以 ~/ 开头；已有 Wiki 将直接复用。</small>
+        <small>会在此目录下创建默认知识库 <code>my-llm-wiki</code>；日后可让 Agent 在同级新建更多知识库（如 <code>ai-wiki</code>）。可用系统选择器，或填写绝对路径 / 以 ~/ 开头；已有知识库将直接复用。</small>
       </div>
     </div>
   );
