@@ -15,6 +15,7 @@ use crate::model::{DistributionManifest, ManualAction, OwnedPack, PackArtifact, 
 
 const MANIFEST_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const ARCHIVE_OVERHEAD_BYTES: u64 = 1;
+const PACK_IO_BUFFER_BYTES: usize = 1024 * 1024;
 const PACK_MARKER: &str = ".my-llm-wiki-pack.json";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -507,7 +508,9 @@ fn stream_source(
     let mut hash = Sha256::new();
     let mut total = 0u64;
     let mut reported_percent = 0;
-    let mut buffer = [0u8; 1024 * 1024];
+    // Setup runs on a Tokio blocking worker whose stack is only a few MiB on
+    // desktop platforms. Keep the large transfer buffer on the heap.
+    let mut buffer = vec![0u8; PACK_IO_BUFFER_BYTES];
     loop {
         let read = reader
             .read(&mut buffer)
@@ -664,7 +667,9 @@ fn extract_zip(
     }
     let mut extracted_size = 0u64;
     let mut reported_percent = 0;
-    let mut buffer = [0u8; 1024 * 1024];
+    // Keep enough stack available for zip's central-directory parser. Official
+    // toolchain archives contain thousands of entries.
+    let mut buffer = vec![0u8; PACK_IO_BUFFER_BYTES];
     for index in 0..zip.len() {
         let mut entry = zip
             .by_index(index)
@@ -736,6 +741,32 @@ pub(crate) fn target() -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extracts_large_central_directory_on_worker_sized_stack() {
+        const ENTRY_COUNT: usize = 12_500;
+        const CONSTRAINED_STACK_BYTES: usize = 1024 * 1024;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let archive = temporary.path().join("many-entries.zip");
+        let destination = temporary.path().join("extracted");
+        let file = File::create(&archive).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default();
+        for index in 0..ENTRY_COUNT {
+            writer
+                .start_file(format!("payload-{index:05}"), options)
+                .unwrap();
+        }
+        writer.finish().unwrap();
+
+        let worker = std::thread::Builder::new()
+            .stack_size(CONSTRAINED_STACK_BYTES)
+            .spawn(move || extract_zip(&archive, &destination, 0, |_| {}))
+            .unwrap();
+
+        worker.join().unwrap().unwrap();
+    }
 
     #[test]
     fn resolves_every_declared_pack_path_and_rejects_missing_members() {
