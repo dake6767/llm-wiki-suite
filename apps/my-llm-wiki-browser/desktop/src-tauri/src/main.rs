@@ -5,7 +5,7 @@
 use std::io::ErrorKind;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -15,10 +15,7 @@ use llm_wiki_connector::{ConnectorConfig, ConnectorEvent, run_connector_with_eve
 use llm_wiki_core::config::CoreConfig;
 use llm_wiki_core::registry::load_registry;
 use llm_wiki_core::{FullTextSearcher, IndexManager};
-use llm_wiki_server::{
-    AutostartControl, ServerConfig, ServerControl, SkillState, SkillVersionConfig,
-    SkillVersionInfo, SkillVersionManager, UpdateControl, serve,
-};
+use llm_wiki_server::{AutostartControl, ServerConfig, ServerControl, serve};
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -31,6 +28,7 @@ use tracing_subscriber::fmt::writer::MakeWriterExt as _;
 use tauri::ActivationPolicy;
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as _};
 
+mod setup;
 mod update;
 use update::UpdateManager;
 
@@ -81,9 +79,6 @@ fn save_persisted_port(port: u16) -> std::io::Result<()> {
 }
 
 fn main() {
-    // One-time move of legacy ~/.llm-wiki-connector and ~/.config/llm-wiki into
-    // the unified ~/.my-llm-wiki home, before anything reads those paths.
-    llm_wiki_core::paths::migrate_legacy();
     // Release GUI processes have stdout/stderr connected to /dev/null on macOS
     // and Windows. Persist synchronously because relay logs are low-volume and
     // the final pre-crash/watchdog event must survive an abrupt process stop.
@@ -93,79 +88,60 @@ fn main() {
             MacosLauncher::LaunchAgent,
             None,
         ))
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .invoke_handler(tauri::generate_handler![
+            setup::setup_inspect,
+            setup::setup_status,
+            setup::setup_pick_wiki_directory,
+            setup::setup_apply,
+            setup::setup_repair,
+            setup::setup_open_wiki,
+            setup::setup_update,
+            setup::setup_browser_update_status,
+            setup::setup_restart,
+            setup::setup_ensure_pack,
+            setup::setup_provider_config,
+            setup::setup_save_provider_config,
+        ])
         .setup(|app| {
             let local_url = local_base_url();
             let app_handle = app.handle().clone();
             let update_manager = UpdateManager::new(app.handle().clone());
             let online_urls = Arc::new(Mutex::new(OnlineUrls::default()));
             let tray = build_tray(app.handle(), local_url.clone(), online_urls.clone())?;
-            let skill_manager = build_skill_version_manager(app.handle(), tray.clone());
-            // 端口已被占用 = 另一个实例在跑本机 server（多半也拿着 relay uid）。
-            // 此时本实例绝不能再起同 uid 的 connector：Worker 按 uid 单连接，
-            // 两个实例会每几秒互踢一次，把远程访问打成筛子。
-            let mut secondary_instance = false;
-            match prepare_local_server(app.handle(), online_urls.clone()) {
-                Ok(Some((std_listener, mut server_config))) => {
-                    server_config.control = Some(server_control(
-                        app.handle().clone(),
-                        update_manager.clone(),
-                        skill_manager.clone(),
-                    ));
-                    tauri::async_runtime::spawn(async move {
-                        let listener = match tokio::net::TcpListener::from_std(std_listener) {
-                            Ok(listener) => listener,
-                            Err(err) => {
-                                tracing::error!(error = ?err, "failed to create tokio listener");
-                                return;
-                            }
-                        };
-                        if let Err(err) = serve(listener, server_config).await {
-                            tracing::error!(error = ?err, "failed to start local wiki server");
-                        }
-                    });
-                }
-                Ok(None) => {
-                    secondary_instance = true;
-                }
-                Err(err) => {
-                    tracing::error!(error = ?err, "failed to prepare local wiki server");
-                }
-            }
             let connector_config = connector_config();
             // 托盘建好后再提示，确保用户按提示去点时图标已经在了。
             maybe_notify_first_launch(app.handle());
             #[cfg(target_os = "macos")]
-            let _ = app.set_activation_policy(ActivationPolicy::Accessory);
-            let relay_runtime = RelayRuntime::new(connector_config, tray.clone(), online_urls);
-            // 中继默认关闭，仅当用户上次手动开启过才自动连接。
-            // 二实例跳过自启：主实例已持有本机 server 和 relay uid（见上）。
-            if load_relay_enabled() {
-                if secondary_instance {
-                    tracing::warn!(
-                        "skipping relay auto-start: another instance owns the local server and relay uid"
-                    );
-                } else {
-                    relay_runtime.start();
-                }
-            }
-
-            if let Some(window) = app.get_webview_window("main") {
-                window
-                    .navigate(Url::parse(&config_url()).context("invalid config URL")?)
-                    .context("navigate main window to config page")?;
-            }
+            app.set_activation_policy(ActivationPolicy::Accessory);
+            let relay_runtime =
+                RelayRuntime::new(connector_config, tray.clone(), online_urls.clone());
+            let browser_runtime = BrowserRuntime {
+                started: Arc::new(AtomicBool::new(false)),
+                online_urls,
+                update_manager: update_manager.clone(),
+            };
 
             tracing::info!("started {}", app.package_info().name);
             update_manager.spawn_periodic_check();
-            spawn_skill_version_check(skill_manager.clone());
             app_handle.manage(DesktopState {
                 local_url: local_url.clone(),
             });
             app_handle.manage(relay_runtime);
             app_handle.manage(update_manager);
-            app_handle.manage(skill_manager);
+            app_handle.manage(browser_runtime);
+            match llm_wiki_setup::SetupCore::from_environment().and_then(|core| core.status()) {
+                Ok(status) if status.state == llm_wiki_setup::SetupHealth::Ready => {
+                    activate_browser(app.handle())?;
+                }
+                Ok(_) => show_setup_window(app.handle()),
+                Err(error) => {
+                    tracing::error!(error = ?error, "cannot read setup status");
+                    show_setup_window(app.handle());
+                }
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -248,6 +224,79 @@ struct DesktopState {
     local_url: String,
 }
 
+#[derive(Clone)]
+struct BrowserRuntime {
+    started: Arc<AtomicBool>,
+    online_urls: Arc<Mutex<OnlineUrls>>,
+    update_manager: UpdateManager,
+}
+
+pub(crate) fn activate_browser(app: &tauri::AppHandle) -> Result<()> {
+    start_browser(app)?;
+    if let Some(window) = app.get_webview_window("main") {
+        window
+            .navigate(Url::parse(&config_url()).context("invalid config URL")?)
+            .context("navigate main window to config page")?;
+        window.show().context("show Browser window")?;
+        window.set_focus().context("focus Browser window")?;
+    }
+    if let Some(window) = app.get_webview_window("setup") {
+        let _ = window.hide();
+    }
+    Ok(())
+}
+
+pub(crate) fn start_browser(app: &tauri::AppHandle) -> Result<()> {
+    let runtime = app
+        .try_state::<BrowserRuntime>()
+        .ok_or_else(|| anyhow::anyhow!("Browser runtime is unavailable"))?;
+    let first_start = runtime
+        .started
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok();
+    let mut secondary_instance = false;
+    if first_start {
+        let start =
+            prepare_local_server(app, runtime.online_urls.clone()).map(|prepared| match prepared {
+                Some((std_listener, mut server_config)) => {
+                    server_config.control = Some(server_control(app.clone()));
+                    tauri::async_runtime::spawn(async move {
+                        let listener = match tokio::net::TcpListener::from_std(std_listener) {
+                            Ok(listener) => listener,
+                            Err(error) => {
+                                tracing::error!(?error, "failed to create tokio listener");
+                                return;
+                            }
+                        };
+                        if let Err(error) = serve(listener, server_config).await {
+                            tracing::error!(?error, "failed to start local wiki server");
+                        }
+                    });
+                }
+                None => secondary_instance = true,
+            });
+        if let Err(error) = start {
+            runtime.started.store(false, Ordering::SeqCst);
+            return Err(error);
+        }
+        if load_relay_enabled()
+            && !secondary_instance
+            && let Some(relay) = app.try_state::<RelayRuntime>()
+        {
+            relay.start();
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn open_local_wiki(app: &tauri::AppHandle) -> Result<()> {
+    let state = app
+        .try_state::<DesktopState>()
+        .ok_or_else(|| anyhow::anyhow!("Browser desktop state is unavailable"))?;
+    let url = local_url_with_token(&state.local_url, &auth_token());
+    open::that(&url).context("open initialized Wiki")
+}
+
 /// 中继连接后的两个线上入口，严格分离（docs/19 §4.3）：
 /// - `owner_url`：含 master token 的本人入口，只用于托盘的「打开/复制线上
 ///   WIKI（本人/自用）」与 `/api/v1/config/share`（agent 配置）。**绝不**用于构造分享链接。
@@ -265,7 +314,6 @@ struct TrayState {
     open_online_wiki: MenuItem<tauri::Wry>,
     copy_online_wiki: MenuItem<tauri::Wry>,
     relay_toggle: MenuItem<tauri::Wry>,
-    skill_update: MenuItem<tauri::Wry>,
 }
 
 #[derive(Clone)]
@@ -492,147 +540,11 @@ fn prepare_local_server(
     )))
 }
 
-/// app 内置的 suite skill slug 快照（构建时固化；槽位判定以此为准，doc 21 §5）。
-const SUITE_SLUGS: &[&str] = &[
-    "cn-mirrors",
-    "my-llm-wiki",
-    "my-llm-wiki-video",
-    "my-llm-wiki-x",
-    "my-llm-wiki-maintainer",
-    "my-llm-wiki-search",
-];
-/// agent_hosts 的发布态 host 技能目录快照（相对 home）。
-const SKILL_HOST_DIRS: &[&str] = &[
-    ".codex/skills",
-    ".claude/skills",
-    ".hermes/skills",
-    ".agents/skills",
-    ".workbuddy/skills",
-];
-/// 技能版本信号 endpoints：Worker 优先、GitHub 直连兜底（doc 21 §2.2/§3）。
-const SKILL_VERSION_WORKER_URL: &str = "https://wiki.htmlgo.to/_skills/version.json";
-const SKILL_VERSION_GITHUB_URL: &str = "https://github.com/dake6767/llm-wiki-suite/releases/download/skills-latest/skills-version.json";
-
-/// 构造技能版本探测器（只读）。host 目录/endpoint/slug 快照为发布态事实。
-fn build_skill_version_manager(
-    app: &tauri::AppHandle,
-    tray: TrayState,
-) -> Arc<SkillVersionManager> {
-    let home = dirs::home_dir();
-    let host_targets = home
-        .as_ref()
-        .map(|h| SKILL_HOST_DIRS.iter().map(|rel| h.join(rel)).collect())
-        .unwrap_or_default();
-    let mut endpoints = Vec::new();
-    // 测试/开发可用 SKILL_VERSION_URL 覆盖优先 endpoint（指向自建版本文件）。
-    if let Ok(custom) = std::env::var("SKILL_VERSION_URL") {
-        let custom = custom.trim();
-        if !custom.is_empty() {
-            endpoints.push(custom.to_string());
-        }
-    }
-    endpoints.push(SKILL_VERSION_WORKER_URL.to_string());
-    endpoints.push(SKILL_VERSION_GITHUB_URL.to_string());
-    let state_path =
-        llm_wiki_core::paths::connector_dir().map(|d| d.join("skill-version-state.json"));
-    let tray_app = app.clone();
-    let notify_app = app.clone();
-    Arc::new(SkillVersionManager::new(SkillVersionConfig {
-        app_version: app.package_info().version.to_string(),
-        builtin_slugs: SUITE_SLUGS.iter().map(|s| s.to_string()).collect(),
-        host_targets,
-        endpoints,
-        state_path,
-        on_change: Some(Arc::new(move |info| {
-            update_tray_skill(&tray_app, &tray, info);
-        })),
-        notify: Some(Arc::new(move |version| {
-            notify_skill_update(&notify_app, version)
-        })),
-    }))
-}
-
-/// 周期性技能版本检查（首次延迟 10s、之后每 24h）。有 delta 且未通知过该版本时弹一次
-/// 系统通知（等值去重锚仅在弹成功后写入，doc 21 §2.3）。设置页焦点重查另由前端触发。
-fn spawn_skill_version_check(manager: Arc<SkillVersionManager>) {
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(10)).await;
-        loop {
-            manager.check().await;
-            tokio::time::sleep(Duration::from_secs(24 * 60 * 60)).await;
-        }
-    });
-}
-
-fn notify_skill_update(app: &tauri::AppHandle, version: &str) -> bool {
-    use tauri_plugin_notification::NotificationExt;
-    match app
-        .notification()
-        .builder()
-        .title("llm-wiki 技能有更新")
-        .body(format!(
-            "技能包 v{version} 可用 — 打开设置页复制更新提示词，交给 agent 完成更新。"
-        ))
-        .show()
-    {
-        Ok(()) => true,
-        Err(err) => {
-            tracing::warn!(error = ?err, "failed to show skill update notification");
-            false
-        }
-    }
-}
-
-fn update_tray_skill(app: &tauri::AppHandle, tray: &TrayState, info: &SkillVersionInfo) {
-    let (text, enabled, tooltip) = if info.update_available {
-        let version = info
-            .latest
-            .as_ref()
-            .map(|latest| latest.pack_version.as_str())
-            .unwrap_or("未知");
-        (
-            format!("🟠 技能有更新 v{version} — 打开设置复制提示词"),
-            true,
-            format!("LLM-Wiki · 技能有更新 v{version}"),
-        )
-    } else {
-        match info.state {
-            SkillState::Checking => ("技能：检查中…".into(), false, "LLM-Wiki".into()),
-            SkillState::UpToDate => {
-                let version = info.installed_version.as_deref().unwrap_or("未知");
-                (
-                    format!("技能：已是最新 v{version}"),
-                    false,
-                    "LLM-Wiki".into(),
-                )
-            }
-            SkillState::Unknown => (
-                "技能：状态未知 — 打开设置查看".into(),
-                true,
-                "LLM-Wiki · 技能状态未知".into(),
-            ),
-            SkillState::Idle => ("技能：未检测到安装".into(), false, "LLM-Wiki".into()),
-            SkillState::UpdateAvailable => unreachable!("update_available flag must match state"),
-        }
-    };
-    let _ = tray.skill_update.set_text(text);
-    let _ = tray.skill_update.set_enabled(enabled);
-    if let Some(icon) = app.tray_by_id("main") {
-        let _ = icon.set_tooltip(Some(tooltip));
-    }
-}
-
-/// 注入给 HTTP 层的运行期控制：持久化端口、延迟重启进程、开机自启、应用更新、技能版本探测。
-fn server_control(
-    app: tauri::AppHandle,
-    update_manager: UpdateManager,
-    skill_manager: Arc<SkillVersionManager>,
-) -> ServerControl {
+/// 注入给 HTTP 层的 Browser 运行期控制。Skills 与工具链由 Tauri Setup Core 管理，
+/// 不再通过本地 HTTP 设置页维护。
+fn server_control(app: tauri::AppHandle) -> ServerControl {
     let restart_app = app.clone();
     let query_app = app.clone();
-    let status_manager = update_manager.clone();
-    let check_manager = update_manager.clone();
-    let install_manager = update_manager;
     ServerControl {
         persist_port: Arc::new(save_persisted_port),
         restart: Arc::new(move || {
@@ -666,12 +578,6 @@ fn server_control(
                 .map_err(|err| err.to_string())
             }),
         }),
-        update: Some(UpdateControl {
-            status: Arc::new(move || status_manager.status()),
-            check: Arc::new(move || check_manager.check()),
-            install: Arc::new(move || install_manager.install()),
-        }),
-        skill_version: Some(skill_manager),
     }
 }
 
@@ -791,7 +697,8 @@ fn build_tray(
         false,
         None::<&str>,
     )?;
-    let show_window = MenuItem::with_id(app, "show_window", "设置", true, None::<&str>)?;
+    let show_window = MenuItem::with_id(app, "show_window", "Browser 设置…", true, None::<&str>)?;
+    let show_setup = MenuItem::with_id(app, "show_setup", "Skills 与工具链…", true, None::<&str>)?;
     let open_local_wiki =
         MenuItem::with_id(app, "open_local_wiki", "打开本地 WIKI", true, None::<&str>)?;
     // 本人线上入口含 master token；「复制」明确标记为自用，不可作为分享链接。
@@ -811,13 +718,6 @@ fn build_tray(
         None::<&str>,
     )?;
     let relay_toggle = MenuItem::with_id(app, "relay_toggle", "连接中继服务", true, None::<&str>)?;
-    let skill_update = MenuItem::with_id(
-        app,
-        "skill_update",
-        "技能：等待首次检查",
-        false,
-        None::<&str>,
-    )?;
     let check_update = MenuItem::with_id(app, "check_update", "检查更新…", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
@@ -830,8 +730,8 @@ fn build_tray(
             &open_online_wiki,
             &copy_online_wiki,
             &relay_toggle,
-            &skill_update,
             &show_window,
+            &show_setup,
             &check_update,
             &separator,
             &quit,
@@ -847,7 +747,8 @@ fn build_tray(
         .menu(&menu)
         .show_menu_on_left_click(true)
         .on_menu_event(move |app, event| match event.id().as_ref() {
-            "show_window" | "skill_update" => show_config_window(app),
+            "show_window" => show_config_window(app),
+            "show_setup" => show_setup_window(app),
             "open_local_wiki" => {
                 if let Some(state) = app.try_state::<DesktopState>() {
                     let url = local_url_with_token(&state.local_url, &auth_token());
@@ -878,7 +779,7 @@ fn build_tray(
                 if let Some(update_manager) = app.try_state::<UpdateManager>() {
                     update_manager.check();
                 }
-                show_config_window(app);
+                show_setup_window(app);
             }
             "quit" => app.exit(0),
             _ => {}
@@ -890,7 +791,6 @@ fn build_tray(
         open_online_wiki,
         copy_online_wiki,
         relay_toggle,
-        skill_update,
     })
 }
 
@@ -924,6 +824,13 @@ fn copy_owner_url_to_clipboard(app: &tauri::AppHandle, owner_url: Option<String>
 }
 
 fn show_config_window(app: &tauri::AppHandle) {
+    if app
+        .try_state::<BrowserRuntime>()
+        .is_none_or(|runtime| !runtime.started.load(Ordering::SeqCst))
+    {
+        show_setup_window(app);
+        return;
+    }
     #[cfg(target_os = "macos")]
     let _ = app.set_activation_policy(ActivationPolicy::Regular);
     if let Some(window) = app.get_webview_window("main") {
@@ -932,6 +839,15 @@ fn show_config_window(app: &tauri::AppHandle) {
         if let Ok(url) = Url::parse(&config_url()) {
             let _ = window.navigate(url);
         }
+    }
+}
+
+fn show_setup_window(app: &tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    let _ = app.set_activation_policy(ActivationPolicy::Regular);
+    if let Some(window) = app.get_webview_window("setup") {
+        let _ = window.show();
+        let _ = window.set_focus();
     }
 }
 

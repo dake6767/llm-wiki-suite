@@ -36,11 +36,12 @@ If the check fails, stop and install `my-llm-wiki`; do not duplicate or improvis
 the core. Suite installs declare this runtime dependency and install it
 automatically.
 
-Inherit the sibling core's **Use the receipt-managed command runner** rule for
-every command in this skill and its references. On macOS/Linux use
-`tool_exec.py`; on Windows use Setup `tools run` / `python run`. The ASR
-runners select their receipt-owned Python profile themselves. Never reinterpret
-a bare-tool example as permission to use global PATH on any platform.
+Inherit the sibling core's **Resolve tools through the Provider Resolver** rule
+for every external command in this skill and its references. Use
+`tool_exec.py` with the relevant capability on every platform. The ASR runners
+select and re-exec their Python Provider themselves. Honor a user-selected
+Provider; otherwise prefer the healthy official toolchain and accept system or
+custom Providers only through the same resolver and output checks.
 
 ## Workflow
 
@@ -53,8 +54,10 @@ a bare-tool example as permission to use global PATH on any platform.
    `python3 "$CORE_SKILL/scripts/preflight.py" --profile capture.video` and
    inspect `capabilities.capture.video`.
    Use captions first; when captions are absent, require audio download,
-   `ffmpeg`, and a language-appropriate local ASR backend. If one is absent,
-   return to a single Protocol 5 selection that includes its managed component.
+   `ffmpeg`, and a language-appropriate local ASR backend. If the official
+   ASR Provider is absent, ask before downloading the large fallback pack:
+   `my-llm-wiki ensure-pack asr-zh` or `asr-other`. A configured custom
+   Provider remains an equally valid choice when it passes the same checks.
 3. **Probe metadata without executable pipes.** Run
    `python3 "$VIDEO_SKILL/scripts/video_probe.py" --url <url> --output <temp>/metadata.json`.
    Retry with `--cookies-from-browser <browser>` only after a real auth/bot wall

@@ -67,55 +67,60 @@ Obsidian 或 CLI。分享授权当前以整个 Wiki 为边界，不是单页授�
 
 ## 快速开始
 
-把仓库地址交给能执行本地命令的 agent：
+推荐路径是从 [GitHub Releases](https://github.com/dake6767/llm-wiki-suite/releases/latest)
+安装标准 My LLM Wiki Browser。第一次启动不会先打开 `127.0.0.1`：应用内置的 Setup
+页面会先让你选择需要安装 Skills 的 Agent 宿主，一次确认后完成：
 
 ```text
-安装 https://github.com/dake6767/llm-wiki-suite 。读取仓库根目录 AGENTS.md，
-先一次性列出宿主、skills、受管组件、Browser 和冲突替换选项；我确认一次后持续执行到终态。
+完整 Skills Pack → 官方验证工具链 → Wiki 初始化 → 打开 Browser
 ```
 
-中国大陆网络可把地址换成只读镜像
-`https://gitee.com/dake6767/llm-wiki-suite`。GitHub 仍是 canonical 源。
+确认页可以修改 Wiki 的存放路径；默认仍为 `~/wikis/my-llm-wiki`，已有 Wiki 目录会直接复用。
+首次界面不再要求用户组合 Documents、Web、Video、中文/非中文 ASR 或失败策略。
+`toolchain-base` 包含 FFmpeg、yt-dlp、Node/OpenCLI 和文档转换；ASR runtime 在第一次遇到
+无字幕视频时按需下载。所有 pack 都由 CI 预构建和验证，用户机器只下载、校验 SHA-256、
+解压和激活，不调用全局 pip/npm、Homebrew、apt 或 winget。
 
-Protocol 5 在 Windows、macOS 和 Linux 上使用同一条交互：
+Skills 与工具链安装完成后，托盘有两个清晰分开的入口：
 
 ```text
-只读检查 → 一次选择并确认全部选项 → 冻结计划 → 无人值守执行 → 集中显示结果/人工动作
+Browser 设置…       # Wiki、端口、自启、分享与 relay
+Skills 与工具链…    # 安装、Provider、update、repair 与人工动作
 ```
 
-安装过程中不会逐步追问，也不会使用全局 pip/npm、Homebrew、apt、winget 或用户 PATH
-补依赖。Skills、Documents、Web/OpenCLI、Video、中文/非中文 ASR 与 Browser 都是
-显式选项。Browser 作为推荐的桌面阅读入口默认勾选，但可以在确认前取消；安装完成后会
-自动打开已经初始化的知识库。自动步骤完成后，才集中显示加载 Chrome 扩展等必须由人完成
-的动作。
-
-Windows 由 agent 下载并校验原生执行核心，正常安装不打开 Setup 窗口，也不要求预装 Git、
-Python、Node 或 Git Bash；双击 Setup 仍可作为恢复界面。macOS/Linux 使用 Python 执行
-核心完成同一协议，不需要额外 GUI 安装器。
-
-所有平台的安装事实源是：
+无界面 Agent 可以下载 Release 中的独立 CLI；Browser 也会把它安装到：
 
 ```text
-~/.my-llm-wiki/install-state.json
+~/.my-llm-wiki/bin/my-llm-wiki
 ```
 
-它记录宿主、skills 来源、受管组件、私有运行时、工具 argv、待处理动作和 doctor 结果。
-安装可以安全重跑、repair 或按所有权 uninstall；Wiki 与 RAW 始终作为用户数据保留。
-
-完整的 agent 操作契约、镜像路由、Windows 数据盘与恢复规则见 [`AGENTS.md`](AGENTS.md)。
-开发 checkout 可从只读检查开始：
+CLI 与 GUI 调用同一个 Rust Setup Core：
 
 ```bash
-bash bootstrap.sh --repo "$PWD" inspect --out inspection.json --json
+my-llm-wiki inspect --json
+my-llm-wiki setup --host codex --wiki-path ~/wikis/my-llm-wiki --json
+my-llm-wiki status --json
+my-llm-wiki update --check --json
+my-llm-wiki update --json
+my-llm-wiki repair --json
 ```
+
+最小状态写在 `~/.my-llm-wiki/setup-state.json`，Provider 偏好写在
+`~/.my-llm-wiki/providers.json`。repair、update 和 uninstall 只触碰 Setup Core 能证明拥有的
+路径；Wiki、RAW、自定义 Provider 与外来 Skills 永远按用户数据保留。
+
+官方工具链是推荐并默认优先的 Provider，因为它通过了项目 SOP；它不是唯一实现。用户可以在
+Setup 中为某项能力保存 system/custom Provider，也可以在单次任务里临时指定，产物仍需通过
+同一套 RAW、来源、字幕与完整性检查。只安装 Skills、不安装 Browser 的开放路径同样受支持。
+
+完整的 Agent/CLI 操作边界见 [`AGENTS.md`](AGENTS.md)。MCP 不属于初始安装；只有用户之后
+明确提出时才单独配置。
 
 安装完成后，直接给 agent 一份真实资料：
 
 ```text
 把这个视频保存到我的 Wiki，保留完整转写和可跳转时间戳，然后整理成知识页面：<URL>
 ```
-
-MCP 不属于初始安装；只有用户之后明确提出时才单独配置。
 
 ## 组件状态
 
@@ -127,27 +132,23 @@ MCP 不属于初始安装；只有用户之后明确提出时才单独配置。
 | [`my-llm-wiki-maintainer`](skills/my-llm-wiki-maintainer/SKILL.md) | 编译、Review、Research、去重与 lint | Stable |
 | [`my-llm-wiki-search`](skills/my-llm-wiki-search/SKILL.md) | 只读检索、引用回答和上下文预算 | Preview |
 | [`cn-mirrors`](skills/cn-mirrors/SKILL.md) | 受限网络探测与分生态镜像路由 | Stable |
-| [`My LLM Wiki Browser`](apps/my-llm-wiki-browser/) | 阅读、FTS、MCP、远程访问与分享 | Released · v1.0.37 |
+| [`My LLM Wiki Browser`](apps/my-llm-wiki-browser/) | Setup、阅读、FTS、MCP、远程访问与分享 | Released · v2 |
 
-Preview 表示能力已在 suite 中参与安装，但平台覆盖或独立发布仍在收敛。实际生命周期、依赖
-和 capability 以 [`registry/skills.json`](registry/skills.json) 为准。
+Preview 表示能力已参与完整 Skills Pack，但部分来源或平台覆盖仍在收敛。
 
 ## 仓库结构
 
 ```text
 llm-wiki-suite/
-├── bootstrap.sh                    # Protocol 5 获取与命令分发
-├── AGENTS.md                       # agent 的一次选择安装协议
-├── apps/my-llm-wiki-browser/       # Tauri / Rust / React / MCP / relay
+├── AGENTS.md                       # Browser / CLI / Provider 操作边界
+├── apps/my-llm-wiki-browser/       # Browser、Setup Core/GUI、CLI、MCP、relay
 ├── registry/
-│   ├── skills.json                 # skills、依赖、bundles、capabilities
-│   ├── bootstrap.json              # 平台入口、宿主与 Release 路由
-│   └── agent-components.lock.json  # macOS/Linux 受管组件上游锁
+│   ├── pack-build-posix.lock.json  # Release pack 的 POSIX 上游锁
+│   └── pack-build-windows.lock.json# Release pack 的 Windows 上游锁
 ├── scripts/
-│   ├── agent_install.py            # macOS/Linux 执行核心
-│   ├── windows_setup.py            # Windows 原生执行核心
-│   ├── install-browser.py          # Browser Release 安装
-│   └── doctor.py                   # 最终健康检查
+│   ├── build_distribution.py       # CI 构建不可变工具链 pack
+│   ├── merge_distribution_manifests.py
+│   └── stage_cli.py                # 构建 CLI 与 Tauri sidecar
 └── skills/<slug>/                  # SKILL.md、scripts、references、assets
 ```
 
@@ -159,12 +160,12 @@ Browser 是可选组件。没有 Browser 时，采集、编译、维护和本地
 提交前至少运行：
 
 ```bash
-python3 -m compileall -q scripts skills/my-llm-wiki/scripts
-python3 -m unittest discover -s scripts -p 'test_*.py'
+python3 -m unittest scripts.test_distribution scripts.test_approval_safe
+python3 -m unittest discover -s skills/my-llm-wiki/scripts -p 'test_*.py'
+python3 -m unittest discover -s skills/my-llm-wiki-video/scripts -p 'test_*.py'
 python3 scripts/check_approval_safety.py
 ```
 
 Browser 的前端构建、Rust 测试与 Tauri 开发命令见
-[`apps/my-llm-wiki-browser/README.md`](apps/my-llm-wiki-browser/README.md)。新增或调整 skill
-时，同时更新 [`registry/skills.json`](registry/skills.json)；`requires` 是运行时依赖，
-`bundles` 是门面默认 companion，`capabilities` 用于限定 doctor 的检查范围。
+[`apps/my-llm-wiki-browser/README.md`](apps/my-llm-wiki-browser/README.md)。Setup Core 直接在编译时
+嵌入 `skills/` 中含 `SKILL.md` 的完整目录，因此新增 Skill 不需要维护第二份安装注册表。

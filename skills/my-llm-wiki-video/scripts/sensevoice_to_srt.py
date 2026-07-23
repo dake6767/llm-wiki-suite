@@ -18,7 +18,7 @@ from typing import Any
 
 CORE_SCRIPTS = Path(__file__).resolve().parents[2] / "my-llm-wiki" / "scripts"
 sys.path.insert(0, str(CORE_SCRIPTS))
-from tool_runtime import ensure_managed_python  # noqa: E402
+from tool_runtime import ensure_provider_python  # noqa: E402
 
 
 # Keep Unicode controls escaped in source so command/security scanners never
@@ -139,12 +139,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--source-url", default="")
     parser.add_argument("--original-id", default="")
     parser.add_argument("--max-segment-ms", type=int, default=30_000)
+    parser.add_argument("--provider", help="explicit Provider id for this task only")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    ensure_managed_python("asr-zh")
     args = build_parser().parse_args(argv)
+    ensure_provider_python("asr-zh", provider=args.provider)
     if not args.audio.is_file():
         print(f"sensevoice_to_srt: audio not found: {args.audio}", file=sys.stderr)
         return 2

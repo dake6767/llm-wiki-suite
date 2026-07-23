@@ -136,38 +136,37 @@ when deliberately returning before the job finishes and a later user-facing
 follow-up is wanted. Mixing active polling with a completion push creates a
 second, stale reply after the real result has already been delivered.
 
-## Use the receipt-managed command runner
+## Resolve tools through the Provider Resolver
 
-Every platform resolves external capture tools exclusively from the atomic
-Protocol 5 receipt. Never translate a bare example into a PATH lookup or a
-global package install. On macOS/Linux, use the shipped runner:
+This Skill depends on capabilities and output contracts, not one mandatory
+runtime. Resolve command providers with the shipped runner on every platform:
 
 ```bash
-python3 <my-llm-wiki>/scripts/tool_exec.py opencli -- web read \
+python3 <my-llm-wiki>/scripts/tool_exec.py \
+  --capability capture.web.authenticated opencli -- web read \
   --url "https://example.com" --output "<temp>"
-python3 <my-llm-wiki>/scripts/tool_exec.py markitdown -- \
+python3 <my-llm-wiki>/scripts/tool_exec.py \
+  --capability document.to-markdown markitdown -- \
   "/path/document.pdf" -o "<temp>/doc.md"
 ```
 
-Windows exposes the same receipt through Setup:
+Resolution order is: the Provider explicitly requested for this task, a saved
+capability override, the healthy official Provider, a matching system command,
+then configured custom Providers. A task-level choice is temporary; persist it
+only when the user asks to use that Provider in future work. Pass an explicit
+choice with `--provider <id>`.
 
-```powershell
-$Setup = "$env:USERPROFILE\.my-llm-wiki\setup\My-LLM-Wiki-Setup.exe"
+The Browser one-click path installs and prefers the project-tested official
+toolchain. The open path remains valid without Browser or Setup Core: the
+resolver may use a healthy system or custom Provider, and the Skill applies the
+same RAW validation before accepting its output. Do not install third-party
+dependencies ad hoc during capture. If no Provider satisfies the capability,
+offer `my-llm-wiki ensure-pack toolchain-base` as the supported fallback or ask
+the user to select/configure another Provider.
 
-# A core or ASR skill script
-& $Setup python run --profile core -- "<skill>\scripts\preflight.py" --profile capture.web
-
-# A managed external tool and all of its ordinary argv
-& $Setup tools run opencli -- web read --url "https://example.com" --output "<temp>"
-& $Setup tools run markitdown -- "C:\path\document.pdf" -o "<temp>\doc.md"
-```
-
-ASR entry points re-exec the receipt's `asr-zh` or `asr-other` Python and apply
-the recorded first-use model environment on all platforms. If a component is
-absent or unhealthy, create and confirm a new Protocol 5 plan that includes it.
-Do not fall back to another Python, npm, pip, winget, global PATH, MSYS path
-rewriting, or a legacy venv. This rule applies to every command in this skill
-and its references.
+ASR entry points resolve and re-exec the selected `asr-zh` or `asr-other`
+Python Provider themselves, including its scoped model environment. Never
+construct `PYTHONPATH` or activate an unrelated virtualenv by hand.
 
 ## Fetch payloads are disk-first
 

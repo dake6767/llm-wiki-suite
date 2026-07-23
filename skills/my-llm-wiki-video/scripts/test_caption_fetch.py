@@ -134,7 +134,7 @@ class TestCliEndToEnd(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             original = cf.try_ytdlp
 
-            def bot_walled(url, out, browser, timeout, warnings, errors, prefs):
+            def bot_walled(url, out, browser, timeout, warnings, errors, prefs, provider):
                 errors.append("yt-dlp captions failed (1): Sign in to confirm")
                 return None
 
@@ -156,7 +156,7 @@ class TestCliEndToEnd(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             original = cf.try_ytdlp
 
-            def empty(url, out, browser, timeout, warnings, errors, prefs):
+            def empty(url, out, browser, timeout, warnings, errors, prefs, provider):
                 warnings.append("yt-dlp found no caption tracks")
                 return None
 

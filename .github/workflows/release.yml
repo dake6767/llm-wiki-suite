@@ -1,6 +1,6 @@
 name: release
 
-# 打 tag（v* ）时构建各平台安装包并发到 GitHub Release（草稿，需手动发布）。
+# 打 tag（v*）时构建 Browser 与统一 distribution packs；全部成功后自动发布。
 # 也可在 Actions 页手动触发（workflow_dispatch）做一次冒烟构建（只构建，不发布）。
 #
 # 本仓库是 monorepo：Tauri 工程在 apps/my-llm-wiki-browser/desktop（内含 src-tauri），
@@ -22,7 +22,50 @@ on:
   workflow_dispatch:
 
 jobs:
+  validate-release:
+    runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.version.outputs.release_tag }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Resolve and validate one release version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            release_tag="${GITHUB_REF#refs/tags/}"
+          else
+            release_tag="v-ci"
+          fi
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+          RELEASE_TAG="$release_tag" python - <<'PY'
+          import json
+          import os
+          import pathlib
+          import re
+
+          root = pathlib.Path("apps/my-llm-wiki-browser")
+          cargo = re.search(
+              r'^version\s*=\s*"([^"]+)"',
+              (root / "Cargo.toml").read_text(),
+              re.MULTILINE,
+          ).group(1)
+          versions = {
+              "Cargo workspace": cargo,
+              "Tauri": json.loads((root / "desktop/src-tauri/tauri.conf.json").read_text())["version"],
+              "frontend": json.loads((root / "frontend/package.json").read_text())["version"],
+          }
+          if len(set(versions.values())) != 1:
+              raise SystemExit(f"release versions differ: {versions}")
+          tag = os.environ["RELEASE_TAG"]
+          if tag != "v-ci" and tag != f"v{cargo}":
+              raise SystemExit(f"tag {tag!r} does not match v{cargo}")
+          print({"release_tag": tag, "version": cargo})
+          PY
+
   create-release:
+    needs: validate-release
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -34,7 +77,7 @@ jobs:
         id: create
         # 冒烟构建（workflow_dispatch）不建 release，输出空串，后续按 build-only 走。
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           result-encoding: string
           script: |
@@ -62,72 +105,15 @@ jobs:
               // quarantine：Gatekeeper 提示「无法验证开发者」，需到系统设置里「仍要打开」；
               // 右键打开对这种情况不适用（老文案误导，v1.0.5 起修正）。脚本/更新器下载
               // 不带 quarantine，无此步。
-              body: 'Protocol 5 由 agent 一次呈现宿主、skills、受管组件与 Browser 选项，确认后通过 inspect/plan/apply 无人值守安装。Windows agent 使用 My-LLM-Wiki-Setup.exe 的 headless 命令，不要求 Git、Python、Node、npm、pip、winget 或 Git Bash；GUI 仅作为恢复入口。macOS/Linux 组件是本 Release 中按平台构建并经 SHA-256 固定的私有运行时包，不调用全局 pip/npm/brew/sudo。Browser 仍提供各平台安装包，Windows 另有 portable zip（需 WebView2）。产物未做 Apple 公证 / Windows Authenticode 代码签名：macOS 首次运行按系统提示到 隐私与安全性 → 仍要打开；Windows SmartScreen 选择仍要运行。',
+              body: 'My LLM Wiki 2 将安装、更新与修复统一到 Browser 内置 Setup Core。首次启动可安装完整 Skills Pack、官方验证工具链并初始化 Wiki；Skills 也可独立使用系统或自定义 Provider。所有平台使用同一 distribution manifest 与不可变 SHA-256 pack，不在用户机器上调用 pip、npm、brew、apt 或 winget。ASR 能力包按需下载。产物尚未做 Apple 公证 / Windows Authenticode 代码签名：macOS 首次运行按系统提示到 隐私与安全性 → 仍要打开；Windows SmartScreen 选择仍要运行。',
               draft: true,
               prerelease: false,
             });
             core.setOutput('upload_url', created.upload_url);
             return created.id;
 
-  build-windows-setup:
-    needs: create-release
-    runs-on: windows-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Install locked Setup builder
-        shell: pwsh
-        run: |
-          $lock = Get-Content registry/windows-toolchain.lock.json -Raw | ConvertFrom-Json
-          python -m pip install --disable-pip-version-check --no-input "pyinstaller==$($lock.build.pyinstaller)"
-      - name: Build pinned Setup and component packs
-        shell: pwsh
-        run: |
-          python scripts/build_windows_setup.py `
-            --release-tag "${{ github.ref_name }}" `
-            --dist windows-setup-dist
-          $rows = Get-ChildItem windows-setup-dist -File |
-            Sort-Object Name |
-            ForEach-Object {
-              $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-              "$hash  $($_.Name)"
-            }
-          $rows | Set-Content windows-setup-dist/SHA256SUMS-windows-setup.txt
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-native-setup-${{ github.ref_name }}
-          path: windows-setup-dist/*
-          retention-days: 14
-      - name: Upload Setup assets to draft release
-        if: needs.create-release.outputs.release_id != ''
-        shell: pwsh
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $existing = gh api "repos/${{ github.repository }}/releases/$env:RELEASE_ID/assets" | ConvertFrom-Json
-          Get-ChildItem windows-setup-dist -File | ForEach-Object {
-            $file = $_
-            $asset = $existing | Where-Object { $_.name -eq $file.Name } | Select-Object -First 1
-            if ($asset) {
-              gh api --method DELETE "repos/${{ github.repository }}/releases/assets/$($asset.id)"
-            }
-            $name = [Uri]::EscapeDataString($file.Name)
-            curl.exe -sSf -X POST `
-              -H "Authorization: Bearer $env:GITHUB_TOKEN" `
-              -H "Content-Type: application/octet-stream" `
-              --data-binary "@$($file.FullName)" `
-              "https://uploads.github.com/repos/${{ github.repository }}/releases/$env:RELEASE_ID/assets?name=$name"
-          }
-
-  build-agent-components:
-    needs: create-release
+  build-distribution-packs:
+    needs: [validate-release, create-release]
     permissions:
       contents: write
     strategy:
@@ -136,42 +122,50 @@ jobs:
         include:
           - os: ubuntu-22.04
             artifact: linux-x64
-            components: documents,web,video,asr-zh,asr-other
+            packs: toolchain-base,asr-zh,asr-other
           - os: macos-15
             artifact: darwin-arm64
-            components: documents,web,video,asr-zh,asr-other
+            packs: toolchain-base,asr-zh,asr-other
           - os: macos-15-intel
             artifact: darwin-x64
-            components: documents,web,video,asr-other
+            packs: toolchain-base,asr-other
+          - os: windows-latest
+            artifact: windows-x64
+            packs: toolchain-base,asr-zh,asr-other
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12.10'
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v9.0.0
+        if: runner.os != 'Windows'
         with:
           version: '0.10.0'
-      - uses: actions/setup-node@v4
+          enable-cache: false
+      - uses: actions/setup-node@v7
+        if: runner.os != 'Windows'
         with:
           node-version: '22.23.1'
-      - name: Build and postcheck managed agent components
-        run: |
-          python3 scripts/build_agent_components.py \
-            --release-tag "${{ github.ref_name }}" \
-            --dist agent-component-dist \
-            --components "${{ matrix.components }}"
-      - name: Write component checksums
+      - name: Build and postcheck immutable distribution packs
         shell: bash
         run: |
-          cd agent-component-dist
-          shasum -a 256 * > "SHA256SUMS-agent-components-${{ matrix.artifact }}.txt"
-      - uses: actions/upload-artifact@v4
+          python scripts/build_distribution.py \
+            --release-tag "${{ needs.validate-release.outputs.release_tag }}" \
+            --dist distribution-dist \
+            --packs "${{ matrix.packs }}"
+      - uses: actions/upload-artifact@v7
         with:
-          name: agent-components-${{ matrix.artifact }}-${{ github.ref_name }}
-          path: agent-component-dist/*
+          name: distribution-${{ matrix.artifact }}-${{ needs.validate-release.outputs.release_tag }}
+          path: distribution-dist/*
           retention-days: 14
-      - name: Upload component assets to draft release
+      - name: Upload the small platform manifest separately
+        uses: actions/upload-artifact@v7
+        with:
+          name: distribution-index-${{ matrix.artifact }}-${{ needs.validate-release.outputs.release_tag }}
+          path: distribution-dist/distribution-*.json
+          retention-days: 14
+      - name: Upload pack assets to draft release
         if: needs.create-release.outputs.release_id != ''
         shell: bash
         env:
@@ -180,7 +174,7 @@ jobs:
         run: |
           set -euo pipefail
           existing="$(gh api "repos/${{ github.repository }}/releases/$RELEASE_ID/assets")"
-          for file in agent-component-dist/*; do
+          for file in distribution-dist/*.zip; do
             name="$(basename "$file")"
             asset_id="$(printf '%s' "$existing" | jq -r --arg name "$name" '.[] | select(.name == $name) | .id' | head -1)"
             if [ -n "$asset_id" ]; then
@@ -192,27 +186,70 @@ jobs:
               "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=$name"
           done
 
+  merge-distribution:
+    needs: [validate-release, create-release, build-distribution-packs]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: distribution-index-*-${{ needs.validate-release.outputs.release_tag }}
+          path: distribution-parts
+      - name: Merge platform manifests
+        run: |
+          mapfile -t manifests < <(find distribution-parts -name 'distribution-*.json' -print | sort)
+          args=()
+          for manifest in "${manifests[@]}"; do args+=(--input "$manifest"); done
+          python scripts/merge_distribution_manifests.py "${args[@]}" --out distribution.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: distribution-manifest-${{ needs.validate-release.outputs.release_tag }}
+          path: distribution.json
+      - name: Upload distribution manifest to draft release
+        if: needs.create-release.outputs.release_id != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
+        run: |
+          existing_id="$(gh api "repos/${{ github.repository }}/releases/$RELEASE_ID/assets" --jq '.[] | select(.name == "distribution.json") | .id' | head -1)"
+          if [ -n "$existing_id" ]; then
+            gh api --method DELETE "repos/${{ github.repository }}/releases/assets/$existing_id"
+          fi
+          gh api --method POST \
+            -H 'Content-Type: application/json' \
+            --input distribution.json \
+            "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=distribution.json"
+
   build:
-    needs: create-release
+    needs: [validate-release, create-release, merge-distribution]
     permissions:
       contents: write # tauri-action 上传产物需要
     strategy:
       fail-fast: false
+      # tauri-action merges latest.json by read/delete/re-upload. Serialize the
+      # matrix so two platforms cannot lose each other's updater entry.
+      max-parallel: 1
       matrix:
         include:
           - platform: macos-latest   # Apple Silicon
             args: '--target aarch64-apple-darwin'
+            target: 'aarch64-apple-darwin'
           - platform: macos-latest   # Intel（macos-latest 交叉编译到 x86_64）
             args: '--target x86_64-apple-darwin'
+            target: 'x86_64-apple-darwin'
           - platform: ubuntu-22.04
             args: ''
+            target: 'x86_64-unknown-linux-gnu'
           - platform: windows-latest
             args: ''
+            target: 'x86_64-pc-windows-msvc'
 
     runs-on: ${{ matrix.platform }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Linux dependencies (Tauri v2)
         if: matrix.platform == 'ubuntu-22.04'
@@ -228,9 +265,9 @@ jobs:
             libssl-dev
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: apps/my-llm-wiki-browser/frontend/package-lock.json
 
@@ -248,9 +285,12 @@ jobs:
         working-directory: apps/my-llm-wiki-browser/frontend
         run: npm ci
 
+      - name: Build shared CLI and stage Tauri sidecar
+        run: python scripts/stage_cli.py --target "${{ matrix.target }}" --dist cli-dist
+
       - name: Build and release
         id: tauri
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # updater 产物签名（minisign）：createUpdaterArtifacts 开启后必须提供私钥，
@@ -261,14 +301,40 @@ jobs:
           projectPath: apps/my-llm-wiki-browser/desktop
           # 空 releaseId（冒烟构建）时 tauri-action 只构建不上传。
           releaseId: ${{ needs.create-release.outputs.release_id }}
+          tagName: ${{ startsWith(github.ref, 'refs/tags/') && needs.validate-release.outputs.release_tag || '' }}
+          updaterJsonPreferNsis: true
           args: ${{ matrix.args }}
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cli-${{ matrix.target }}-${{ needs.validate-release.outputs.release_tag }}
+          path: cli-dist/*.zip
+
+      - name: Upload standalone CLI to draft release
+        if: needs.create-release.outputs.release_id != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
+        run: |
+          set -euo pipefail
+          existing="$(gh api "repos/${{ github.repository }}/releases/$RELEASE_ID/assets")"
+          for file in cli-dist/*.zip; do
+            name="$(basename "$file")"
+            asset_id="$(printf '%s' "$existing" | jq -r --arg name "$name" '.[] | select(.name == $name) | .id' | head -1)"
+            if [ -n "$asset_id" ]; then
+              gh api --method DELETE "repos/${{ github.repository }}/releases/assets/$asset_id"
+            fi
+            gh api --method POST -H 'Content-Type: application/zip' --input "$file" \
+              "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=$name"
+          done
 
       # Windows 免安装（portable）包：应用在磁盘上就是 exe + frontend/ 资源目录
       # （tauri.conf.json bundle.resources 把 frontend/dist 装到 exe 旁的 frontend/，
       # 运行期经 BaseDirectory::Resource 解析），所以把这两样打成 zip 即可免安装运行。
       # 上传走 uploads.github.com + releaseId，因为草稿 Release 无法用 gh 按 tag 定位。
-      - name: Package and upload Windows portable zip
-        if: matrix.platform == 'windows-latest' && needs.create-release.outputs.release_id != ''
+      - name: Package Windows portable zip and upload it for a release
+        if: matrix.platform == 'windows-latest'
         shell: pwsh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -286,14 +352,140 @@ jobs:
           $portable = Join-Path $release 'portable/My LLM Wiki Browser'
           New-Item -ItemType Directory -Force -Path $portable | Out-Null
           Copy-Item $exe (Join-Path $portable 'My LLM Wiki Browser.exe')
+          Copy-Item apps/my-llm-wiki-browser/desktop/src-tauri/binaries/my-llm-wiki-x86_64-pc-windows-msvc.exe `
+            (Join-Path $portable 'my-llm-wiki-x86_64-pc-windows-msvc.exe')
           Copy-Item -Recurse apps/my-llm-wiki-browser/frontend/dist (Join-Path $portable 'frontend')
           # portable 标记：应用运行期据此判定便携模式，更新面板只提示新版本、不原地安装
           # （portable 没有安装器，updater 的 NSIS 更新流程不适用）。
           Set-Content -Path (Join-Path $portable 'portable.flag') -Value 'portable'
           $zip = "My-LLM-Wiki-Browser_$($conf.version)_x64-portable.zip"
           Compress-Archive -Path $portable -DestinationPath $zip -Force
-          curl.exe -sSf -X POST `
-            -H "Authorization: Bearer $env:GITHUB_TOKEN" `
-            -H "Content-Type: application/zip" `
-            --data-binary "@$zip" `
-            "https://uploads.github.com/repos/${{ github.repository }}/releases/$env:RELEASE_ID/assets?name=$zip"
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archive = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $zip))
+          try {
+            $entries = @($archive.Entries | ForEach-Object { $_.FullName.Replace('\', '/') })
+            $required = @(
+              'My LLM Wiki Browser.exe',
+              'my-llm-wiki-x86_64-pc-windows-msvc.exe',
+              'frontend/index.html',
+              'frontend/setup.html',
+              'portable.flag'
+            )
+            foreach ($name in $required) {
+              if (-not ($entries | Where-Object { $_.EndsWith($name) })) {
+                throw "portable archive is missing $name"
+              }
+            }
+          } finally {
+            $archive.Dispose()
+          }
+          if ($env:RELEASE_ID) {
+            curl.exe -sSf -X POST `
+              -H "Authorization: Bearer $env:GITHUB_TOKEN" `
+              -H "Content-Type: application/zip" `
+              --data-binary "@$zip" `
+              "https://uploads.github.com/repos/${{ github.repository }}/releases/$env:RELEASE_ID/assets?name=$zip"
+          }
+
+  publish-release:
+    needs: [create-release, merge-distribution, build]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Verify complete updater and distribution manifests
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
+        run: |
+          set -euo pipefail
+          assets="$(gh api "repos/${{ github.repository }}/releases/$RELEASE_ID/assets")"
+          printf '%s' "$assets" > assets.json
+          for name in latest.json distribution.json; do
+            asset_id="$(printf '%s' "$assets" | jq -r --arg name "$name" '.[] | select(.name == $name) | .id' | head -1)"
+            if [ -z "$asset_id" ]; then
+              echo "missing release asset: $name" >&2
+              exit 1
+            fi
+            gh api -H 'Accept: application/octet-stream' \
+              "repos/${{ github.repository }}/releases/assets/$asset_id" > "$name"
+          done
+          python - <<'PY'
+          import json
+          import os
+
+          latest = json.load(open("latest.json"))
+          version = os.environ["GITHUB_REF_NAME"].removeprefix("v")
+          if latest.get("version") != version:
+              raise SystemExit(f"updater version differs from tag: {latest.get('version')} != {version}")
+          expected_platforms = {
+              "darwin-aarch64",
+              "darwin-x86_64",
+              "linux-x86_64",
+              "windows-x86_64",
+          }
+          missing = expected_platforms - set(latest.get("platforms", {}))
+          if missing:
+              raise SystemExit(f"updater manifest is missing platforms: {sorted(missing)}")
+
+          distribution = json.load(open("distribution.json"))
+          if distribution.get("distribution_version") != version:
+              raise SystemExit("distribution version differs from tag")
+          identities = {
+              (row["id"], row["platform"], row["architecture"])
+              for row in distribution.get("artifacts", [])
+          }
+          targets = {
+              ("darwin", "arm64"),
+              ("darwin", "x64"),
+              ("linux", "x64"),
+              ("windows", "x64"),
+          }
+          expected = {
+              (pack, platform, architecture)
+              for pack in ("toolchain-base", "asr-other")
+              for platform, architecture in targets
+          }
+          expected |= {
+              ("asr-zh", platform, architecture)
+              for platform, architecture in targets
+              if (platform, architecture) != ("darwin", "x64")
+          }
+          missing = expected - identities
+          extra = identities - expected
+          if missing or extra:
+              raise SystemExit(
+                  f"distribution artifact mismatch; missing={sorted(missing)}, extra={sorted(extra)}"
+              )
+          asset_names = {row["name"] for row in json.load(open("assets.json"))}
+          expected_cli = {
+              f"My-LLM-Wiki-CLI_{version}_{platform}_{architecture}.zip"
+              for platform, architecture in {
+                  ("darwin", "arm64"),
+                  ("darwin", "x64"),
+                  ("linux", "x64"),
+                  ("windows", "x64"),
+              }
+          }
+          missing_cli = expected_cli - asset_names
+          if missing_cli:
+              raise SystemExit(f"standalone CLI assets are missing: {sorted(missing_cli)}")
+          portable = f"My-LLM-Wiki-Browser_{version}_x64-portable.zip"
+          if portable not in asset_names:
+              raise SystemExit(f"Windows portable asset is missing: {portable}")
+          print({
+              "updater_platforms": 4,
+              "distribution_artifacts": len(identities),
+              "standalone_clis": len(expected_cli),
+              "windows_portable": portable,
+          })
+          PY
+      - name: Publish only after every platform and pack succeeds
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
+        run: |
+          gh api --method PATCH \
+            "repos/${{ github.repository }}/releases/$RELEASE_ID" \
+            -F draft=false

@@ -116,13 +116,13 @@ pub fn build_wiki_index(entry: WikiEntry) -> Result<WikiIndex> {
     let mut backlinks: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for (path, record) in &index.pages {
         for target in &record.targets {
-            if let Some(hit) = index.resolve(target) {
-                if hit != path {
-                    backlinks
-                        .entry(hit.to_string())
-                        .or_default()
-                        .insert(path.clone());
-                }
+            if let Some(hit) = index.resolve(target)
+                && hit != path
+            {
+                backlinks
+                    .entry(hit.to_string())
+                    .or_default()
+                    .insert(path.clone());
             }
         }
     }

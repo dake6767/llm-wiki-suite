@@ -12,7 +12,7 @@ metadata) in under 5 minutes. 小红书 has **no caption track** — always Path
 The one viable fetcher is **`opencli xiaohongshu`** riding a logged-in Chrome
 session — 小红书 login-walls everything else (see dead ends). Note that
 agent-reach's xiaohongshu backend *is* opencli: `agent-reach doctor` showing
-`xiaohongshu: off` can mean the Protocol 5 `web` component or live Browser
+`xiaohongshu: off` can mean the selected OpenCLI Provider or live Browser
 Bridge is unavailable, not that a separate backend needs installing.
 
 **Step 0 — preconditions.**
@@ -80,5 +80,6 @@ with no cover; `normalize_raw.py` now refuses it).
   `Failed to fetch url` — same login wall.
 - **`opencli xiaohongshu note <bare-note-id>`**: hard error
   `requires a full signed URL` — always pass the resolved URL with `xsec_token`.
-- **A daemon agent seeing bare `opencli` fail**: this is expected. Use the
-  receipt runner; if it also fails, repair or reselect the `web` component.
+- **A daemon agent seeing bare `opencli` fail**: this is expected. Resolve it
+  through `tool_exec.py --capability capture.web.authenticated`; if the official
+  Provider is damaged, run `my-llm-wiki repair`, or select another Provider.

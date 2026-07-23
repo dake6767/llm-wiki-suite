@@ -37,7 +37,7 @@ impl ToolName {
         }
     }
 
-    pub fn from_str(name: &str) -> Option<Self> {
+    pub fn parse(name: &str) -> Option<Self> {
         TOOL_NAMES
             .iter()
             .copied()
@@ -233,9 +233,9 @@ mod tests {
     #[test]
     fn tool_names_round_trip() {
         for tool in TOOL_NAMES {
-            assert_eq!(ToolName::from_str(tool.as_str()), Some(*tool));
+            assert_eq!(ToolName::parse(tool.as_str()), Some(*tool));
         }
-        assert_eq!(ToolName::from_str("nope"), None);
+        assert_eq!(ToolName::parse("nope"), None);
     }
 
     #[test]
