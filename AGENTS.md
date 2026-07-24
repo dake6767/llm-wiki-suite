@@ -108,11 +108,14 @@ asr-other       # faster-whisper runtime; installed on first need
 ```
 
 User machines never assemble these with pip, npm, Homebrew, apt, winget, or a
-PATH fallback. Release CI builds and postchecks them on each supported target.
-Setup downloads from the project CDN first and canonical GitHub Releases second,
-then verifies exact size and SHA-256 before extraction. Model weights remain a
-first-use download and use only pack-scoped environment; do not edit shell
-profiles or global proxy/package-manager configuration.
+PATH fallback. Release CI builds and postchecks them on each supported target
+once per immutable `pack_version`. Browser releases reuse the published
+`packs-v<pack_version>` prerelease and compose a fresh jointly tested
+distribution manifest; they never copy the large pack assets into every
+application Release. Setup downloads from the project CDN first and canonical
+GitHub Releases second, then verifies exact size and SHA-256 before extraction.
+Model weights remain a first-use download and use only pack-scoped environment;
+do not edit shell profiles or global proxy/package-manager configuration.
 
 ## 5. Provider choice
 
@@ -159,8 +162,12 @@ side effect of setup, doctor, capture, or update.
 ## 7. Repository development
 
 The product runtime lives in `apps/my-llm-wiki-browser/`; Skills live in
-`skills/`. Release-only pack inputs are the two files under `registry/`, and the
-small `scripts/` directory only builds/verifies release artifacts.
+`skills/`. Release-only pack inputs live under `registry/`: the two component
+specs, hashed platform requirements, the complete OpenCLI npm lock, and
+`pack-release.json`. The small `scripts/` directory only locks, builds, and
+verifies release artifacts. Any pack input change requires a new
+`pack-release.json` version and digest; published pack releases are never
+rewritten.
 
 Useful checks:
 

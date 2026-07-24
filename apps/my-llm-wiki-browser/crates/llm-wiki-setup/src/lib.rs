@@ -1288,6 +1288,7 @@ mod tests {
             distribution_version: DISTRIBUTION_VERSION.into(),
             browser_version: DISTRIBUTION_VERSION.into(),
             skills_pack_version: DISTRIBUTION_VERSION.into(),
+            pack_version: DISTRIBUTION_VERSION.into(),
             artifacts: Vec::new(),
         }
     }
@@ -1592,6 +1593,7 @@ mod tests {
             distribution_version: DISTRIBUTION_VERSION.into(),
             browser_version: DISTRIBUTION_VERSION.into(),
             skills_pack_version: DISTRIBUTION_VERSION.into(),
+            pack_version: DISTRIBUTION_VERSION.into(),
             artifacts: vec![toolchain, asr],
         };
         let manifest_path = write_manifest(temp.path(), &manifest);

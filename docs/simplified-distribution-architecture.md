@@ -382,7 +382,6 @@ OpenCLI Browser Bridge 仍受 Chrome 安全边界限制。Setup Core 可以准�
   "channel": "stable",
   "distribution_version": "1.2.0",
   "skills_pack_version": "1.2.0",
-  "toolchain_version": "1.2.0",
   "hosts": {
     "codex": {
       "skills_dir": "/absolute/path",
@@ -390,8 +389,8 @@ OpenCLI Browser Bridge 仍受 Chrome 安全边界限制。Setup Core 可以准�
     }
   },
   "packs": {
-    "toolchain-base": {"version": "1.2.0", "status": "healthy"},
-    "asr-zh": {"version": "1.2.0", "status": "not-installed"}
+    "toolchain-base": {"version": "1.1.0", "status": "healthy"},
+    "asr-zh": {"version": "1.1.0", "status": "not-installed"}
   }
 }
 ```
@@ -410,7 +409,7 @@ journal 和全局事务历史。
 
 ## 7. 下载与发布模型
 
-每个 Release manifest 至少声明：
+每个 Browser Release manifest 至少声明：
 
 - pack id、版本、平台和架构；
 - 压缩与展开大小；
@@ -420,6 +419,12 @@ journal 和全局事务历史。
 - postcheck 或由 Setup Core 实现的健康检查 id；
 - Provider 和 capability 列表；
 - runtime/model 的兼容范围。
+
+Runtime pack 使用独立的 `pack_version`。同一版本的全部平台制品只在
+`packs-v<pack_version>` prerelease 构建、postcheck 和发布一次；后续 Browser
+Release 的联合 distribution manifest 直接引用这些不可变 URL。只有完整 Python
+requirements、OpenCLI npm lock、直接上游锁或 pack 构建逻辑变化时才提升
+`pack_version`，已发布的 pack release 不覆盖、不追加、不重建。
 
 Setup Core 使用统一下载策略：
 
@@ -432,7 +437,8 @@ Setup Core 使用统一下载策略：
 不再先探测 GitHub、PyPI、npm 和 Hugging Face 并生成安装计划。模型下载可以有独立的
 上游与中国大陆镜像，但同样由 manifest 固定声明，不修改用户全局环境。
 
-Browser 本身继续使用标准 DMG、EXE/MSI、AppImage 等平台制品和应用自身 updater。
+Browser 本身使用 DMG、NSIS EXE、AppImage/DEB 和应用自身 updater；不再为同一平台
+同时发布 MSI、RPM 等重复安装格式。
 初次获取 Browser 可以由下载页、稳定项目 URL 或一个很薄的只读 bootstrap 指引完成；
 不需要为此保留完整的 suite checkout 和 Python 安装核心。
 
@@ -528,8 +534,8 @@ v2 采用硬切换，不读取、导入或双写旧安装回执，也不保留�
 - MCP stdio bridge 已进入同一 CLI，不再要求 Python 脚本或永久 suite checkout；
 - 旧 bootstrap、跨平台 Python/Windows 双安装器、Setup EXE、component receipt、独立 doctor、
   Browser installer、Skills 滚动发布与对应 CI/测试已删除；
-- Release 只构建标准 Browser、共享 CLI、`toolchain-base` 和按需 ASR packs，并在全部平台
-  成功后发布同一个正式版本。
+- Browser Release 只构建标准 Browser 与共享 CLI，并引用已发布的不可变
+  `pack_version`；新的 pack 版本才在全部平台构建 `toolchain-base` 与按需 ASR packs。
 
 发布前仍需完成的是跨平台 Release 实跑和真实空白环境验收，而不是兼容旧架构。
 

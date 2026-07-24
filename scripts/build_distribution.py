@@ -8,7 +8,9 @@ probe, and atomically activate the resulting zip files.
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
+import io
 import json
 import os
 import platform
@@ -16,16 +18,25 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import urllib.request
 import zipfile
 from pathlib import Path
 
+from .pack_release import (
+    PACK_IDS,
+    asset_name,
+    load_metadata,
+    pack_tag,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 POSIX_LOCK = ROOT / "registry" / "pack-build-posix.lock.json"
 WINDOWS_LOCK = ROOT / "registry" / "pack-build-windows.lock.json"
-PACK_IDS = {"toolchain-base", "asr-zh", "asr-other"}
+REQUIREMENTS = ROOT / "registry" / "requirements"
+OPENCLI_PACKAGE = ROOT / "registry" / "opencli" / "package.json"
+OPENCLI_LOCK = ROOT / "registry" / "opencli" / "package-lock.json"
 MAX_RELEASE_ASSET_SIZE = 2_147_483_648
 
 
@@ -101,14 +112,22 @@ def extract(archive: Path, destination: Path) -> None:
                     (destination / item.filename).chmod(mode)
 
 
+def extract_tar(archive: Path, destination: Path) -> None:
+    destination.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(archive, "r:gz") as bundle:
+        bundle.extractall(destination, filter="data")
+
+
 def copy_tree(source: Path, destination: Path) -> None:
     shutil.copytree(source, destination, symlinks=True)
 
 
 def checked(argv: list[str], *, env: dict[str, str] | None = None, timeout: int = 300) -> str:
+    environment = (env or os.environ).copy()
+    environment.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     completed = subprocess.run(
         argv,
-        env=env,
+        env=environment,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -151,22 +170,49 @@ def download_verified(url: str, destination: Path, expected: str) -> Path:
 def pip_target(
     python: Path,
     destination: Path,
-    packages: list[str],
+    requirements: Path,
     *,
     extra_index_url: str | None = None,
 ) -> None:
+    if not requirements.is_file():
+        raise BuildError(f"hashed requirements lock is missing: {requirements}")
     destination.mkdir(parents=True, exist_ok=True)
-    report = destination.parent / "pip-report.json"
     command = [
         str(python), "-m", "pip", "install", "--disable-pip-version-check",
         "--no-input", "--no-compile", "--target", str(destination),
-        "--report", str(report),
+        "--require-hashes", "--requirement", str(requirements),
     ]
     if extra_index_url:
         command.extend(["--extra-index-url", extra_index_url])
-    checked([*command, *packages], timeout=3600)
+    checked(command, timeout=3600)
+    normalize_python_install(destination)
+    shutil.copy2(requirements, destination / ".my-llm-wiki-requirements.lock")
+
+
+def normalize_python_install(destination: Path) -> None:
     for cache in destination.rglob("__pycache__"):
         shutil.rmtree(cache, ignore_errors=True)
+    for scripts in (destination / "bin", destination / "Scripts"):
+        shutil.rmtree(scripts, ignore_errors=True)
+    for record in destination.rglob("*.dist-info/RECORD"):
+        rows = list(csv.reader(io.StringIO(record.read_text(encoding="utf-8"))))
+        kept = []
+        for row in rows:
+            member = row[0].replace("\\", "/")
+            if (
+                "/__pycache__/" in member
+                or member.endswith((".pyc", ".pyo"))
+                or member.startswith(("../../bin/", "../../Scripts/"))
+            ):
+                continue
+            kept.append(row)
+        output = io.StringIO(newline="")
+        csv.writer(output, lineterminator="\n").writerows(kept)
+        record.write_text(output.getvalue(), encoding="utf-8", newline="\n")
+
+
+def requirements_lock(component: str, system: str, architecture: str) -> Path:
+    return REQUIREMENTS / f"{component}-{system}-{architecture}.txt"
 
 
 def python_env(site: Path) -> dict[str, str]:
@@ -187,22 +233,23 @@ def npm_lock_entry(package_lock: dict, package_name: str) -> dict:
     return matches[0]
 
 
-def install_posix_python(lock: dict, work: Path) -> tuple[Path, Path]:
-    install_dir = work / "uv-python"
-    uv = shutil.which("uv")
-    if not uv:
-        raise BuildError("uv is required to build the private Python runtime")
+def install_posix_python(
+    lock: dict, work: Path, system: str, architecture: str
+) -> tuple[Path, Path]:
+    install_dir = work / "python-runtime"
     version = lock["runtime"]["python"]
-    actual_uv = checked([uv, "--version"]).split()[1]
-    if actual_uv != lock["runtime"]["uv"]:
-        raise BuildError(f"uv version {actual_uv} differs from lock")
-    checked(
-        [uv, "python", "install", version, "--install-dir", str(install_dir), "--no-bin"],
-        timeout=900,
+    target_spec = lock["runtime"]["targets"].get(f"{system}-{architecture}")
+    if not target_spec:
+        raise BuildError(f"Python runtime is not locked for {system}/{architecture}")
+    archive = download_verified(
+        target_spec["url"], work / "python-runtime.tar.gz", target_spec["sha256"]
     )
-    candidates = sorted(install_dir.rglob(f"bin/python{'.'.join(version.split('.')[:2])}"))
+    extract_tar(archive, install_dir)
+    candidates = sorted(
+        install_dir.rglob(f"bin/python{'.'.join(version.split('.')[:2])}")
+    )
     if len(candidates) != 1:
-        raise BuildError("uv managed Python layout is ambiguous")
+        raise BuildError("locked Python runtime layout is ambiguous")
     python = candidates[0]
     runtime = python.parent.parent
     if checked([str(python), "-c", "import platform; print(platform.python_version())"]) != version:
@@ -214,10 +261,14 @@ def install_posix_python(lock: dict, work: Path) -> tuple[Path, Path]:
     return runtime, python
 
 
-def build_posix_documents(spec: dict, python: Path, work: Path) -> Path:
+def build_posix_documents(
+    spec: dict, python: Path, work: Path, system: str, architecture: str
+) -> Path:
     stage = work / "documents"
     site = stage / "site"
-    pip_target(python, site, spec["packages"])
+    pip_target(
+        python, site, requirements_lock("documents", system, architecture)
+    )
     runner = stage / "markitdown_runner.py"
     runner.write_text(
         "from pathlib import Path\nimport sys\n"
@@ -237,9 +288,15 @@ def build_posix_documents(spec: dict, python: Path, work: Path) -> Path:
     return stage
 
 
-def build_posix_video(spec: dict, python: Path, work: Path) -> Path:
+def build_posix_video(
+    spec: dict, python: Path, work: Path, system: str, architecture: str
+) -> Path:
     stage = work / "video"
-    pip_target(python, stage / "site", spec["packages"])
+    pip_target(
+        python,
+        stage / "site",
+        requirements_lock("video", system, architecture),
+    )
     runner = stage / "yt_dlp_runner.py"
     runner.write_text(
         "from pathlib import Path\nimport sys\n"
@@ -278,14 +335,19 @@ def posix_asr_install(spec: dict, system: str) -> tuple[list[str], str | None]:
 
 
 def build_posix_asr(
-    name: str, spec: dict, python: Path, work: Path, system: str
+    name: str,
+    spec: dict,
+    python: Path,
+    work: Path,
+    system: str,
+    architecture: str,
 ) -> Path:
     stage = work / name
-    packages, extra_index_url = posix_asr_install(spec, system)
+    _, extra_index_url = posix_asr_install(spec, system)
     pip_target(
         python,
         stage / "site",
-        packages,
+        requirements_lock(name, system, architecture),
         extra_index_url=extra_index_url,
     )
     checked(
@@ -296,19 +358,39 @@ def build_posix_asr(
     return stage
 
 
-def build_posix_web(spec: dict, work: Path) -> Path:
+def build_posix_web(
+    spec: dict, work: Path, system: str, architecture: str
+) -> Path:
     stage = work / "web"
     stage.mkdir(parents=True)
-    node = Path(checked(["node", "-p", "process.execPath"]))
-    if checked([str(node), "--version"]).lstrip("v") != spec["node"]:
+    node_spec = spec["node"]
+    target_spec = node_spec["targets"].get(f"{system}-{architecture}")
+    if not target_spec:
+        raise BuildError(f"Node runtime is not locked for {system}/{architecture}")
+    archive = download_verified(
+        target_spec["url"], work / "node-runtime.tar.gz", target_spec["sha256"]
+    )
+    unpacked = work / "node-runtime"
+    extract_tar(archive, unpacked)
+    nodes = sorted(unpacked.glob("*/bin/node"))
+    if len(nodes) != 1:
+        raise BuildError("unexpected Node archive layout")
+    node = nodes[0]
+    if checked([str(node), "--version"]).lstrip("v") != node_spec["version"]:
         raise BuildError("Node version differs from lock")
     shutil.copy2(node, stage / "node")
     (stage / "node").chmod(0o755)
+    npm_cli = node.parent.parent / "lib" / "node_modules" / "npm" / "bin" / "npm-cli.js"
+    if not npm_cli.is_file():
+        raise BuildError("Node runtime has no npm CLI")
     opencli = stage / "opencli"
+    opencli.mkdir(parents=True)
+    shutil.copy2(OPENCLI_PACKAGE, opencli / "package.json")
+    shutil.copy2(OPENCLI_LOCK, opencli / "package-lock.json")
     checked(
         [
-            "npm", "install", "--prefix", str(opencli), spec["opencli"]["package"],
-            "--omit=dev", "--no-audit", "--no-fund", "--ignore-scripts",
+            str(node), str(npm_cli), "ci", "--prefix", str(opencli), "--omit=dev",
+            "--no-audit", "--no-fund", "--ignore-scripts",
         ],
         timeout=1800,
     )
@@ -377,10 +459,16 @@ def write_notice(stage: Path, component: str, lines: list[str]) -> None:
     )
 
 
-def build_windows_documents(base: Path, spec: dict) -> None:
+def build_windows_documents(
+    base: Path, spec: dict, system: str, architecture: str
+) -> None:
     stage = base / "documents"
     site = stage / "site"
-    pip_target(Path(sys.executable), site, spec["packages"])
+    pip_target(
+        Path(sys.executable),
+        site,
+        requirements_lock("documents", system, architecture),
+    )
     runner = stage / "markitdown_runner.py"
     runner.write_text(
         "from pathlib import Path\nimport sys\n"
@@ -399,7 +487,7 @@ def build_windows_documents(base: Path, spec: dict) -> None:
     )
     write_notice(stage, "documents", [
         "MarkItDown: https://github.com/microsoft/markitdown",
-        "Resolved Python dependency inventory: pip-report.json",
+        "Resolved Python dependency inventory: site/.my-llm-wiki-requirements.lock",
     ])
 
 
@@ -417,11 +505,13 @@ def build_windows_web(base: Path, spec: dict, downloads: Path, work: Path) -> No
     if checked([str(stage / "node" / "node.exe"), "--version"]).lstrip("v") != spec["node"]["version"]:
         raise BuildError("Node version differs from lock")
     opencli = stage / "opencli"
+    opencli.mkdir(parents=True)
+    shutil.copy2(OPENCLI_PACKAGE, opencli / "package.json")
+    shutil.copy2(OPENCLI_LOCK, opencli / "package-lock.json")
     checked(
         [
-            str(stage / "node" / "npm.cmd"), "install", "--prefix", str(opencli),
-            spec["opencli"]["package"], "--omit=dev", "--no-audit", "--no-fund",
-            "--ignore-scripts",
+            str(stage / "node" / "npm.cmd"), "ci", "--prefix", str(opencli),
+            "--omit=dev", "--no-audit", "--no-fund", "--ignore-scripts",
         ],
         timeout=1800,
     )
@@ -485,35 +575,55 @@ def build_windows_video(base: Path, spec: dict, downloads: Path, work: Path) -> 
 
 
 def build_windows_asr(
-    name: str, spec: dict, python_archive: Path, work: Path
+    name: str,
+    spec: dict,
+    python_archive: Path,
+    work: Path,
+    system: str,
+    architecture: str,
 ) -> Path:
     stage = work / f"pack-{name}"
     extract(python_archive, stage / "runtime")
     enable_embedded_python(stage / "runtime")
     site = stage / "runtime" / "Lib" / "site-packages"
-    pip_target(Path(sys.executable), site, spec["packages"])
+    pip_target(
+        Path(sys.executable),
+        site,
+        requirements_lock(name, system, architecture),
+    )
     checked(
         [str(stage / "runtime" / "python.exe"), *spec["postcheck"]],
         timeout=900,
     )
     write_notice(stage, name, [
         "Python runtime: https://www.python.org/",
-        "Resolved Python dependency inventory: pip-report.json",
+        "Resolved Python dependency inventory: runtime/Lib/site-packages/.my-llm-wiki-requirements.lock",
     ])
     return stage
 
 
 def build_posix(
-    selected: list[str], work: Path, dist: Path, system: str, architecture: str
+    selected: list[str],
+    work: Path,
+    dist: Path,
+    system: str,
+    architecture: str,
+    version: str,
 ) -> dict[str, dict]:
     lock = json.loads(POSIX_LOCK.read_text(encoding="utf-8"))
-    runtime_root, python = install_posix_python(lock, work)
+    runtime_root, python = install_posix_python(lock, work, system, architecture)
     artifacts: dict[str, dict] = {}
     if "toolchain-base" in selected:
         stages = {
-            "documents": build_posix_documents(lock["components"]["documents"], python, work),
-            "web": build_posix_web(lock["components"]["web"], work),
-            "video": build_posix_video(lock["components"]["video"], python, work),
+            "documents": build_posix_documents(
+                lock["components"]["documents"], python, work, system, architecture
+            ),
+            "web": build_posix_web(
+                lock["components"]["web"], work, system, architecture
+            ),
+            "video": build_posix_video(
+                lock["components"]["video"], python, work, system, architecture
+            ),
         }
         base = work / "pack-toolchain-base"
         copy_tree(runtime_root, base / "runtime")
@@ -542,6 +652,7 @@ def build_posix(
             "toolchain-base",
             system,
             architecture,
+            version,
             commands=commands,
             probes=toolchain_client_probes(),
             release_checks=release_checks,
@@ -561,7 +672,12 @@ def build_posix(
         if pack_id not in selected:
             continue
         component = build_posix_asr(
-            pack_id, lock["components"][pack_id], python, work, system
+            pack_id,
+            lock["components"][pack_id],
+            python,
+            work,
+            system,
+            architecture,
         )
         stage = work / f"pack-{pack_id}"
         copy_tree(runtime_root, stage / "runtime")
@@ -580,6 +696,7 @@ def build_posix(
             pack_id,
             system,
             architecture,
+            version,
             commands=commands,
             python_profiles={pack_id: ["{pack}/runtime/bin/python3"]},
             environment=environment,
@@ -591,7 +708,12 @@ def build_posix(
 
 
 def build_windows(
-    selected: list[str], work: Path, dist: Path, system: str, architecture: str
+    selected: list[str],
+    work: Path,
+    dist: Path,
+    system: str,
+    architecture: str,
+    version: str,
 ) -> dict[str, dict]:
     lock = json.loads(WINDOWS_LOCK.read_text(encoding="utf-8"))
     validate_windows_lock(lock)
@@ -605,7 +727,9 @@ def build_windows(
         base = work / "pack-toolchain-base"
         extract(python_zip, base / "runtime")
         enable_embedded_python(base / "runtime")
-        build_windows_documents(base, lock["components"]["documents"])
+        build_windows_documents(
+            base, lock["components"]["documents"], system, architecture
+        )
         build_windows_web(base, lock["components"]["web"], downloads, work)
         build_windows_video(base, lock["components"]["video"], downloads, work)
         commands = {
@@ -625,6 +749,7 @@ def build_windows(
             "toolchain-base",
             system,
             architecture,
+            version,
             commands=commands,
             probes=toolchain_client_probes(),
             release_checks=[
@@ -649,7 +774,12 @@ def build_windows(
         if pack_id not in selected:
             continue
         stage = build_windows_asr(
-            pack_id, lock["components"][pack_id], python_zip, work
+            pack_id,
+            lock["components"][pack_id],
+            python_zip,
+            work,
+            system,
+            architecture,
         )
         commands = {
             "python-runtime": ["{pack}/runtime/python.exe"],
@@ -664,6 +794,7 @@ def build_windows(
             pack_id,
             system,
             architecture,
+            version,
             commands=commands,
             python_profiles={pack_id: ["{pack}/runtime/python.exe"]},
             environment={},
@@ -680,6 +811,7 @@ def pack_spec(
     pack_id: str,
     system: str,
     architecture: str,
+    version: str,
     *,
     commands: dict[str, list[str]],
     python_profiles: dict[str, list[str]] | None = None,
@@ -690,7 +822,7 @@ def pack_spec(
     manual_actions: list[dict] | None = None,
 ) -> dict:
     asset = write_zip(
-        stage, dist / f"My-LLM-Wiki-{pack_id}_{system}_{architecture}.zip"
+        stage, dist / asset_name(pack_id, version, system, architecture)
     )
     validate_release_asset_size(pack_id, asset.stat().st_size)
     verify_release_archive(
@@ -761,28 +893,28 @@ def validate_release_asset_size(pack_id: str, size: int) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--release-tag", required=True)
     parser.add_argument("--dist", type=Path, required=True)
     parser.add_argument("--packs", default="toolchain-base,asr-zh,asr-other")
     args = parser.parse_args(argv)
-    version = args.release_tag.removeprefix("v")
+    metadata = load_metadata()
+    version = metadata["version"]
     selected = [value for value in args.packs.split(",") if value]
-    unknown = sorted(set(selected) - PACK_IDS)
+    unknown = sorted(set(selected) - set(PACK_IDS))
     if unknown:
         raise BuildError("unknown pack(s): " + ", ".join(unknown))
-    if not re.fullmatch(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)", version):
-        # CI smoke builds use v-ci; release tags are checked again by Rust.
-        if args.release_tag != "v-ci":
-            raise BuildError(f"release tag is not semantic: {args.release_tag}")
-        version = "0.0.0"
     system, architecture = target()
     args.dist.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as temporary:
         work = Path(temporary)
         if system == "windows":
-            artifacts = build_windows(selected, work, args.dist, system, architecture)
+            artifacts = build_windows(
+                selected, work, args.dist, system, architecture, version
+            )
         else:
-            artifacts = build_posix(selected, work, args.dist, system, architecture)
+            artifacts = build_posix(
+                selected, work, args.dist, system, architecture, version
+            )
+    release_tag = pack_tag(version)
     release_sources = [
         "https://wiki.htmlgo.to/_update/dl/{tag}/{asset}",
         "https://github.com/dake6767/llm-wiki-suite/releases/download/{tag}/{asset}",
@@ -798,24 +930,26 @@ def main(argv: list[str] | None = None) -> int:
             "size": spec["size"],
             "installed_size": spec["installed_size"],
             "urls": [
-                template.format(tag=args.release_tag, asset=spec["asset"])
+                template.format(tag=release_tag, asset=spec["asset"])
                 for template in release_sources
             ],
             **{key: value for key, value in spec.items() if key not in {"asset", "sha256", "size", "installed_size"}},
         })
-    manifest = {
+    index = {
         "schema": 1,
-        "channel": "stable",
-        "distribution_version": version,
-        "browser_version": version,
-        "skills_pack_version": version,
+        "pack_version": version,
+        "input_sha256": metadata["input_sha256"],
         "artifacts": rows,
     }
-    manifest_path = args.dist / f"distribution-{system}-{architecture}.json"
-    manifest_path.write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    index_path = args.dist / f"pack-index-{system}-{architecture}.json"
+    index_path.write_text(
+        json.dumps(index, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
-    print(json.dumps({"status": "built", "manifest": str(manifest_path), "packs": sorted(artifacts)}))
+    print(
+        json.dumps(
+            {"status": "built", "index": str(index_path), "packs": sorted(artifacts)}
+        )
+    )
     return 0
 
 

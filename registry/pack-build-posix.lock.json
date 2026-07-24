@@ -2,7 +2,20 @@
   "schema": 1,
   "runtime": {
     "python": "3.12.10",
-    "uv": "0.10.0"
+    "targets": {
+      "darwin-arm64": {
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20250529/cpython-3.12.10%2B20250529-aarch64-apple-darwin-install_only_stripped.tar.gz",
+        "sha256": "2579c9ffcbb0a745f1de3d645612c7466269eb9a23316a54ece49d50c1c9122f"
+      },
+      "darwin-x64": {
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20250529/cpython-3.12.10%2B20250529-x86_64-apple-darwin-install_only_stripped.tar.gz",
+        "sha256": "f171af578ecdbbcf63cbb0abd08f382df3e0d091e98c3161b3f84cd9d0acc0fd"
+      },
+      "linux-x64": {
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20250529/cpython-3.12.10%2B20250529-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz",
+        "sha256": "f50d08e0304b15d752b22932047135c1dc02f81977b284e51288be9d90627bca"
+      }
+    }
   },
   "components": {
     "documents": {
@@ -21,7 +34,23 @@
       "label": "Web and authenticated social capture",
       "description": "Private Node/OpenCLI runtime and staged Browser Bridge extension",
       "default": true,
-      "node": "22.23.1",
+      "node": {
+        "version": "22.23.1",
+        "targets": {
+          "darwin-arm64": {
+            "url": "https://nodejs.org/dist/v22.23.1/node-v22.23.1-darwin-arm64.tar.gz",
+            "sha256": "ef28d8fab2c0e4314522d4bb1b7173270aa3937e93b92cb7de79c112ac1fa953"
+          },
+          "darwin-x64": {
+            "url": "https://nodejs.org/dist/v22.23.1/node-v22.23.1-darwin-x64.tar.gz",
+            "sha256": "b8da981b8a0b1241b70249204916da76c63573ddf5814dbd2d1e41069105cb81"
+          },
+          "linux-x64": {
+            "url": "https://nodejs.org/dist/v22.23.1/node-v22.23.1-linux-x64.tar.gz",
+            "sha256": "7a8cb04b4a1df4eaf432125324b81b29a088e73570a23259a8de1c65d07fc129"
+          }
+        }
+      },
       "opencli": {
         "package": "@jackwener/opencli@1.8.6",
         "version": "1.8.6",

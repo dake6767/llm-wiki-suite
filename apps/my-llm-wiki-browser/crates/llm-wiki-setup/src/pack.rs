@@ -68,6 +68,7 @@ pub(crate) fn validate_manifest(manifest: &DistributionManifest) -> Result<()> {
         ),
         ("browser_version", manifest.browser_version.as_str()),
         ("skills_pack_version", manifest.skills_pack_version.as_str()),
+        ("pack_version", manifest.pack_version.as_str()),
     ] {
         Version::parse(value).map_err(|err| {
             SetupError::InvalidManifest(format!("invalid {label} {value:?}: {err}"))
@@ -81,6 +82,12 @@ pub(crate) fn validate_manifest(manifest: &DistributionManifest) -> Result<()> {
         ));
     }
     for artifact in &manifest.artifacts {
+        if artifact.version != manifest.pack_version {
+            return Err(SetupError::InvalidManifest(format!(
+                "artifact version {} differs from pack version {}",
+                artifact.version, manifest.pack_version
+            )));
+        }
         if artifact.id.is_empty()
             || artifact.platform.is_empty()
             || artifact.architecture.is_empty()
@@ -779,6 +786,55 @@ pub(crate) fn target() -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_manifests_without_an_explicit_pack_version() {
+        let legacy = serde_json::json!({
+            "schema": 1,
+            "channel": "stable",
+            "distribution_version": "2.0.7",
+            "browser_version": "2.0.7",
+            "skills_pack_version": "2.0.7",
+            "artifacts": [],
+        });
+
+        assert!(serde_json::from_value::<DistributionManifest>(legacy).is_err());
+    }
+
+    #[test]
+    fn accepts_an_independent_pack_version_and_rejects_artifact_drift() {
+        let mut manifest = DistributionManifest {
+            schema: 1,
+            channel: "stable".into(),
+            distribution_version: "2.0.7".into(),
+            browser_version: "2.0.7".into(),
+            skills_pack_version: "2.0.7".into(),
+            pack_version: "2.0.6".into(),
+            artifacts: vec![PackArtifact {
+                id: "toolchain-base".into(),
+                version: "2.0.6".into(),
+                platform: "darwin".into(),
+                architecture: "arm64".into(),
+                sha256: "0".repeat(64),
+                size: 1,
+                installed_size: 1,
+                urls: vec!["https://example.invalid/pack.zip".into()],
+                commands: Default::default(),
+                python_profiles: Default::default(),
+                environment: Default::default(),
+                capabilities: vec![],
+                probes: vec![],
+                manual_actions: vec![],
+            }],
+        };
+
+        validate_manifest(&manifest).unwrap();
+        manifest.artifacts[0].version = "2.0.5".into();
+        assert!(matches!(
+            validate_manifest(&manifest),
+            Err(SetupError::InvalidManifest(_))
+        ));
+    }
 
     #[test]
     fn extracts_large_central_directory_on_worker_sized_stack() {

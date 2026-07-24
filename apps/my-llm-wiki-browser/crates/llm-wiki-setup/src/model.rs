@@ -175,6 +175,7 @@ pub struct DistributionManifest {
     pub distribution_version: String,
     pub browser_version: String,
     pub skills_pack_version: String,
+    pub pack_version: String,
     pub artifacts: Vec<PackArtifact>,
 }
 

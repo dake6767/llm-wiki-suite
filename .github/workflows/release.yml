@@ -1,19 +1,9 @@
 name: release
 
-# 打 tag（v*）时构建 Browser 与统一 distribution packs；全部成功后自动发布。
-# 也可在 Actions 页手动触发（workflow_dispatch）做一次冒烟构建（只构建，不发布）。
-#
-# 本仓库是 monorepo：Tauri 工程在 apps/my-llm-wiki-browser/desktop（内含 src-tauri），
-# 前端在 apps/my-llm-wiki-browser/frontend。tauri.conf.json 的 beforeBuildCommand
-# 会 `cd ../frontend && npm run build`，所以下面预先在 frontend 里 `npm ci` 装依赖。
-#
-# Release 由前置 create-release job 统一创建（或复用已有的同 tag 草稿），矩阵 job 只
-# 往这个 releaseId 传产物。若让 tauri-action 各自按 tagName 建 release，4 个 job 并发
-# 查不到彼此刚建的草稿，会给同一个 tag 建出多个半份产物的草稿（v1.0.1 踩过）。
-#
-# 未做签名：macOS 未做 Developer ID 签名/公证，Windows 未做代码签名，用户首次运行
-# 需手动放行。要签名时在仓库 Secrets 加证书，再给 tauri-action 传对应 env（见 tauri
-# 官方 “App Signing” 文档），无需改动矩阵结构。
+# Tag releases publish the Browser, standalone CLI, updater manifest, and one
+# jointly tested distribution manifest. Large immutable runtime packs live in a
+# prerelease named packs-v<pack_version> and are built only once per pack input
+# revision. workflow_dispatch builds everything as an unpublished smoke test.
 
 on:
   push:
@@ -21,11 +11,16 @@ on:
       - 'v*'
   workflow_dispatch:
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   validate-release:
     runs-on: ubuntu-latest
     outputs:
       release_tag: ${{ steps.version.outputs.release_tag }}
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v7
       - name: Resolve and validate one release version
@@ -38,8 +33,7 @@ jobs:
           else
             release_tag="v-ci"
           fi
-          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
-          RELEASE_TAG="$release_tag" python - <<'PY'
+          RELEASE_TAG="$release_tag" python - <<'PY' >> "$GITHUB_OUTPUT"
           import json
           import os
           import pathlib
@@ -53,15 +47,20 @@ jobs:
           ).group(1)
           versions = {
               "Cargo workspace": cargo,
-              "Tauri": json.loads((root / "desktop/src-tauri/tauri.conf.json").read_text())["version"],
-              "frontend": json.loads((root / "frontend/package.json").read_text())["version"],
+              "Tauri": json.loads(
+                  (root / "desktop/src-tauri/tauri.conf.json").read_text()
+              )["version"],
+              "frontend": json.loads(
+                  (root / "frontend/package.json").read_text()
+              )["version"],
           }
           if len(set(versions.values())) != 1:
               raise SystemExit(f"release versions differ: {versions}")
           tag = os.environ["RELEASE_TAG"]
           if tag != "v-ci" and tag != f"v{cargo}":
               raise SystemExit(f"tag {tag!r} does not match v{cargo}")
-          print({"release_tag": tag, "version": cargo})
+          print(f"release_tag={tag}")
+          print(f"version={cargo}")
           PY
 
   create-release:
@@ -70,50 +69,146 @@ jobs:
     permissions:
       contents: write
     outputs:
-      release_id: ${{ steps.create.outputs.result }}
-      release_upload_url: ${{ steps.create.outputs.upload_url }}
+      release_id: ${{ steps.create.outputs.release_id }}
     steps:
-      - name: Create or reuse draft release
+      - name: Create a clean draft application release
         id: create
-        # 冒烟构建（workflow_dispatch）不建 release，输出空串，后续按 build-only 走。
         if: startsWith(github.ref, 'refs/tags/')
         uses: actions/github-script@v9
         with:
-          result-encoding: string
           script: |
             const tag = context.ref.replace('refs/tags/', '');
-            const { data: releases } = await github.rest.repos.listReleases({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              per_page: 100,
-            });
-            const existing = releases.find((r) => r.tag_name === tag);
-            if (existing) {
-              if (!existing.draft) {
-                throw new Error(`refusing to mutate published release ${tag}`);
-              }
-              core.info(`reusing release ${existing.id} for ${tag}`);
-              core.setOutput('upload_url', existing.upload_url);
-              return existing.id;
+            const releases = await github.paginate(
+              github.rest.repos.listReleases,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                per_page: 100,
+              },
+            );
+            let release = releases.find((row) => row.tag_name === tag);
+            if (release && !release.draft) {
+              throw new Error(`refusing to mutate published release ${tag}`);
             }
-            const { data: created } = await github.rest.repos.createRelease({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              tag_name: tag,
-              name: `My LLM Wiki ${tag}`,
-              // macOS 产物是完整 ad-hoc 签名（无 Developer ID/公证），浏览器下载会带
-              // quarantine：Gatekeeper 提示「无法验证开发者」，需到系统设置里「仍要打开」；
-              // 右键打开对这种情况不适用（老文案误导，v1.0.5 起修正）。脚本/更新器下载
-              // 不带 quarantine，无此步。
-              body: 'My LLM Wiki 2 将安装、更新与修复统一到 Browser 内置 Setup Core。首次启动可安装完整 Skills Pack、官方验证工具链并初始化 Wiki；Skills 也可独立使用系统或自定义 Provider。所有平台使用同一 distribution manifest 与不可变 SHA-256 pack，不在用户机器上调用 pip、npm、brew、apt 或 winget。ASR 能力包按需下载。产物尚未做 Apple 公证 / Windows Authenticode 代码签名：macOS 首次运行按系统提示到 隐私与安全性 → 仍要打开；Windows SmartScreen 选择仍要运行。',
-              draft: true,
-              prerelease: false,
-            });
-            core.setOutput('upload_url', created.upload_url);
-            return created.id;
+            if (release) {
+              const assets = await github.paginate(
+                github.rest.repos.listReleaseAssets,
+                {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  release_id: release.id,
+                  per_page: 100,
+                },
+              );
+              for (const asset of assets) {
+                await github.rest.repos.deleteReleaseAsset({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  asset_id: asset.id,
+                });
+              }
+              core.info(`reusing clean draft release ${release.id} for ${tag}`);
+            } else {
+              ({ data: release } = await github.rest.repos.createRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag_name: tag,
+                name: `My LLM Wiki ${tag}`,
+                body: 'My LLM Wiki 2 将安装、更新与修复统一到 Browser 内置 Setup Core。首次启动可安装完整 Skills Pack、官方验证工具链并初始化 Wiki；Skills 也可独立使用系统或自定义 Provider。所有平台使用同一 distribution manifest 与不可变 SHA-256 pack，不在用户机器上调用 pip、npm、brew、apt 或 winget。ASR 能力包按需下载。产物尚未做 Apple 公证 / Windows Authenticode 代码签名：macOS 首次运行按系统提示到 隐私与安全性 → 仍要打开；Windows SmartScreen 选择仍要运行。',
+                draft: true,
+                prerelease: false,
+              }));
+            }
+            core.setOutput('release_id', String(release.id));
+
+  prepare-pack-release:
+    needs: validate-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      release_id: ${{ steps.prepare.outputs.release_id }}
+      build_packs: ${{ steps.prepare.outputs.build_packs }}
+      pack_tag: ${{ steps.metadata.outputs.pack_tag }}
+      pack_version: ${{ steps.metadata.outputs.pack_version }}
+      input_sha256: ${{ steps.metadata.outputs.input_sha256 }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate immutable pack release metadata
+        id: metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          metadata="$(python -m scripts.pack_release metadata)"
+          echo "pack_version=$(jq -r .version <<<"$metadata")" >> "$GITHUB_OUTPUT"
+          echo "pack_tag=$(jq -r .tag <<<"$metadata")" >> "$GITHUB_OUTPUT"
+          echo "input_sha256=$(jq -r .input_sha256 <<<"$metadata")" >> "$GITHUB_OUTPUT"
+      - name: Reuse a published pack release or create a clean draft
+        id: prepare
+        uses: actions/github-script@v9
+        env:
+          PACK_TAG: ${{ steps.metadata.outputs.pack_tag }}
+        with:
+          script: |
+            if (!context.ref.startsWith('refs/tags/')) {
+              core.setOutput('release_id', '');
+              core.setOutput('build_packs', 'true');
+              return;
+            }
+            const tag = process.env.PACK_TAG;
+            const releases = await github.paginate(
+              github.rest.repos.listReleases,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                per_page: 100,
+              },
+            );
+            let release = releases.find((row) => row.tag_name === tag);
+            if (release && !release.draft) {
+              if (!release.prerelease) {
+                throw new Error(`pack release ${tag} must be a prerelease`);
+              }
+              core.setOutput('release_id', String(release.id));
+              core.setOutput('build_packs', 'false');
+              core.info(`reusing immutable pack release ${release.id}`);
+              return;
+            }
+            if (release) {
+              const assets = await github.paginate(
+                github.rest.repos.listReleaseAssets,
+                {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  release_id: release.id,
+                  per_page: 100,
+                },
+              );
+              for (const asset of assets) {
+                await github.rest.repos.deleteReleaseAsset({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  asset_id: asset.id,
+                });
+              }
+            } else {
+              ({ data: release } = await github.rest.repos.createRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag_name: tag,
+                target_commitish: context.sha,
+                name: `My LLM Wiki Runtime Packs ${tag}`,
+                body: 'Immutable, fully locked runtime packs referenced by application distribution manifests.',
+                draft: true,
+                prerelease: true,
+              }));
+            }
+            core.setOutput('release_id', String(release.id));
+            core.setOutput('build_packs', 'true');
 
   build-distribution-packs:
-    needs: [validate-release, create-release]
+    needs: [validate-release, prepare-pack-release]
+    if: needs.prepare-pack-release.outputs.build_packs == 'true'
     permissions:
       contents: write
     strategy:
@@ -138,56 +233,111 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12.10'
-      - uses: astral-sh/setup-uv@v9.0.0
-        if: runner.os != 'Windows'
-        with:
-          version: '0.10.0'
-          enable-cache: false
-      - uses: actions/setup-node@v7
-        if: runner.os != 'Windows'
-        with:
-          node-version: '22.23.1'
       - name: Build and postcheck immutable distribution packs
         shell: bash
         run: |
-          python scripts/build_distribution.py \
-            --release-tag "${{ needs.validate-release.outputs.release_tag }}" \
+          python -m scripts.build_distribution \
             --dist distribution-dist \
             --packs "${{ matrix.packs }}"
-      - uses: actions/upload-artifact@v7
-        with:
-          name: distribution-${{ matrix.artifact }}-${{ needs.validate-release.outputs.release_tag }}
-          path: distribution-dist/*
-          retention-days: 14
-      - name: Upload the small platform manifest separately
+      - name: Preserve complete smoke-build packs
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v7
         with:
-          name: distribution-index-${{ matrix.artifact }}-${{ needs.validate-release.outputs.release_tag }}
-          path: distribution-dist/distribution-*.json
+          name: distribution-${{ matrix.artifact }}-${{ needs.prepare-pack-release.outputs.pack_tag }}
+          path: distribution-dist/*
           retention-days: 14
-      - name: Upload pack assets to draft release
-        if: needs.create-release.outputs.release_id != ''
+      - name: Pass the small platform pack index to the merge job
+        uses: actions/upload-artifact@v7
+        with:
+          name: pack-index-part-${{ matrix.artifact }}-${{ needs.prepare-pack-release.outputs.pack_tag }}
+          path: distribution-dist/pack-index-*.json
+          retention-days: 1
+      - name: Upload packs to the draft immutable pack release
+        if: needs.prepare-pack-release.outputs.release_id != ''
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
+          PACK_RELEASE_ID: ${{ needs.prepare-pack-release.outputs.release_id }}
         run: |
           set -euo pipefail
-          existing="$(gh api "repos/${{ github.repository }}/releases/$RELEASE_ID/assets")"
           for file in distribution-dist/*.zip; do
             name="$(basename "$file")"
-            asset_id="$(printf '%s' "$existing" | jq -r --arg name "$name" '.[] | select(.name == $name) | .id' | head -1)"
-            if [ -n "$asset_id" ]; then
-              gh api --method DELETE "repos/${{ github.repository }}/releases/assets/$asset_id"
-            fi
             gh api --method POST \
               -H 'Content-Type: application/octet-stream' \
               --input "$file" \
-              "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=$name"
+              "https://uploads.github.com/repos/${{ github.repository }}/releases/$PACK_RELEASE_ID/assets?name=$name"
           done
 
-  merge-distribution:
-    needs: [validate-release, create-release, build-distribution-packs]
+  resolve-pack-index:
+    needs: [validate-release, prepare-pack-release, build-distribution-packs]
+    if: >-
+      always() &&
+      needs.prepare-pack-release.result == 'success' &&
+      (needs.build-distribution-packs.result == 'success' ||
+       needs.build-distribution-packs.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Merge a new pack index
+        if: needs.prepare-pack-release.outputs.build_packs == 'true'
+        uses: actions/download-artifact@v8
+        with:
+          pattern: pack-index-part-*-${{ needs.prepare-pack-release.outputs.pack_tag }}
+          path: pack-index-parts
+      - name: Resolve and validate the immutable pack index
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUILD_PACKS: ${{ needs.prepare-pack-release.outputs.build_packs }}
+          PACK_RELEASE_ID: ${{ needs.prepare-pack-release.outputs.release_id }}
+        run: |
+          set -euo pipefail
+          if [[ "$BUILD_PACKS" == "true" ]]; then
+            mapfile -t indexes < <(find pack-index-parts -name 'pack-index-*.json' -print | sort)
+            args=()
+            for index in "${indexes[@]}"; do args+=(--input "$index"); done
+            python -m scripts.merge_pack_indexes "${args[@]}" --out pack-index.json
+            if [[ -n "$PACK_RELEASE_ID" ]]; then
+              gh api --method POST \
+                -H 'Content-Type: application/json' \
+                --input pack-index.json \
+                "https://uploads.github.com/repos/${{ github.repository }}/releases/$PACK_RELEASE_ID/assets?name=pack-index.json"
+            fi
+          else
+            asset_id="$(
+              gh api "repos/${{ github.repository }}/releases/$PACK_RELEASE_ID/assets" \
+                --jq '.[] | select(.name == "pack-index.json") | .id'
+            )"
+            test -n "$asset_id"
+            gh api -H 'Accept: application/octet-stream' \
+              "repos/${{ github.repository }}/releases/assets/$asset_id" \
+              > pack-index.json
+          fi
+          if [[ -n "$PACK_RELEASE_ID" ]]; then
+            gh api "repos/${{ github.repository }}/releases/$PACK_RELEASE_ID/assets" \
+              > pack-assets.json
+            python -m scripts.pack_release validate-index \
+              --index pack-index.json \
+              --assets-json pack-assets.json
+            if [[ "$BUILD_PACKS" == "true" ]]; then
+              gh api --method PATCH \
+                "repos/${{ github.repository }}/releases/$PACK_RELEASE_ID" \
+                -F draft=false \
+                -F prerelease=true
+            fi
+          else
+            python -m scripts.pack_release validate-index --index pack-index.json
+          fi
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pack-index-ready-${{ needs.prepare-pack-release.outputs.pack_tag }}
+          path: pack-index.json
+          retention-days: 1
+
+  compose-distribution:
+    needs: [validate-release, create-release, prepare-pack-release, resolve-pack-index]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -195,63 +345,55 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
-          pattern: distribution-index-*-${{ needs.validate-release.outputs.release_tag }}
-          path: distribution-parts
-      - name: Merge platform manifests
+          name: pack-index-ready-${{ needs.prepare-pack-release.outputs.pack_tag }}
+      - name: Compose the application distribution manifest
         run: |
-          mapfile -t manifests < <(find distribution-parts -name 'distribution-*.json' -print | sort)
-          args=()
-          for manifest in "${manifests[@]}"; do args+=(--input "$manifest"); done
-          python scripts/merge_distribution_manifests.py "${args[@]}" --out distribution.json
-      - uses: actions/upload-artifact@v7
+          python -m scripts.compose_distribution \
+            --pack-index pack-index.json \
+            --distribution-version "${{ needs.validate-release.outputs.version }}" \
+            --out distribution.json
+      - name: Preserve an unpublished smoke-build manifest
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v7
         with:
           name: distribution-manifest-${{ needs.validate-release.outputs.release_tag }}
           path: distribution.json
-      - name: Upload distribution manifest to draft release
+          retention-days: 14
+      - name: Upload distribution manifest to the application release
         if: needs.create-release.outputs.release_id != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
         run: |
-          existing_id="$(gh api "repos/${{ github.repository }}/releases/$RELEASE_ID/assets" --jq '.[] | select(.name == "distribution.json") | .id' | head -1)"
-          if [ -n "$existing_id" ]; then
-            gh api --method DELETE "repos/${{ github.repository }}/releases/assets/$existing_id"
-          fi
           gh api --method POST \
             -H 'Content-Type: application/json' \
             --input distribution.json \
             "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=distribution.json"
 
   build:
-    needs: [validate-release, create-release, merge-distribution]
+    needs: [validate-release, create-release]
     permissions:
-      contents: write # tauri-action 上传产物需要
+      contents: write
     strategy:
       fail-fast: false
-      # tauri-action merges latest.json by read/delete/re-upload. Serialize the
-      # matrix so two platforms cannot lose each other's updater entry.
-      max-parallel: 1
       matrix:
         include:
-          - platform: macos-latest   # Apple Silicon
-            args: '--target aarch64-apple-darwin'
+          - platform: macos-latest
+            args: '--target aarch64-apple-darwin --bundles dmg'
             target: 'aarch64-apple-darwin'
-          - platform: macos-latest   # Intel（macos-latest 交叉编译到 x86_64）
-            args: '--target x86_64-apple-darwin'
+          - platform: macos-latest
+            args: '--target x86_64-apple-darwin --bundles dmg'
             target: 'x86_64-apple-darwin'
           - platform: ubuntu-22.04
-            args: ''
+            args: '--bundles appimage,deb'
             target: 'x86_64-unknown-linux-gnu'
           - platform: windows-latest
-            args: ''
+            args: '--bundles nsis'
             target: 'x86_64-pc-windows-msvc'
-
     runs-on: ${{ matrix.platform }}
-
     steps:
       - uses: actions/checkout@v7
-
-      - name: Install Linux dependencies (Tauri v2)
+      - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
@@ -263,54 +405,46 @@ jobs:
             build-essential \
             libxdo-dev \
             libssl-dev
-
       - name: Setup Node
         uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: apps/my-llm-wiki-browser/frontend/package-lock.json
-
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
-
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
           workspaces: apps/my-llm-wiki-browser -> target
-
       - name: Install frontend dependencies
         working-directory: apps/my-llm-wiki-browser/frontend
         run: npm ci
-
       - name: Build shared CLI and stage Tauri sidecar
         run: python scripts/stage_cli.py --target "${{ matrix.target }}" --dist cli-dist
-
-      - name: Build and release
+      - name: Build and upload platform bundles
         id: tauri
         uses: tauri-apps/tauri-action@v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # updater 产物签名（minisign）：createUpdaterArtifacts 开启后必须提供私钥，
-          # tauri-action 会把各平台 .sig 汇总成 latest.json 一并传到 Release。
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
         with:
           projectPath: apps/my-llm-wiki-browser/desktop
-          # 空 releaseId（冒烟构建）时 tauri-action 只构建不上传。
           releaseId: ${{ needs.create-release.outputs.release_id }}
           tagName: ${{ startsWith(github.ref, 'refs/tags/') && needs.validate-release.outputs.release_tag || '' }}
-          updaterJsonPreferNsis: true
+          includeUpdaterJson: false
           args: ${{ matrix.args }}
-
-      - uses: actions/upload-artifact@v7
+      - name: Preserve unpublished smoke-build CLI
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v7
         with:
           name: cli-${{ matrix.target }}-${{ needs.validate-release.outputs.release_tag }}
           path: cli-dist/*.zip
-
-      - name: Upload standalone CLI to draft release
+          retention-days: 14
+      - name: Upload standalone CLI to the application release
         if: needs.create-release.outputs.release_id != ''
         shell: bash
         env:
@@ -318,22 +452,14 @@ jobs:
           RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
         run: |
           set -euo pipefail
-          existing="$(gh api "repos/${{ github.repository }}/releases/$RELEASE_ID/assets")"
           for file in cli-dist/*.zip; do
             name="$(basename "$file")"
-            asset_id="$(printf '%s' "$existing" | jq -r --arg name "$name" '.[] | select(.name == $name) | .id' | head -1)"
-            if [ -n "$asset_id" ]; then
-              gh api --method DELETE "repos/${{ github.repository }}/releases/assets/$asset_id"
-            fi
-            gh api --method POST -H 'Content-Type: application/zip' --input "$file" \
+            gh api --method POST \
+              -H 'Content-Type: application/zip' \
+              --input "$file" \
               "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=$name"
           done
-
-      # Windows 免安装（portable）包：应用在磁盘上就是 exe + frontend/ 资源目录
-      # （tauri.conf.json bundle.resources 把 frontend/dist 装到 exe 旁的 frontend/，
-      # 运行期经 BaseDirectory::Resource 解析），所以把这两样打成 zip 即可免安装运行。
-      # 上传走 uploads.github.com + releaseId，因为草稿 Release 无法用 gh 按 tag 定位。
-      - name: Package Windows portable zip and upload it for a release
+      - name: Package and upload the Windows portable build
         if: matrix.platform == 'windows-latest'
         shell: pwsh
         env:
@@ -343,7 +469,6 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $conf = Get-Content apps/my-llm-wiki-browser/desktop/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
           $release = 'apps/my-llm-wiki-browser/target/release'
-          # tauri v2 会把主二进制按 productName 改名；兜底用 crate 名。
           $exe = @('My LLM Wiki Browser.exe', 'llm-wiki-desktop.exe') |
             ForEach-Object { Join-Path $release $_ } |
             Where-Object { Test-Path $_ } |
@@ -355,8 +480,6 @@ jobs:
           Copy-Item apps/my-llm-wiki-browser/desktop/src-tauri/binaries/my-llm-wiki-x86_64-pc-windows-msvc.exe `
             (Join-Path $portable 'my-llm-wiki-x86_64-pc-windows-msvc.exe')
           Copy-Item -Recurse apps/my-llm-wiki-browser/frontend/dist (Join-Path $portable 'frontend')
-          # portable 标记：应用运行期据此判定便携模式，更新面板只提示新版本、不原地安装
-          # （portable 没有安装器，updater 的 NSIS 更新流程不适用）。
           Set-Content -Path (Join-Path $portable 'portable.flag') -Value 'portable'
           $zip = "My-LLM-Wiki-Browser_$($conf.version)_x64-portable.zip"
           Compress-Archive -Path $portable -DestinationPath $zip -Force
@@ -386,28 +509,98 @@ jobs:
               --data-binary "@$zip" `
               "https://uploads.github.com/repos/${{ github.repository }}/releases/$env:RELEASE_ID/assets?name=$zip"
           }
+      - name: Collect unpublished smoke-build Browser bundles
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          ARTIFACT_PATHS: ${{ steps.tauri.outputs.artifactPaths }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import shutil
+          from pathlib import Path
 
-  publish-release:
-    needs: [create-release, merge-distribution, build]
+          output = Path("browser-smoke-dist")
+          output.mkdir()
+          paths = [Path(value) for value in json.loads(os.environ["ARTIFACT_PATHS"])]
+          paths.extend(Path.cwd().glob("My-LLM-Wiki-Browser_*_x64-portable.zip"))
+          for source in paths:
+              if source.is_file():
+                  shutil.copy2(source, output / source.name)
+              elif source.is_dir():
+                  shutil.copytree(source, output / source.name)
+              else:
+                  raise SystemExit(f"Tauri artifact is missing: {source}")
+          if not any(output.iterdir()):
+              raise SystemExit("Tauri returned no Browser artifacts")
+          PY
+      - name: Preserve unpublished smoke-build Browser bundles
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-${{ matrix.target }}-${{ needs.validate-release.outputs.release_tag }}
+          path: browser-smoke-dist/
+          retention-days: 14
+
+  assemble-updater:
+    needs: [validate-release, create-release, build]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Verify complete updater and distribution manifests
+      - uses: actions/checkout@v7
+      - name: Download signatures and build latest.json once
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
+          RELEASE_TAG: ${{ needs.validate-release.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          mkdir updater-signatures
+          gh api "repos/${{ github.repository }}/releases/$RELEASE_ID/assets" > assets.json
+          while IFS=$'\t' read -r asset_id name; do
+            gh api -H 'Accept: application/octet-stream' \
+              "repos/${{ github.repository }}/releases/assets/$asset_id" \
+              > "updater-signatures/$name"
+          done < <(jq -r '.[] | select(.name | endswith(".sig")) | [.id, .name] | @tsv' assets.json)
+          python -m scripts.build_updater_manifest \
+            --release-tag "$RELEASE_TAG" \
+            --repository "${{ github.repository }}" \
+            --assets-json assets.json \
+            --signatures updater-signatures \
+            --out latest.json
+          gh api --method POST \
+            -H 'Content-Type: application/json' \
+            --input latest.json \
+            "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=latest.json"
+
+  publish-release:
+    needs:
+      - validate-release
+      - create-release
+      - prepare-pack-release
+      - compose-distribution
+      - assemble-updater
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Verify the exact release asset set and manifests
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
+          RELEASE_VERSION: ${{ needs.validate-release.outputs.version }}
+          PACK_VERSION: ${{ needs.prepare-pack-release.outputs.pack_version }}
         run: |
           set -euo pipefail
           assets="$(gh api "repos/${{ github.repository }}/releases/$RELEASE_ID/assets")"
           printf '%s' "$assets" > assets.json
           for name in latest.json distribution.json; do
-            asset_id="$(printf '%s' "$assets" | jq -r --arg name "$name" '.[] | select(.name == $name) | .id' | head -1)"
-            if [ -z "$asset_id" ]; then
-              echo "missing release asset: $name" >&2
-              exit 1
-            fi
+            asset_id="$(jq -r --arg name "$name" '.[] | select(.name == $name) | .id' assets.json)"
+            test -n "$asset_id"
             gh api -H 'Accept: application/octet-stream' \
               "repos/${{ github.repository }}/releases/assets/$asset_id" > "$name"
           done
@@ -415,23 +608,31 @@ jobs:
           import json
           import os
 
+          version = os.environ["RELEASE_VERSION"]
+          pack_version = os.environ["PACK_VERSION"]
           latest = json.load(open("latest.json"))
-          version = os.environ["GITHUB_REF_NAME"].removeprefix("v")
-          if latest.get("version") != version:
-              raise SystemExit(f"updater version differs from tag: {latest.get('version')} != {version}")
-          expected_platforms = {
+          expected_updater_platforms = {
               "darwin-aarch64",
+              "darwin-aarch64-app",
               "darwin-x86_64",
+              "darwin-x86_64-app",
               "linux-x86_64",
+              "linux-x86_64-appimage",
+              "linux-x86_64-deb",
               "windows-x86_64",
+              "windows-x86_64-nsis",
           }
-          missing = expected_platforms - set(latest.get("platforms", {}))
-          if missing:
-              raise SystemExit(f"updater manifest is missing platforms: {sorted(missing)}")
+          if latest.get("version") != version:
+              raise SystemExit("updater version differs from release")
+          if set(latest.get("platforms", {})) != expected_updater_platforms:
+              raise SystemExit("updater platform set differs")
 
           distribution = json.load(open("distribution.json"))
-          if distribution.get("distribution_version") != version:
-              raise SystemExit("distribution version differs from tag")
+          for key in ("distribution_version", "browser_version", "skills_pack_version"):
+              if distribution.get(key) != version:
+                  raise SystemExit(f"{key} differs from release")
+          if distribution.get("pack_version") != pack_version:
+              raise SystemExit("pack version differs from immutable release")
           identities = {
               (row["id"], row["platform"], row["architecture"])
               for row in distribution.get("artifacts", [])
@@ -452,36 +653,48 @@ jobs:
               for platform, architecture in targets
               if (platform, architecture) != ("darwin", "x64")
           }
-          missing = expected - identities
-          extra = identities - expected
-          if missing or extra:
-              raise SystemExit(
-                  f"distribution artifact mismatch; missing={sorted(missing)}, extra={sorted(extra)}"
-              )
-          asset_names = {row["name"] for row in json.load(open("assets.json"))}
-          expected_cli = {
-              f"My-LLM-Wiki-CLI_{version}_{platform}_{architecture}.zip"
-              for platform, architecture in {
-                  ("darwin", "arm64"),
-                  ("darwin", "x64"),
-                  ("linux", "x64"),
-                  ("windows", "x64"),
-              }
+          if identities != expected:
+              raise SystemExit("distribution artifact set differs")
+          for row in distribution["artifacts"]:
+              if row["version"] != pack_version:
+                  raise SystemExit("artifact version differs from pack release")
+              if any(f"/packs-v{pack_version}/" not in url for url in row["urls"]):
+                  raise SystemExit("artifact URL does not use immutable pack release")
+
+          expected_assets = {
+              "distribution.json",
+              "latest.json",
+              f"My-LLM-Wiki-Browser_{version}_x64-portable.zip",
+              f"My-LLM-Wiki-CLI_{version}_darwin_arm64.zip",
+              f"My-LLM-Wiki-CLI_{version}_darwin_x64.zip",
+              f"My-LLM-Wiki-CLI_{version}_linux_x64.zip",
+              f"My-LLM-Wiki-CLI_{version}_windows_x64.zip",
+              f"My.LLM.Wiki.Browser_{version}_aarch64.dmg",
+              f"My.LLM.Wiki.Browser_{version}_x64.dmg",
+              "My.LLM.Wiki.Browser_aarch64.app.tar.gz",
+              "My.LLM.Wiki.Browser_aarch64.app.tar.gz.sig",
+              "My.LLM.Wiki.Browser_x64.app.tar.gz",
+              "My.LLM.Wiki.Browser_x64.app.tar.gz.sig",
+              f"My.LLM.Wiki.Browser_{version}_amd64.AppImage",
+              f"My.LLM.Wiki.Browser_{version}_amd64.AppImage.sig",
+              f"My.LLM.Wiki.Browser_{version}_amd64.deb",
+              f"My.LLM.Wiki.Browser_{version}_amd64.deb.sig",
+              f"My.LLM.Wiki.Browser_{version}_x64-setup.exe",
+              f"My.LLM.Wiki.Browser_{version}_x64-setup.exe.sig",
           }
-          missing_cli = expected_cli - asset_names
-          if missing_cli:
-              raise SystemExit(f"standalone CLI assets are missing: {sorted(missing_cli)}")
-          portable = f"My-LLM-Wiki-Browser_{version}_x64-portable.zip"
-          if portable not in asset_names:
-              raise SystemExit(f"Windows portable asset is missing: {portable}")
+          asset_names = {row["name"] for row in json.load(open("assets.json"))}
+          if asset_names != expected_assets:
+              raise SystemExit(
+                  f"release asset mismatch; missing={sorted(expected_assets - asset_names)}, "
+                  f"extra={sorted(asset_names - expected_assets)}"
+              )
           print({
-              "updater_platforms": 4,
+              "application_assets": len(asset_names),
+              "pack_version": pack_version,
               "distribution_artifacts": len(identities),
-              "standalone_clis": len(expected_cli),
-              "windows_portable": portable,
           })
           PY
-      - name: Publish only after every platform and pack succeeds
+      - name: Publish only after every platform and manifest succeeds
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_ID: ${{ needs.create-release.outputs.release_id }}

@@ -1,0 +1,8 @@
+{
+  "name": "my-llm-wiki-opencli-runtime",
+  "private": true,
+  "version": "2.0.0",
+  "dependencies": {
+    "@jackwener/opencli": "1.8.6"
+  }
+}

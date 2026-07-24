@@ -143,11 +143,14 @@ llm-wiki-suite/
 ├── AGENTS.md                       # Browser / CLI / Provider 操作边界
 ├── apps/my-llm-wiki-browser/       # Browser、Setup Core/GUI、CLI、MCP、relay
 ├── registry/
-│   ├── pack-build-posix.lock.json  # Release pack 的 POSIX 上游锁
-│   └── pack-build-windows.lock.json# Release pack 的 Windows 上游锁
+│   ├── pack-build-*.lock.json      # Release pack 的直接上游与运行时锁
+│   ├── requirements/               # 各平台完整 Python 依赖与 SHA-256
+│   ├── opencli/                    # OpenCLI 完整 npm lock
+│   └── pack-release.json           # 不可变 pack 版本与输入摘要
 ├── scripts/
 │   ├── build_distribution.py       # CI 构建不可变工具链 pack
-│   ├── merge_distribution_manifests.py
+│   ├── merge_pack_indexes.py
+│   ├── compose_distribution.py
 │   └── stage_cli.py                # 构建 CLI 与 Tauri sidecar
 └── skills/<slug>/                  # SKILL.md、scripts、references、assets
 ```
