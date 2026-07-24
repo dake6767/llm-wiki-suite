@@ -1,10 +1,13 @@
-use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::collections::BTreeMap;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+use reqwest::StatusCode;
 use reqwest::blocking::Client;
+use reqwest::header::{CONTENT_RANGE, RANGE};
 use semver::Version;
 use sha2::{Digest as _, Sha256};
 use wait_timeout::ChildExt as _;
@@ -17,6 +20,8 @@ const MANIFEST_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const ARCHIVE_OVERHEAD_BYTES: u64 = 1;
 const PACK_IO_BUFFER_BYTES: usize = 1024 * 1024;
 const PACK_MARKER: &str = ".my-llm-wiki-pack.json";
+const PACK_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(6 * 60 * 60);
+const METADATA_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PackProgress {
@@ -445,6 +450,30 @@ fn resolve_argv(root: &Path, argv: &[String]) -> Result<Vec<String>> {
     Ok(resolved)
 }
 
+pub(crate) fn resolve_python_profile(
+    pack: &OwnedPack,
+    profile: &str,
+) -> Result<(Vec<String>, BTreeMap<String, String>)> {
+    let raw = pack
+        .artifact
+        .python_profiles
+        .get(profile)
+        .ok_or_else(|| SetupError::Probe {
+            pack: pack.artifact.id.clone(),
+            detail: format!("pack does not declare Python profile {profile}"),
+        })?;
+    let argv = resolve_argv(&pack.path, raw)?;
+    let environment = pack
+        .artifact
+        .environment
+        .get(profile)
+        .into_iter()
+        .flatten()
+        .map(|(key, value)| (key.clone(), expand(&pack.path, value)))
+        .collect();
+    Ok((argv, environment))
+}
+
 fn expand(root: &Path, value: &str) -> String {
     value.replace("{pack}", &root.to_string_lossy())
 }
@@ -464,8 +493,28 @@ fn download_archive(
         }
         fs::remove_file(&destination).map_err(|err| SetupError::io(&destination, err))?;
     }
-    let required = artifact
-        .size
+    let temporary = downloads.join(format!(".{}.part", artifact.sha256));
+    let partial_size = match temporary.metadata() {
+        Ok(metadata) if metadata.len() == artifact.size => {
+            progress(PackProgress::VerifyingArchive);
+            if verify_sha256(&temporary, &artifact.sha256).is_ok() {
+                fs::rename(&temporary, &destination)
+                    .map_err(|err| SetupError::io(&temporary, err))?;
+                return Ok(destination);
+            }
+            fs::remove_file(&temporary).map_err(|err| SetupError::io(&temporary, err))?;
+            0
+        }
+        Ok(metadata) if metadata.len() < artifact.size => metadata.len(),
+        Ok(_) => {
+            fs::remove_file(&temporary).map_err(|err| SetupError::io(&temporary, err))?;
+            0
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+        Err(error) => return Err(SetupError::io(&temporary, error)),
+    };
+    let remaining_download = artifact.size.saturating_sub(partial_size);
+    let required = remaining_download
         .checked_add(artifact.installed_size)
         .ok_or_else(|| SetupError::InvalidManifest("pack size overflows u64".into()))?;
     let available =
@@ -476,7 +525,6 @@ fn download_archive(
             detail: format!("not enough free space: need {required} bytes, have {available} bytes"),
         });
     }
-    let temporary = downloads.join(format!(".{}.part", artifact.sha256));
     download_from_sources(
         &artifact.id,
         &artifact.urls,
@@ -497,21 +545,41 @@ fn download_from_sources(
     expected_sha256: &str,
     progress: &impl Fn(PackProgress),
 ) -> Result<()> {
-    let client = download_client(label)?;
+    let client = download_client(label, PACK_DOWNLOAD_TIMEOUT)?;
     let mut errors = Vec::new();
     for source in sources {
-        progress(PackProgress::Downloading(0));
-        match stream_source(
+        let partial = destination.metadata().map(|item| item.len()).unwrap_or(0);
+        progress(PackProgress::Downloading(percent(partial, exact_bytes)));
+        let mut result = stream_source(
             &client,
             source,
             destination,
             exact_bytes,
             expected_sha256,
             progress,
-        ) {
+        );
+        // A complete-size .part with a bad digest cannot be resumed. Discard
+        // only that corrupt file and retry this source once from byte zero.
+        // Short partials survive network errors and process restarts.
+        if result.is_err()
+            && destination
+                .metadata()
+                .is_ok_and(|metadata| metadata.len() == exact_bytes)
+        {
+            let _ = fs::remove_file(destination);
+            progress(PackProgress::Downloading(0));
+            result = stream_source(
+                &client,
+                source,
+                destination,
+                exact_bytes,
+                expected_sha256,
+                progress,
+            );
+        }
+        match result {
             Ok(()) => return Ok(()),
             Err(error) => {
-                let _ = fs::remove_file(destination);
                 errors.push(format!("{source}: {error}"));
             }
         }
@@ -530,29 +598,77 @@ fn stream_source(
     expected_sha256: &str,
     progress: &impl Fn(PackProgress),
 ) -> std::result::Result<(), String> {
+    let mut offset = destination.metadata().map(|item| item.len()).unwrap_or(0);
+    if offset > exact_bytes {
+        fs::remove_file(destination).map_err(|error| error.to_string())?;
+        offset = 0;
+    }
     let reader: Box<dyn Read> = if let Some(path) = source.strip_prefix("file://") {
-        Box::new(File::open(path).map_err(|error| error.to_string())?)
+        local_source_reader(Path::new(path), offset)?
     } else if Path::new(source).is_file() {
-        Box::new(File::open(source).map_err(|error| error.to_string())?)
+        local_source_reader(Path::new(source), offset)?
     } else {
-        let response = client
-            .get(source)
-            .send()
-            .and_then(|response| response.error_for_status())
+        let mut request = client.get(source);
+        if offset > 0 {
+            request = request.header(RANGE, format!("bytes={offset}-"));
+        }
+        let response = request.send().map_err(|error| error.to_string())?;
+        if offset > 0 && response.status() == StatusCode::PARTIAL_CONTENT {
+            let expected_length = exact_bytes - offset;
+            if response
+                .content_length()
+                .is_some_and(|size| size != expected_length)
+            {
+                return Err(format!(
+                    "resumed response size differs from {expected_length} bytes"
+                ));
+            }
+            let range = response
+                .headers()
+                .get(CONTENT_RANGE)
+                .and_then(|value| value.to_str().ok())
+                .ok_or_else(|| "resumed response omitted Content-Range".to_owned())?;
+            if !valid_content_range(range, offset, exact_bytes) {
+                return Err(format!("unexpected Content-Range {range:?}"));
+            }
+        } else if offset > 0 && response.status().is_success() {
+            // This source does not support byte ranges. Its full response is
+            // still usable, but it must replace rather than append to .part.
+            offset = 0;
+        }
+        let response = response
+            .error_for_status()
             .map_err(|error| error.to_string())?;
         if response
             .content_length()
-            .is_some_and(|size| size != exact_bytes)
+            .is_some_and(|size| size != exact_bytes - offset)
         {
-            return Err(format!("response size differs from {exact_bytes} bytes"));
+            return Err(format!(
+                "response size differs from {} bytes",
+                exact_bytes - offset
+            ));
         }
         Box::new(response)
     };
     let mut reader = reader;
-    let mut output = File::create(destination).map_err(|error| error.to_string())?;
     let mut hash = Sha256::new();
-    let mut total = 0u64;
-    let mut reported_percent = 0;
+    if offset > 0 {
+        let partial = File::open(destination).map_err(|error| error.to_string())?;
+        let mut prefix = partial.take(offset);
+        std::io::copy(&mut prefix, &mut HashWriter(&mut hash))
+            .map_err(|error| error.to_string())?;
+    }
+    let mut output = if offset == 0 {
+        File::create(destination).map_err(|error| error.to_string())?
+    } else {
+        OpenOptions::new()
+            .append(true)
+            .open(destination)
+            .map_err(|error| error.to_string())?
+    };
+    let mut total = offset;
+    let mut reported_percent = percent(offset, exact_bytes);
+    progress(PackProgress::Downloading(reported_percent));
     // Setup runs on a Tokio blocking worker whose stack is only a few MiB on
     // desktop platforms. Keep the large transfer buffer on the heap.
     let mut buffer = vec![0u8; PACK_IO_BUFFER_BYTES];
@@ -593,8 +709,35 @@ fn stream_source(
     Ok(())
 }
 
+fn local_source_reader(path: &Path, offset: u64) -> std::result::Result<Box<dyn Read>, String> {
+    let mut file = File::open(path).map_err(|error| error.to_string())?;
+    if file.metadata().map_err(|error| error.to_string())?.len() < offset {
+        return Err(format!(
+            "source is shorter than the existing {offset}-byte partial download"
+        ));
+    }
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|error| error.to_string())?;
+    Ok(Box::new(file))
+}
+
+fn valid_content_range(value: &str, offset: u64, total: u64) -> bool {
+    let Some((range, declared_total)) = value
+        .strip_prefix("bytes ")
+        .and_then(|value| value.split_once('/'))
+    else {
+        return false;
+    };
+    let Some((start, end)) = range.split_once('-') else {
+        return false;
+    };
+    start.parse::<u64>().ok() == Some(offset)
+        && end.parse::<u64>().ok() == total.checked_sub(1)
+        && declared_total.parse::<u64>().ok() == Some(total)
+}
+
 fn fetch_from_sources(label: &str, sources: &[String], max_bytes: u64) -> Result<Vec<u8>> {
-    let client = download_client(label)?;
+    let client = download_client(label, METADATA_DOWNLOAD_TIMEOUT)?;
     let mut errors = Vec::new();
     for source in sources {
         match read_source(&client, source, max_bytes) {
@@ -608,10 +751,10 @@ fn fetch_from_sources(label: &str, sources: &[String], max_bytes: u64) -> Result
     })
 }
 
-fn download_client(label: &str) -> Result<Client> {
+fn download_client(label: &str, timeout: Duration) -> Result<Client> {
     Client::builder()
         .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(300))
+        .timeout(timeout)
         .user_agent(format!("my-llm-wiki-setup/{0}", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|err| SetupError::Download {
@@ -786,6 +929,9 @@ pub(crate) fn target() -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+    use std::net::TcpListener;
+    use std::thread;
 
     #[test]
     fn rejects_manifests_without_an_explicit_pack_version() {
@@ -902,5 +1048,118 @@ mod tests {
             resolve_argv(&root, &argv),
             Err(SetupError::Probe { .. })
         ));
+    }
+
+    #[test]
+    fn resumes_a_partial_pack_from_a_local_source() {
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("source.zip");
+        let destination = temporary.path().join("download.part");
+        let payload = b"verified pack payload used for resume";
+        fs::write(&source, payload).unwrap();
+        fs::write(&destination, &payload[..13]).unwrap();
+        let digest = format!("{:x}", Sha256::digest(payload));
+        let reported = RefCell::new(Vec::new());
+
+        download_from_sources(
+            "test-pack",
+            &[source.to_string_lossy().into_owned()],
+            &destination,
+            payload.len() as u64,
+            &digest,
+            &|event| {
+                if let PackProgress::Downloading(percent) = event {
+                    reported.borrow_mut().push(percent);
+                }
+            },
+        )
+        .unwrap();
+
+        assert_eq!(fs::read(destination).unwrap(), payload);
+        assert!(
+            reported
+                .borrow()
+                .first()
+                .is_some_and(|percent| *percent > 0)
+        );
+        assert_eq!(reported.borrow().last(), Some(&100));
+    }
+
+    #[test]
+    fn discards_a_complete_corrupt_partial_and_retries_once() {
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("source.zip");
+        let destination = temporary.path().join("download.part");
+        let payload = b"0123456789abcdef";
+        fs::write(&source, payload).unwrap();
+        fs::write(&destination, b"xxxx").unwrap();
+        let digest = format!("{:x}", Sha256::digest(payload));
+
+        download_from_sources(
+            "test-pack",
+            &[source.to_string_lossy().into_owned()],
+            &destination,
+            payload.len() as u64,
+            &digest,
+            &|_| {},
+        )
+        .unwrap();
+
+        assert_eq!(fs::read(destination).unwrap(), payload);
+    }
+
+    #[test]
+    fn validates_exact_http_content_ranges() {
+        assert!(valid_content_range("bytes 1024-4095/4096", 1024, 4096));
+        assert!(!valid_content_range("bytes 0-4095/4096", 1024, 4096));
+        assert!(!valid_content_range("bytes 1024-2047/4096", 1024, 4096));
+        assert!(!valid_content_range("items 1024-4095/4096", 1024, 4096));
+    }
+
+    #[test]
+    fn resumes_an_http_pack_with_a_range_request() {
+        let temporary = tempfile::tempdir().unwrap();
+        let destination = temporary.path().join("download.part");
+        let payload = b"http range resume payload".to_vec();
+        let offset = 7usize;
+        fs::write(&destination, &payload[..offset]).unwrap();
+        let digest = format!("{:x}", Sha256::digest(&payload));
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_payload = payload.clone();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 4096];
+            let size = stream.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..size]);
+            assert!(
+                request
+                    .lines()
+                    .any(|line| line.eq_ignore_ascii_case(&format!("range: bytes={offset}-")))
+            );
+            let body = &server_payload[offset..];
+            let response = format!(
+                "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {offset}-{}/{}\r\nConnection: close\r\n\r\n",
+                body.len(),
+                server_payload.len() - 1,
+                server_payload.len(),
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            stream.write_all(body).unwrap();
+        });
+
+        download_from_sources(
+            "test-pack",
+            &[format!("http://{address}/pack.zip")],
+            &destination,
+            payload.len() as u64,
+            &digest,
+            &|_| {},
+        )
+        .unwrap();
+        server.join().unwrap();
+
+        assert_eq!(fs::read(destination).unwrap(), payload);
     }
 }

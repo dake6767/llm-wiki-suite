@@ -7,6 +7,7 @@ mod wiki;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 pub use error::{Result, SetupError};
 use fs2::FileExt as _;
@@ -24,6 +25,10 @@ const DEFAULT_WIKI_COLLECTION_RELATIVE: &str = "wikis";
 /// The default volume created inside the collection root on first setup. Later
 /// siblings (e.g. `ai-wiki`) are created next to it via the agent skills.
 const DEFAULT_WIKI_NAME: &str = "my-llm-wiki";
+const ASR_ZH_MODEL_CACHE_ID: &str = "asr-zh";
+const ASR_ZH_MODEL_MARKER: &str = ".my-llm-wiki-models.json";
+const ASR_ZH_VAD_ID: &str = "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch";
+const ASR_ZH_SENSEVOICE_ID: &str = "iic/SenseVoiceSmall";
 
 pub struct SetupCore {
     home: PathBuf,
@@ -143,6 +148,7 @@ impl SetupCore {
                 wiki: wiki::status(&self.wiki_path, &self.registry_path),
                 official_toolchain: self.toolchain_status(None),
                 packs: BTreeMap::new(),
+                model_caches: BTreeMap::new(),
                 backups: Vec::new(),
                 actions: Vec::new(),
             });
@@ -173,6 +179,10 @@ impl SetupCore {
             wiki,
             official_toolchain,
             packs,
+            model_caches: BTreeMap::from([(
+                ASR_ZH_MODEL_CACHE_ID.into(),
+                self.asr_zh_model_cache_status(),
+            )]),
             backups: Vec::new(),
             actions,
         })
@@ -537,6 +547,93 @@ impl SetupCore {
         self.save_state(&state)?;
         self.prune_active_packs(&state);
         report(&progress, "pack", &format!("{id} 能力包已就绪"), 1, 1);
+        self.status()
+    }
+
+    pub fn prepare_asr_zh(&self) -> Result<SetupResult> {
+        self.prepare_asr_zh_with_progress(|_| {})
+    }
+
+    /// Install the isolated ASR runtime, download both Chinese transcription
+    /// models, then load them from local paths before publishing readiness.
+    pub fn prepare_asr_zh_with_progress(
+        &self,
+        progress: impl Fn(SetupProgress),
+    ) -> Result<SetupResult> {
+        self.ensure_pack_with_progress("asr-zh", |event| {
+            let runtime_ready = event.total > 0 && event.current >= event.total;
+            progress(SetupProgress {
+                phase: "asr-runtime".into(),
+                message: event.message,
+                current: u32::from(runtime_ready),
+                total: 4,
+                detail_percent: event.detail_percent,
+            });
+        })?;
+
+        let _lock = self.lock()?;
+        if self.asr_zh_model_cache_status().ready {
+            report(
+                &progress,
+                "asr-models",
+                "中文视频转写运行环境与模型均已就绪",
+                4,
+                4,
+            );
+            return self.status();
+        }
+        let state = self
+            .load_state()?
+            .ok_or_else(|| SetupError::InvalidState("setup has not been completed".into()))?;
+        let pack = state
+            .packs
+            .get("asr-zh")
+            .ok_or_else(|| SetupError::InvalidState("asr-zh pack is not activated".into()))?;
+        let (python, environment) = pack::resolve_python_profile(pack, "asr-zh")?;
+        let script = self.asr_zh_prefetch_script(&state)?;
+        let model_root = self.asr_zh_model_root();
+
+        report(
+            &progress,
+            "asr-models",
+            "正在下载语音分段模型 fsmn-vad",
+            1,
+            4,
+        );
+        run_model_stage(&python, &environment, &script, &model_root, "fsmn-vad")?;
+        report(&progress, "asr-models", "fsmn-vad 已下载", 2, 4);
+
+        report(
+            &progress,
+            "asr-models",
+            "正在下载中文转写模型 SenseVoiceSmall",
+            2,
+            4,
+        );
+        run_model_stage(&python, &environment, &script, &model_root, "sensevoice")?;
+        report(&progress, "asr-models", "SenseVoiceSmall 已下载", 3, 4);
+
+        report(
+            &progress,
+            "asr-models",
+            "正在离线加载并验证两个转写模型",
+            3,
+            4,
+        );
+        run_model_stage(&python, &environment, &script, &model_root, "verify")?;
+        if !self.asr_zh_model_cache_status().ready {
+            return Err(SetupError::Probe {
+                pack: "asr-zh models".into(),
+                detail: "offline verification finished without a readiness marker".into(),
+            });
+        }
+        report(
+            &progress,
+            "asr-models",
+            "中文视频转写运行环境与模型均已就绪",
+            4,
+            4,
+        );
         self.status()
     }
 
@@ -950,6 +1047,112 @@ impl SetupCore {
             .map_err(|err| SetupError::json(&self.state_path, err))?;
         wiki::atomic_write(&self.state_path, &data)
     }
+
+    fn asr_zh_model_root(&self) -> PathBuf {
+        self.suite_home.join("models").join(ASR_ZH_MODEL_CACHE_ID)
+    }
+
+    fn asr_zh_model_cache_status(&self) -> ModelCacheStatus {
+        let root = self.asr_zh_model_root();
+        let marker = root.join(ASR_ZH_MODEL_MARKER);
+        let ready = fs::read(&marker)
+            .ok()
+            .and_then(|data| serde_json::from_slice::<AsrZhModelMarker>(&data).ok())
+            .is_some_and(|value| {
+                value.schema == 1
+                    && value.models.get("fsmn-vad").is_some_and(|model| {
+                        model.id == ASR_ZH_VAD_ID
+                            && model.directory == "fsmn-vad"
+                            && root.join(&model.directory).is_dir()
+                    })
+                    && value.models.get("sensevoice").is_some_and(|model| {
+                        model.id == ASR_ZH_SENSEVOICE_ID
+                            && model.directory == "SenseVoiceSmall"
+                            && root.join(&model.directory).is_dir()
+                    })
+            });
+        ModelCacheStatus {
+            id: ASR_ZH_MODEL_CACHE_ID.into(),
+            path: root,
+            ready,
+        }
+    }
+
+    fn asr_zh_prefetch_script(&self, state: &SetupState) -> Result<PathBuf> {
+        let script = state
+            .hosts
+            .values()
+            .find_map(|host| host.skills.get("my-llm-wiki-video"))
+            .map(|skill| skill.path.join("scripts").join("prefetch_asr_zh.py"))
+            .ok_or_else(|| {
+                SetupError::InvalidState("installed video Skill is unavailable".into())
+            })?;
+        if !script.is_file() {
+            return Err(SetupError::InvalidState(format!(
+                "ASR model prefetch script is missing: {}",
+                script.display()
+            )));
+        }
+        Ok(script)
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct AsrZhModelMarker {
+    schema: u32,
+    models: BTreeMap<String, AsrZhModelMarkerEntry>,
+}
+
+#[derive(serde::Deserialize)]
+struct AsrZhModelMarkerEntry {
+    id: String,
+    directory: String,
+}
+
+fn run_model_stage(
+    python: &[String],
+    environment: &BTreeMap<String, String>,
+    script: &Path,
+    model_root: &Path,
+    stage: &str,
+) -> Result<()> {
+    let executable = python
+        .first()
+        .ok_or_else(|| SetupError::InvalidState("asr-zh Python argv is empty".into()))?;
+    let output = Command::new(executable)
+        .args(&python[1..])
+        .arg(script)
+        .arg("--stage")
+        .arg(stage)
+        .arg("--model-root")
+        .arg(model_root)
+        .envs(environment)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|error| SetupError::Probe {
+            pack: "asr-zh models".into(),
+            detail: format!("cannot start model {stage} stage: {error}"),
+        })?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let detail = stderr.trim();
+    Err(SetupError::Probe {
+        pack: "asr-zh models".into(),
+        detail: if detail.is_empty() {
+            format!("model {stage} stage exited with {}", output.status)
+        } else {
+            format!("model {stage} stage failed: {}", tail_chars(detail, 4000))
+        },
+    })
+}
+
+fn tail_chars(value: &str, limit: usize) -> String {
+    let mut characters: Vec<_> = value.chars().rev().take(limit).collect();
+    characters.reverse();
+    characters.into_iter().collect()
 }
 
 struct OperationLock(File);
@@ -1658,5 +1861,99 @@ mod tests {
         );
         assert!(!temp.path().join(".my-llm-wiki/packs/asr-zh").exists());
         assert!(temp.path().join("wikis/my-llm-wiki/schema.md").is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepares_and_persists_chinese_asr_model_readiness() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("asr-zh.zip");
+        let fake_python = br#"#!/bin/sh
+shift
+stage=""
+model_root=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --stage) stage="$2"; shift 2 ;;
+    --model-root) model_root="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+mkdir -p "$model_root"
+case "$stage" in
+  fsmn-vad) mkdir -p "$model_root/fsmn-vad" ;;
+  sensevoice) mkdir -p "$model_root/SenseVoiceSmall" ;;
+  verify)
+    printf '%s\n' '{"schema":1,"models":{"fsmn-vad":{"id":"iic/speech_fsmn_vad_zh-cn-16k-common-pytorch","directory":"fsmn-vad"},"sensevoice":{"id":"iic/SenseVoiceSmall","directory":"SenseVoiceSmall"}}}' > "$model_root/.my-llm-wiki-models.json"
+    ;;
+esac
+"#;
+        let file = File::create(&archive).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        zip.start_file(
+            "bin/python",
+            zip::write::SimpleFileOptions::default().unix_permissions(0o755),
+        )
+        .unwrap();
+        zip.write_all(fake_python).unwrap();
+        zip.finish().unwrap();
+        let archive_data = fs::read(&archive).unwrap();
+        let (platform, architecture) = pack::target();
+        let manifest = DistributionManifest {
+            schema: 1,
+            channel: "stable".into(),
+            distribution_version: DISTRIBUTION_VERSION.into(),
+            browser_version: DISTRIBUTION_VERSION.into(),
+            skills_pack_version: DISTRIBUTION_VERSION.into(),
+            pack_version: DISTRIBUTION_VERSION.into(),
+            artifacts: vec![PackArtifact {
+                id: "asr-zh".into(),
+                version: DISTRIBUTION_VERSION.into(),
+                platform,
+                architecture,
+                sha256: format!("{:x}", Sha256::digest(&archive_data)),
+                size: archive_data.len() as u64,
+                installed_size: fake_python.len() as u64,
+                urls: vec![archive.to_string_lossy().into_owned()],
+                commands: BTreeMap::new(),
+                python_profiles: BTreeMap::from([(
+                    "asr-zh".into(),
+                    vec!["{pack}/bin/python".into()],
+                )]),
+                environment: BTreeMap::new(),
+                capabilities: vec!["transcribe.audio.timestamped".into()],
+                probes: Vec::new(),
+                manual_actions: Vec::new(),
+            }],
+        };
+        let manifest_path = write_manifest(temp.path(), &manifest);
+        let core = SetupCore::new(temp.path().to_path_buf()).with_manifest_sources(
+            vec![manifest_path.to_string_lossy().into_owned()],
+            vec![manifest_path.to_string_lossy().into_owned()],
+        );
+        core.setup(request("codex")).unwrap();
+        assert!(!core.status().unwrap().model_caches["asr-zh"].ready);
+        let events = RefCell::new(Vec::new());
+
+        let result = core
+            .prepare_asr_zh_with_progress(|event| events.borrow_mut().push(event))
+            .unwrap();
+
+        assert!(result.packs["asr-zh"].healthy);
+        assert!(result.model_caches["asr-zh"].ready);
+        assert!(events.borrow().iter().any(|event| {
+            event.message == "正在下载语音分段模型 fsmn-vad"
+                && event.current == 1
+                && event.total == 4
+        }));
+        assert!(events.borrow().iter().any(|event| {
+            event.message == "中文视频转写运行环境与模型均已就绪"
+                && event.current == 4
+                && event.total == 4
+        }));
+
+        let model_root = temp.path().join(".my-llm-wiki/models/asr-zh");
+        fs::remove_dir_all(model_root.join("SenseVoiceSmall")).unwrap();
+        assert!(!core.status().unwrap().model_caches["asr-zh"].ready);
     }
 }

@@ -37,7 +37,7 @@ def fake_dependencies(
             self.model = model
 
         def generate(self, **_kwargs: object) -> list[dict[str, object]]:
-            if self.model == "fsmn-vad":
+            if "fsmn_vad" in self.model or self.model.endswith("fsmn-vad"):
                 return [{"value": [[0, 1_000], [1_000, 2_000]]}]
             AutoModel.recognizer_calls += 1
             return [{"text": f"第{AutoModel.recognizer_calls}段"}]

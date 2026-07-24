@@ -356,6 +356,8 @@ document.to-markdown
 
 用户首次安装不再选择 Documents、Web、Video、中文 ASR、非中文 ASR。Browser 可以在
 安装说明中明确告知：官方工具链默认启用，但用户之后可以为任何能力选择其他 Provider。
+Setup 完成后 Wiki 立即可用；同一完成页提供独立的中文 ASR“安装并预热”操作，由 Browser
+后台准备 runtime、fsmn-vad 与 SenseVoiceSmall，不阻塞网页采集体验。
 
 OpenCLI Browser Bridge 仍受 Chrome 安全边界限制。Setup Core 可以准备并展示扩展目录、
 检测连接状态和提供验证按钮，但不能替用户自动加载 unpacked extension 或完成第三方登录。
@@ -552,7 +554,8 @@ v2 采用硬切换，不读取、导入或双写旧安装回执，也不保留�
 - `update --check` 保持只读，`update` 将所有 owned artifacts 更新到同一个已验证发布组合；
 - Browser 需要重启更新时返回 `restart-required`，重启后重跑不会重复或损坏已完成步骤；
 - 项目 CDN 不可用时自动回退 GitHub Releases；
-- 第一次处理有字幕视频不安装 ASR；第一次需要 ASR 时才下载对应 runtime/model；
+- 第一次处理有字幕视频不要求安装 ASR；用户可在 Setup 完成页显式后台预热，也可延迟到
+  第一次真正需要 ASR 时再下载对应 runtime/model；
 - 官方 Provider 健康时，Skill 默认选择它并完成已发布 SOP；
 - 安装或修复不触碰外来 skill 目录、全局包管理器或用户 Wiki 数据；
 - Setup mutation 不能通过本地 HTTP 路由或远程 relay 调用。
@@ -575,11 +578,13 @@ v2 采用硬切换，不读取、导入或双写旧安装回执，也不保留�
 
 ## 12. 已确定的实现选择
 
-1. `toolchain-base` 作为一次选择安装，ASR runtime/model 延迟到首次真实需要；
+1. `toolchain-base` 作为一次选择安装；ASR runtime/model 可在 Setup 完成页显式后台预热，
+   否则延迟到首次真实需要；
 2. Browser 与独立 CLI 都嵌入完整 Skills Pack，更新跟随联合 distribution；
 3. CLI 名为 `my-llm-wiki`，Browser 安装到 `~/.my-llm-wiki/bin/`，Release 同时提供独立 zip；
 4. Provider 配置为 `~/.my-llm-wiki/providers.json` schema 1，Setup GUI 管理长期覆盖；
-5. 官方 ASR CPU 基线为中文 SenseVoice/FunASR、其他语言 faster-whisper；模型首次使用下载；
+5. 官方 ASR CPU 基线为中文 SenseVoice/FunASR、其他语言 faster-whisper；中文模型可在
+   Setup 完成页预热并离线验收，未预热时首次使用下载；
 6. 不迁移旧回执，不支持双状态；
 7. MCP stdio bridge 已由共享 Rust CLI 提供；
 8. Linux 继续发布 AppImage/deb，开放 Skills 路径不依赖 Browser 安装格式；

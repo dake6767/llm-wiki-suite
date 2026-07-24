@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
+import { copyToClipboard } from "../lib/reviewPrompt";
 
 type DestinationState = "absent" | "owned" | "foreign";
 type SetupHealth = "ready" | "not-configured" | "needs-repair" | "action-required";
@@ -24,6 +25,12 @@ interface PackStatus {
   version: string | null;
   installed: boolean;
   healthy: boolean;
+}
+
+interface ModelCacheStatus {
+  id: string;
+  path: string;
+  ready: boolean;
 }
 
 interface WikiStatus {
@@ -62,6 +69,7 @@ interface SetupResult {
   wiki: WikiStatus;
   official_toolchain: PackStatus;
   packs: Record<string, PackStatus>;
+  model_caches: Record<string, ModelCacheStatus>;
   backups: string[];
   actions: ManualAction[];
 }
@@ -91,6 +99,14 @@ interface Progress {
   detail_percent?: number;
 }
 
+interface PackInstallJob {
+  id: string;
+  state: "idle" | "running" | "installed" | "error";
+  message: string;
+  detail_percent?: number;
+  error?: string;
+}
+
 type View = "loading" | "welcome" | "hosts" | "review" | "progress" | "complete" | "manage";
 
 const STEP_LABELS = ["欢迎", "选择宿主", "确认", "安装", "完成"];
@@ -102,7 +118,8 @@ export default function SetupApp() {
   const previewReview = preview === "review";
   const previewToolchain = preview === "progress-toolchain";
   const previewProgress = preview === "progress" || previewToolchain;
-  const previewMode = previewReview || previewProgress;
+  const previewComplete = preview === "complete";
+  const previewMode = previewReview || previewProgress || previewComplete;
   const previewHost = previewProgress
     ? { id: "workbuddy", label: "WorkBuddy", skills_dir: "~/.workbuddy/skills" }
     : { id: "codex", label: "Codex", skills_dir: "~/.codex/skills" };
@@ -120,9 +137,42 @@ export default function SetupApp() {
     wiki: { path: "~/wikis/my-llm-wiki", collection_root: "~/wikis", registry_path: "", ready: false },
     official_toolchain: { id: "toolchain-base", version: null, installed: false, healthy: false },
   } : null;
-  const [view, setView] = useState<View>(previewProgress ? "progress" : previewReview ? "review" : "loading");
+  const previewStatus: SetupResult | null = previewComplete ? {
+    state: "ready",
+    distribution_version: "preview",
+    cli_path: "~/.my-llm-wiki/bin/my-llm-wiki",
+    hosts: {
+      codex: {
+        skills_dir: "~/.codex/skills",
+        installed: ["my-llm-wiki", "my-llm-wiki-search", "my-llm-wiki-video", "my-llm-wiki-x"],
+        healthy: true,
+      },
+    },
+    wiki: {
+      path: "~/wikis/my-llm-wiki",
+      collection_root: "~/wikis",
+      registry_path: "~/.my-llm-wiki/wikis.json",
+      ready: true,
+    },
+    official_toolchain: { id: "toolchain-base", version: "preview", installed: true, healthy: true },
+    packs: {
+      "toolchain-base": { id: "toolchain-base", version: "preview", installed: true, healthy: true },
+    },
+    model_caches: {
+      "asr-zh": { id: "asr-zh", path: "~/.my-llm-wiki/models/asr-zh", ready: false },
+    },
+    backups: [],
+    actions: [{
+      id: "opencli-browser-bridge",
+      title: "加载 OpenCLI Browser Bridge",
+      detail: "在 Chrome 扩展管理页开启开发者模式，并加载 ~/.my-llm-wiki/packs/toolchain-base/web/extension。",
+    }],
+  } : null;
+  const [view, setView] = useState<View>(
+    previewComplete ? "complete" : previewProgress ? "progress" : previewReview ? "review" : "loading",
+  );
   const [inspection, setInspection] = useState<SetupInspection | null>(previewInspection);
-  const [status, setStatus] = useState<SetupResult | null>(null);
+  const [status, setStatus] = useState<SetupResult | null>(previewStatus);
   const [selectedHosts, setSelectedHosts] = useState<Set<string>>(new Set(previewMode ? [previewHost.id] : []));
   const [approvedConflicts, setApprovedConflicts] = useState<Set<string>>(new Set());
   const [installToolchain, setInstallToolchain] = useState(true);
@@ -150,6 +200,7 @@ export default function SetupApp() {
   const [update, setUpdate] = useState<UpdateResult | null>(null);
   const [browserUpdate, setBrowserUpdate] = useState<BrowserUpdateStatus | null>(null);
   const [pickingWikiPath, setPickingWikiPath] = useState(false);
+  const [asrInstall, setAsrInstall] = useState<PackInstallJob | null>(null);
 
   useEffect(() => {
     if (previewMode) return;
@@ -166,12 +217,14 @@ export default function SetupApp() {
       invoke<SetupInspection>("setup_inspect"),
       invoke<SetupResult>("setup_status"),
       invoke<BrowserUpdateStatus>("setup_browser_update_status"),
+      invoke<PackInstallJob>("setup_pack_install_status", { id: "asr-zh" }),
     ])
-      .then(([nextInspection, nextStatus, nextBrowserUpdate]) => {
+      .then(([nextInspection, nextStatus, nextBrowserUpdate, nextAsrInstall]) => {
         if (!mounted) return;
         setInspection(nextInspection);
         setStatus(nextStatus);
         setBrowserUpdate(nextBrowserUpdate);
+        setAsrInstall(nextAsrInstall);
         setSelectedHosts(new Set());
         setWikiPath(nextInspection.wiki.collection_root);
         setView(nextStatus.state === "not-configured" ? "welcome" : "manage");
@@ -198,6 +251,22 @@ export default function SetupApp() {
     }, browserUpdate?.state === "downloading" ? 1000 : 1500);
     return () => window.clearTimeout(timer);
   }, [pollingBrowserUpdate, browserUpdate]);
+
+  const pollingAsrInstall = asrInstall?.state === "running";
+  useEffect(() => {
+    if (previewMode || !pollingAsrInstall) return;
+    const timer = window.setTimeout(() => {
+      invoke<PackInstallJob>("setup_pack_install_status", { id: "asr-zh" })
+        .then(setAsrInstall)
+        .catch(() => undefined);
+    }, 1000);
+    return () => window.clearTimeout(timer);
+  }, [pollingAsrInstall, asrInstall]);
+
+  useEffect(() => {
+    if (previewMode || asrInstall?.state !== "installed" || status?.packs["asr-zh"]?.healthy) return;
+    invoke<SetupResult>("setup_status").then(setStatus).catch(() => undefined);
+  }, [asrInstall?.state, status]);
 
   const selected = useMemo(
     () => inspection?.hosts.filter((host) => selectedHosts.has(host.id)) ?? [],
@@ -301,9 +370,38 @@ export default function SetupApp() {
   }
 
   async function openWiki() {
+    if (previewMode) return;
     setError(null);
     try {
       await invoke("setup_open_wiki");
+    } catch (reason) {
+      setError(messageOf(reason));
+    }
+  }
+
+  async function openWikiDirectory() {
+    if (previewMode) return;
+    setError(null);
+    try {
+      await invoke("setup_open_wiki_directory");
+    } catch (reason) {
+      setError(messageOf(reason));
+    }
+  }
+
+  async function installAsr() {
+    if (previewMode) {
+      setAsrInstall({
+        id: "asr-zh",
+        state: "running",
+        message: "正在下载并预热 fsmn-vad 与 SenseVoiceSmall",
+        detail_percent: 42,
+      });
+      return;
+    }
+    setError(null);
+    try {
+      setAsrInstall(await invoke<PackInstallJob>("setup_start_pack_install", { id: "asr-zh" }));
     } catch (reason) {
       setError(messageOf(reason));
     }
@@ -322,6 +420,8 @@ export default function SetupApp() {
         onCheck={() => void checkUpdate(false)}
         onUpdate={() => void checkUpdate(true)}
         onRestart={() => void restartForUpdate()}
+        asrInstall={asrInstall}
+        onInstallAsr={() => void installAsr()}
       />
     );
   }
@@ -330,7 +430,7 @@ export default function SetupApp() {
   return (
     <main className="setup-shell">
       <SetupRail active={step} version={inspection?.distribution_version} />
-      <section className="setup-stage">
+      <section className={`setup-stage${view === "complete" ? " is-complete" : ""}`}>
         {error ? <ErrorBanner message={error} /> : null}
         {view === "welcome" ? (
           <Welcome onContinue={() => setView("hosts")} />
@@ -370,7 +470,14 @@ export default function SetupApp() {
             ]}
           />
         ) : (
-          <Complete status={status} onManage={() => setView("manage")} onOpenWiki={() => void openWiki()} />
+          <Complete
+            status={status}
+            asrInstall={asrInstall}
+            onInstallAsr={() => void installAsr()}
+            onManage={() => setView("manage")}
+            onOpenWiki={() => void openWiki()}
+            onOpenWikiDirectory={() => void openWikiDirectory()}
+          />
         )}
       </section>
     </main>
@@ -549,7 +656,7 @@ function RecommendedToolchain({ install, onToggle }: { install: boolean; onToggl
               ))}
             </ul>
             <small className="toolchain-asr-note">
-              处理中文类视频时，Agent 会先提取音频，再将语音转写为文本。首次需要中文转写时，会先准备 FunASR 运行环境；转写所需的 SenseVoice 模型文件较大，将在首次转写时下载，本次安装暂不安装。
+              处理中文类视频时，Agent 会先提取音频，再将语音转写为文本。基础安装不会拖慢首次进入 Wiki；完成后可点击“安装并预热”，由 Browser 在后台准备 FunASR、fsmn-vad 与 SenseVoiceSmall。
             </small>
           </>
         ) : (
@@ -630,25 +737,143 @@ function formatElapsed(seconds: number) {
   return `已用时 ${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
 }
 
-function Complete({ status, onManage, onOpenWiki }: {
+function Complete({ status, asrInstall, onInstallAsr, onManage, onOpenWiki, onOpenWikiDirectory }: {
   status: SetupResult | null;
+  asrInstall: PackInstallJob | null;
+  onInstallAsr: () => void;
   onManage: () => void;
   onOpenWiki: () => void;
+  onOpenWikiDirectory: () => void;
 }) {
   return (
     <div className="setup-copy reveal complete-view">
       <div className="completion-seal">就绪</div>
       <p className="eyebrow">05 / Ready</p>
       <h1>工作台已经备好。</h1>
-      <p className="setup-lead">{Object.keys(status?.hosts ?? {}).length} 个 Agent 宿主已获得完整 Skills Pack，Wiki 服务已就绪。需要时点击下方按钮打开；官方工具链会作为默认工具，但不会限制你的选择。</p>
+      <p className="setup-lead">{Object.keys(status?.hosts ?? {}).length} 个 Agent 宿主及 Wiki 已就绪，可以立即抓取网页。中文视频转写可在后台准备，不阻塞使用。</p>
+      <AsrInstallCard
+        pack={status?.packs["asr-zh"]}
+        modelCache={status?.model_caches["asr-zh"]}
+        job={asrInstall}
+        onInstall={onInstallAsr}
+      />
       {status?.backups.length ? <p className="backup-note">已保留 {status.backups.length} 份外来 Skill 备份。</p> : null}
-      {status?.actions.length ? <section className="manual-actions"><p className="eyebrow">还需你完成</p>{status.actions.map((action) => <article key={action.id}><h2>{action.title}</h2><p>{action.detail}</p></article>)}</section> : null}
-      <div className="setup-actions"><SecondaryButton onClick={onManage}>查看 Skills 与工具链</SecondaryButton><PrimaryButton onClick={onOpenWiki}>打开 Wiki</PrimaryButton></div>
+      <div className={`completion-next-steps${status?.actions.length ? "" : " is-single"}`}>
+        {status?.actions.length ? <ManualActions actions={status.actions} label="网页采集还需要你完成" /> : null}
+        <FirstCaptureCard wikiPath={status?.wiki.path ?? ""} onOpenWikiDirectory={onOpenWikiDirectory} />
+      </div>
+      <div className="setup-actions"><SecondaryButton onClick={onManage}>查看 Skills 与工具链</SecondaryButton><PrimaryButton onClick={onOpenWiki}>打开本地 Wiki</PrimaryButton></div>
     </div>
   );
 }
 
-function Management({ status, update, browserUpdate, busy, error, onRepair, onCheck, onUpdate, onRestart }: {
+function ManualActions({ actions, label }: { actions: ManualAction[]; label: string }) {
+  const [copied, setCopied] = useState<string | null>(null);
+
+  async function copyActionValue(action: ManualAction) {
+    const value = manualActionCopyValue(action);
+    if (!value || !await copyToClipboard(value)) return;
+    setCopied(action.id);
+    window.setTimeout(() => setCopied(null), 1800);
+  }
+
+  return (
+    <section className="manual-actions">
+      <p className="eyebrow">{label}</p>
+      {actions.map((action) => {
+        const copyValue = manualActionCopyValue(action);
+        return (
+          <article key={action.id}>
+            <h2>{action.title}</h2>
+            <p>{action.detail}</p>
+            {copyValue ? (
+              <button className="manual-action-copy" type="button" onClick={() => void copyActionValue(action)}>
+                {copied === action.id ? "已复制 ✓" : "复制插件目录 →"}
+              </button>
+            ) : null}
+          </article>
+        );
+      })}
+    </section>
+  );
+}
+
+function manualActionCopyValue(action: ManualAction) {
+  if (action.id !== "opencli-browser-bridge") return null;
+  const marker = "加载 ";
+  const start = action.detail.lastIndexOf(marker);
+  if (start < 0) return null;
+  return action.detail.slice(start + marker.length).trim().replace(/[。.]\s*$/u, "");
+}
+
+function FirstCaptureCard({ wikiPath, onOpenWikiDirectory }: { wikiPath: string; onOpenWikiDirectory: () => void }) {
+  const [copied, setCopied] = useState(false);
+  const command = "抓取并整理到我的 wiki：<粘贴网页或视频链接>";
+  const prompt = `${command}\n\nWiki root：${wikiPath}`;
+
+  async function copyPrompt() {
+    if (!await copyToClipboard(prompt)) return;
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1800);
+  }
+
+  return (
+    <section className="first-capture-card">
+      <header>
+        <p className="eyebrow">完成后马上试一篇</p>
+        <button type="button" onClick={() => void copyPrompt()}>{copied ? "已复制 ✓" : "复制指令 →"}</button>
+      </header>
+      <h2>把链接交给 Agent</h2>
+      <code>{command}</code>
+      <div className="first-capture-target">
+        <small>目标 · {wikiPath}</small>
+        <button type="button" onClick={onOpenWikiDirectory}>前往查看 ↗</button>
+      </div>
+    </section>
+  );
+}
+
+function AsrInstallCard({ pack, modelCache, job, onInstall, compact = false }: {
+  pack?: PackStatus;
+  modelCache?: ModelCacheStatus;
+  job: PackInstallJob | null;
+  onInstall: () => void;
+  compact?: boolean;
+}) {
+  const ready = Boolean(pack?.healthy && modelCache?.ready) || job?.state === "installed";
+  const runtimeReady = pack?.healthy;
+  const running = job?.state === "running";
+  const failed = job?.state === "error";
+  const percent = job?.detail_percent;
+  const stateLabel = ready ? "已就绪" : running ? "后台安装中" : failed ? "可重试" : "可选安装";
+
+  return (
+    <section className={`asr-install-card${compact ? " is-compact" : ""}${ready ? " is-ready" : ""}`}>
+      <div className="asr-install-index">声</div>
+      <div className="asr-install-copy">
+        <header><h2>中文视频转写</h2><span>{stateLabel}</span></header>
+        {ready ? (
+          <p>asr-zh、fsmn-vad 与 SenseVoiceSmall 已通过本地离线加载检查。</p>
+        ) : running ? (
+          <>
+            <p>{job?.message}。可以直接打开 Wiki，隐藏本窗口不会中断。</p>
+            <div className={`asr-progress${percent === undefined ? " is-indeterminate" : ""}`} role="progressbar" aria-label="中文视频转写组件安装进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}>
+              <i style={percent === undefined ? undefined : { width: `${percent}%` }} />
+              <span>{percent === undefined ? "处理中…" : `${percent}%`}</span>
+            </div>
+          </>
+        ) : (
+          <p>{runtimeReady ? "asr-zh 已安装；Browser 将继续" : "网页采集已可使用；Browser 会在后台"}下载 fsmn-vad 与 SenseVoiceSmall，总共 1GB。</p>
+        )}
+        {!ready ? <small>私有目录存储 · 支持断点续传</small> : null}
+        {failed && job?.error ? <p className="asr-install-error">{job.error}</p> : null}
+      </div>
+      {!ready && !running ? <SecondaryButton onClick={onInstall}>{failed ? "继续预热" : "安装并预热"}</SecondaryButton> : null}
+    </section>
+  );
+}
+
+function Management({ status, update, browserUpdate, busy, error, onRepair, onCheck, onUpdate, onRestart, asrInstall, onInstallAsr }: {
   status: SetupResult | null;
   update: UpdateResult | null;
   browserUpdate: BrowserUpdateStatus | null;
@@ -658,6 +883,8 @@ function Management({ status, update, browserUpdate, busy, error, onRepair, onCh
   onCheck: () => void;
   onUpdate: () => void;
   onRestart: () => void;
+  asrInstall: PackInstallJob | null;
+  onInstallAsr: () => void;
 }) {
   const ready = status?.state === "ready";
   const browserBusy = browserUpdate?.state === "checking" || browserUpdate?.state === "downloading";
@@ -679,6 +906,7 @@ function Management({ status, update, browserUpdate, busy, error, onRepair, onCh
           <p className="panel-version">{status?.official_toolchain.installed ? `v${status.official_toolchain.version}` : "未安装 · 开放路径"}</p>
           <p>默认优先使用官方工具链，可被系统或任务级工具替换。</p>
           {Object.entries(status?.packs ?? {}).filter(([id]) => id !== "toolchain-base").map(([id, pack]) => <div className="pack-status" key={id}><b>{id}</b><span>{pack.healthy ? `v${pack.version}` : "需要修复"}</span></div>)}
+          <AsrInstallCard pack={status?.packs["asr-zh"]} modelCache={status?.model_caches["asr-zh"]} job={asrInstall} onInstall={onInstallAsr} compact />
         </StatusPanel>
         <StatusPanel index="03" title="Wiki" healthy={status?.wiki.ready ?? false}>
           <p className="panel-path">{status?.wiki.path}</p>
@@ -694,7 +922,7 @@ function Management({ status, update, browserUpdate, busy, error, onRepair, onCh
           </div>
         </StatusPanel>
       </section>
-      {status?.actions.length ? <section className="manual-actions"><p className="eyebrow">Manual actions</p>{status.actions.map((action) => <article key={action.id}><h2>{action.title}</h2><p>{action.detail}</p></article>)}</section> : null}
+      {status?.actions.length ? <ManualActions actions={status.actions} label="Manual actions" /> : null}
       {!ready ? <footer className="repair-bar"><div><b>状态不完整或文件已损坏</b><span>Repair 只恢复当前版本，不会升级或触碰 Wiki。</span></div><PrimaryButton disabled={busy} onClick={onRepair}>{busy ? "处理中…" : "修复当前版本"}</PrimaryButton></footer> : null}
     </main>
   );

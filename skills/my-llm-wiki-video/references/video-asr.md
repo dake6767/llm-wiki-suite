@@ -50,8 +50,10 @@ Guess from the title/author (a title with ≥4 CJK chars and more CJK than latin
   via [FunASR](https://github.com/modelscope/FunASR)): ~15× faster than
   Whisper on CPU and far better on Chinese proper nouns. The runner resolves
   the `python.asr-zh` Provider and relaunches under its isolated Python. If none is
-  available, offer `my-llm-wiki ensure-pack asr-zh`; model weights remain a
-  first-use download from ModelScope, a domestic CDN.
+  available, offer `my-llm-wiki ensure-pack asr-zh`. The Browser's post-Setup
+  **安装并预热** action downloads and offline-verifies both local models in
+  advance; without that explicit action, model weights remain a first-use
+  download from ModelScope, a domestic CDN.
   It reads wav (not m4a — convert first, §1) and has **no native
   timestamps** — feeding it the whole file returns ONE cue stamped
   `00:00:00,000 --> 00:00:00,000` (a documented incident re-ran a 40-min
