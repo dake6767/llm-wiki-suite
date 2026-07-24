@@ -14,6 +14,19 @@ from scripts import pack_release
 
 
 class DistributionBuilderTests(unittest.TestCase):
+    def test_pack_input_digest_canonicalizes_checkout_line_endings(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            lf = root / "lf.txt"
+            crlf = root / "crlf.txt"
+            lf.write_bytes(b"one\ntwo\n")
+            crlf.write_bytes(b"one\r\ntwo\r\n")
+
+            self.assertEqual(
+                pack_release.canonical_input_bytes(lf),
+                pack_release.canonical_input_bytes(crlf),
+            )
+
     def test_normalizes_generated_python_install_files(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             site = Path(temporary)

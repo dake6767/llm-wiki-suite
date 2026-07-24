@@ -45,11 +45,15 @@ def input_paths() -> list[Path]:
     return sorted(paths)
 
 
+def canonical_input_bytes(path: Path) -> bytes:
+    return path.read_bytes().replace(b"\r\n", b"\n")
+
+
 def input_sha256() -> str:
     digest = hashlib.sha256()
     for path in input_paths():
         relative = path.relative_to(ROOT).as_posix().encode()
-        payload = path.read_bytes()
+        payload = canonical_input_bytes(path)
         digest.update(len(relative).to_bytes(4, "big"))
         digest.update(relative)
         digest.update(len(payload).to_bytes(8, "big"))
