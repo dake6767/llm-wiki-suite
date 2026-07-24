@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import sys
 from collections.abc import MutableMapping
 from dataclasses import dataclass
@@ -192,19 +193,19 @@ def runtime_env(
 # anything the caller inherited. A stray PYTHONPATH in the launching shell — even
 # an empty string, which some shells and agent runtimes export — otherwise
 # shadows the pack's isolated `site` dir under plain setdefault and breaks every
-# `import` in the re-exec'd interpreter.
+# `import` in the relaunched interpreter.
 _PACK_PATH_VARS = frozenset({"PYTHONPATH"})
 
 
 def _merge_provider_environment(
     environment: MutableMapping[str, str], provider_env: dict[str, str]
 ) -> None:
-    """Fold a Provider's declared environment into the re-exec environment.
+    """Fold a Provider's declared environment into the relaunch environment.
 
     Path vars that point into the pack (PYTHONPATH) are authoritative: the pack
     value goes first, then any distinct non-empty inherited entries, so the
     pack's own code is always importable and the merge is idempotent across the
-    self re-exec. Every other var stays user-overridable via setdefault.
+    self relaunch. Every other var stays user-overridable via setdefault.
     """
     for key, value in provider_env.items():
         if key in _PACK_PATH_VARS:
@@ -218,8 +219,12 @@ def _merge_provider_environment(
             environment.setdefault(key, value)
 
 
+def _requires_spawn_relaunch() -> bool:
+    return os.name == "nt" or sys.platform.startswith(("win", "msys", "cygwin"))
+
+
 def ensure_provider_python(profile: str, *, provider: str | None = None) -> None:
-    """Re-exec an ASR entry point with the selected Provider's Python."""
+    """Relaunch an ASR entry point with the selected Provider's Python."""
     resolved = resolve_python_provider(profile, provider=provider)
     target = Path(resolved.argv[0]).resolve()
     try:
@@ -238,9 +243,17 @@ def ensure_provider_python(profile: str, *, provider: str | None = None) -> None
     environment[ACTIVE_PYTHON_PROFILE_ENV] = profile
     environment[ACTIVE_PROVIDER_ENV] = resolved.provider
     _merge_provider_environment(environment, resolved.environment)
+    argv = [*resolved.argv, str(Path(sys.argv[0]).resolve()), *sys.argv[1:]]
+    if _requires_spawn_relaunch():
+        # Native os.execve can crash before Python starts when the caller is
+        # hosted by Git Bash/MSYS. Spawn-and-wait is the Windows replacement
+        # boundary: no shell, inherited stdio, and the child's status becomes
+        # the runner's status.
+        completed = subprocess.run(argv, env=environment, check=False, shell=False)
+        raise SystemExit(completed.returncode)
     os.execve(
         str(target),
-        [*resolved.argv, str(Path(sys.argv[0]).resolve()), *sys.argv[1:]],
+        argv,
         environment,
     )
 

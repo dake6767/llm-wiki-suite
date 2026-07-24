@@ -35,7 +35,7 @@ bare `-x` grabs a merged DASH stream whose audio silently truncates. If the
 probe returned no `audio_format_id` (rare extractor gap), fall back to listing
 formats manually as that file describes.
 
-**Convert m4a → wav for Python-API ASR backends** (librosa/soundfile can't
+**Convert m4a → wav for Python-API ASR backends** (soundfile can't
 read m4a): `ffmpeg -i audio.m4a -ar 16000 -ac 1 audio.wav` anywhere, or
 `afconvert -f WAVE -d LEI16@16000 audio.m4a audio.wav` (macOS-only tool —
 don't cite it in cross-platform notes).
@@ -49,7 +49,7 @@ Guess from the title/author (a title with ≥4 CJK chars and more CJK than latin
   [github.com/FunAudioLLM/SenseVoice](https://github.com/FunAudioLLM/SenseVoice)
   via [FunASR](https://github.com/modelscope/FunASR)): ~15× faster than
   Whisper on CPU and far better on Chinese proper nouns. The runner resolves
-  the `python.asr-zh` Provider and re-executes its isolated Python. If none is
+  the `python.asr-zh` Provider and relaunches under its isolated Python. If none is
   available, offer `my-llm-wiki ensure-pack asr-zh`; model weights remain a
   first-use download from ModelScope, a domestic CDN.
   It reads wav (not m4a — convert first, §1) and has **no native
@@ -115,10 +115,12 @@ not reproduce either script's source in a heredoc, inline interpreter flag, or
 arbitrary-code tool.
 
 Launch the shipped script with any Python capable of parsing its arguments; the
-script immediately resolves `python.asr-zh` or `python.asr-other` and re-executes
-under that Provider before importing the ASR library. Pass `--provider <id>`
-only when the user chose a Provider for this task. Do not select a shared Python
-or construct `PYTHONPATH` by hand.
+script immediately resolves `python.asr-zh` or `python.asr-other` and relaunches
+under that Provider before importing the ASR library. On Windows this uses a
+shell-free child process rather than `os.execve`, which avoids a Git Bash/MSYS
+crash while preserving inherited stdio and the child exit code. Pass
+`--provider <id>` only when the user chose a Provider for this task. Do not
+select a shared Python or construct `PYTHONPATH` by hand.
 
 ### 3a. SenseVoice (Chinese) — VAD-first
 
@@ -140,6 +142,9 @@ writes `status.yaml` as its last act.
 
 Notes that earn their keep:
 
+- The runner reads the already-normalized WAV directly with `soundfile`.
+  Do not replace it with `librosa.load`: its numba-backed path may clean a
+  large JIT cache and trip Agent safe-delete guards before ASR starts.
 - `max_single_segment_time=30000` caps VAD segments at 30 s — SenseVoice's
   sweet spot, and conveniently the anchor granularity SOP §3 wants.
 - `use_itn=True` gives punctuation + inverse text norm;

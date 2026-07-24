@@ -65,9 +65,6 @@ pub(crate) async fn setup_apply(
     })
     .await?;
     crate::start_browser(&app).map_err(|error| error.to_string())?;
-    if let Err(error) = crate::open_local_wiki(&app) {
-        tracing::warn!(error = ?error, "setup completed but the Wiki could not be opened");
-    }
     Ok(result)
 }
 
