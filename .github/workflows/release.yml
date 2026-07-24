@@ -352,6 +352,12 @@ jobs:
 
   compose-distribution:
     needs: [validate-release, create-release, prepare-pack-release, resolve-pack-index]
+    if: >-
+      always() &&
+      needs.validate-release.result == 'success' &&
+      needs.create-release.result == 'success' &&
+      needs.prepare-pack-release.result == 'success' &&
+      needs.resolve-pack-index.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
