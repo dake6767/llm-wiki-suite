@@ -77,9 +77,10 @@ Obsidian 或 CLI。分享授权当前以整个 Wiki 为边界，不是单页授�
 
 确认页可以修改 Wiki 的存放路径；默认仍为 `~/wikis/my-llm-wiki`，已有 Wiki 目录会直接复用。
 首次界面不再要求用户组合 Documents、Web、Video、中文/非中文 ASR 或失败策略。
-`toolchain-base` 包含 FFmpeg、yt-dlp、Node/OpenCLI 和文档转换；ASR runtime 在第一次遇到
-无字幕视频时按需下载。所有 pack 都由 CI 预构建和验证，用户机器只下载、校验 SHA-256、
-解压和激活，不调用全局 pip/npm、Homebrew、apt 或 winget。
+`toolchain-base` 包含 FFmpeg、yt-dlp、Node/OpenCLI 和文档转换。完成页会立即开放 Wiki，
+并提供独立的“安装并预热”按钮：Browser 可在后台准备中文 ASR runtime、fsmn-vad 与
+SenseVoiceSmall，用户无需等待即可先抓取网页。所有 pack 都由 CI 预构建和验证，用户机器
+只下载、校验 SHA-256、解压和激活，不调用全局 pip/npm、Homebrew、apt 或 winget。
 
 Skills 与工具链安装完成后，托盘有两个清晰分开的入口：
 

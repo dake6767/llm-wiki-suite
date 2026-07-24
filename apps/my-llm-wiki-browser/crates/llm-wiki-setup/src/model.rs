@@ -87,6 +87,8 @@ pub struct SetupResult {
     #[serde(default)]
     pub packs: BTreeMap<String, PackStatus>,
     #[serde(default)]
+    pub model_caches: BTreeMap<String, ModelCacheStatus>,
+    #[serde(default)]
     pub backups: Vec<PathBuf>,
     #[serde(default)]
     pub actions: Vec<ManualAction>,
@@ -126,6 +128,13 @@ pub struct PackStatus {
     pub version: Option<String>,
     pub installed: bool,
     pub healthy: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelCacheStatus {
+    pub id: String,
+    pub path: PathBuf,
+    pub ready: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -114,8 +114,11 @@ once per immutable `pack_version`. Browser releases reuse the published
 distribution manifest; they never copy the large pack assets into every
 application Release. Setup downloads from the project CDN first and canonical
 GitHub Releases second, then verifies exact size and SHA-256 before extraction.
-Model weights remain a first-use download and use only pack-scoped environment;
-do not edit shell profiles or global proxy/package-manager configuration.
+Model weights are never bundled into the immutable runtime pack. The Browser
+completion page may explicitly prewarm the Chinese ASR models into the private
+`~/.my-llm-wiki/models/` area; otherwise they remain a first-use download.
+Model operations use only the pack-scoped environment; do not edit shell
+profiles or global proxy/package-manager configuration.
 
 ## 5. Provider choice
 

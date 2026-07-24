@@ -70,6 +70,7 @@ Product-owned state lives under `~/.my-llm-wiki/`:
 - `setup-state.json` records Setup Core ownership and active pack versions;
 - `providers.json` records user capability-provider choices;
 - `packs/` contains immutable official capability packs;
+- `models/asr-zh/` contains explicitly prewarmed Chinese ASR model snapshots;
 - `bin/my-llm-wiki` is the shared CLI;
 - `connector/` contains Browser port, token, and optional relay state;
 - `wikis.json` is the Wiki registry.

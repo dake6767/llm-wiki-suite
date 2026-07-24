@@ -2,11 +2,188 @@ use llm_wiki_setup::{
     ProviderConfig, SetupCore, SetupInspection, SetupProgress, SetupRequest, SetupResult,
     UpdateResult,
 };
+use serde::Serialize;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use tauri::{AppHandle, Emitter as _, Manager as _, WebviewWindow};
+use std::sync::{Arc, Mutex};
+use tauri::{AppHandle, Emitter as _, Manager as _, State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt as _;
+use tauri_plugin_notification::NotificationExt as _;
 
 use crate::update::UpdateStatus;
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct PackInstallJob {
+    id: String,
+    state: String,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail_percent: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+impl PackInstallJob {
+    fn idle(id: &str) -> Self {
+        Self {
+            id: id.to_owned(),
+            state: "idle".into(),
+            message: "尚未开始".into(),
+            detail_percent: None,
+            error: None,
+        }
+    }
+
+    fn running(id: &str) -> Self {
+        Self {
+            id: id.to_owned(),
+            state: "running".into(),
+            message: format!("正在启动 {id} 后台安装"),
+            detail_percent: None,
+            error: None,
+        }
+    }
+}
+
+/// Long pack downloads belong to the Browser process rather than to a single
+/// WebView invoke. Hiding the Setup window or opening the Wiki therefore does
+/// not cancel the task, and reopening Setup can recover the latest snapshot.
+#[derive(Clone, Default)]
+pub(crate) struct PackInstallManager {
+    jobs: Arc<Mutex<BTreeMap<String, PackInstallJob>>>,
+}
+
+impl PackInstallManager {
+    fn snapshot(&self, id: &str) -> PackInstallJob {
+        self.jobs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(id)
+            .cloned()
+            .unwrap_or_else(|| PackInstallJob::idle(id))
+    }
+
+    fn replace(&self, id: &str, job: PackInstallJob) {
+        self.jobs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(id.to_owned(), job);
+    }
+
+    fn update_progress(&self, id: &str, progress: SetupProgress) {
+        self.replace(
+            id,
+            PackInstallJob {
+                id: id.to_owned(),
+                state: "running".into(),
+                message: progress.message,
+                detail_percent: progress.detail_percent,
+                error: None,
+            },
+        );
+    }
+
+    fn start(&self, app: AppHandle, id: String) -> PackInstallJob {
+        let starting = {
+            let mut jobs = self
+                .jobs
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(current) = jobs.get(&id)
+                && current.state == "running"
+            {
+                return current.clone();
+            }
+            let starting = PackInstallJob::running(&id);
+            jobs.insert(id.clone(), starting.clone());
+            starting
+        };
+
+        let manager = self.clone();
+        tauri::async_runtime::spawn(async move {
+            let task_manager = manager.clone();
+            let task_id = id.clone();
+            let result = tauri::async_runtime::spawn_blocking(move || {
+                let core = SetupCore::from_environment()?;
+                if task_id == "asr-zh" {
+                    core.prepare_asr_zh_with_progress(|progress| {
+                        task_manager.update_progress(&task_id, progress)
+                    })
+                } else {
+                    core.ensure_pack_with_progress(&task_id, |progress| {
+                        task_manager.update_progress(&task_id, progress)
+                    })
+                }
+            })
+            .await;
+
+            match result {
+                Ok(Ok(_)) => {
+                    manager.replace(
+                        &id,
+                        PackInstallJob {
+                            id: id.clone(),
+                            state: "installed".into(),
+                            message: if id == "asr-zh" {
+                                "asr-zh 与两个中文转写模型均已就绪".into()
+                            } else {
+                                format!("{id} 已安装并通过健康检查")
+                            },
+                            detail_percent: Some(100),
+                            error: None,
+                        },
+                    );
+                    if let Err(error) = app
+                        .notification()
+                        .builder()
+                        .title(if id == "asr-zh" {
+                            "中文视频转写已就绪".to_owned()
+                        } else {
+                            format!("{id} 已就绪")
+                        })
+                        .body(if id == "asr-zh" {
+                            "fsmn-vad 与 SenseVoiceSmall 已下载并通过离线加载检查。"
+                        } else {
+                            "后台能力包已安装完成。"
+                        })
+                        .show()
+                    {
+                        tracing::warn!(?error, "failed to show pack completion notification");
+                    }
+                }
+                Ok(Err(error)) => {
+                    let detail = error.to_string();
+                    manager.replace(
+                        &id,
+                        PackInstallJob {
+                            id: id.clone(),
+                            state: "error".into(),
+                            message: format!("{id} 安装未完成"),
+                            detail_percent: None,
+                            error: Some(detail.clone()),
+                        },
+                    );
+                    tracing::warn!(pack = %id, error = %detail, "background pack install failed");
+                }
+                Err(error) => {
+                    let detail = format!("后台安装任务意外停止: {error}");
+                    manager.replace(
+                        &id,
+                        PackInstallJob {
+                            id: id.clone(),
+                            state: "error".into(),
+                            message: format!("{id} 安装未完成"),
+                            detail_percent: None,
+                            error: Some(detail.clone()),
+                        },
+                    );
+                    tracing::warn!(pack = %id, error = %detail, "background pack task stopped");
+                }
+            }
+        });
+        starting
+    }
+}
 
 #[tauri::command]
 pub(crate) async fn setup_inspect(
@@ -94,6 +271,16 @@ pub(crate) fn setup_open_wiki(app: AppHandle, window: WebviewWindow) -> Result<(
 }
 
 #[tauri::command]
+pub(crate) fn setup_open_wiki_directory(window: WebviewWindow) -> Result<(), String> {
+    require_setup_window(&window)?;
+    let status = SetupCore::from_environment()
+        .map_err(|error| error.to_string())?
+        .status()
+        .map_err(|error| error.to_string())?;
+    open::that(&status.wiki.path).map_err(|error| format!("无法打开 Wiki 目录: {error}"))
+}
+
+#[tauri::command]
 pub(crate) async fn setup_update(
     app: AppHandle,
     window: WebviewWindow,
@@ -141,6 +328,30 @@ pub(crate) async fn setup_ensure_pack(
             .ensure_pack_with_progress(&id, |event| emit(&progress_app, event))
     })
     .await
+}
+
+#[tauri::command]
+pub(crate) fn setup_start_pack_install(
+    app: AppHandle,
+    window: WebviewWindow,
+    manager: State<'_, PackInstallManager>,
+    id: String,
+) -> Result<PackInstallJob, String> {
+    require_setup_window(&window)?;
+    if !matches!(id.as_str(), "asr-zh" | "asr-other" | "toolchain-base") {
+        return Err(format!("unsupported background pack: {id}"));
+    }
+    Ok(manager.start(app, id))
+}
+
+#[tauri::command]
+pub(crate) fn setup_pack_install_status(
+    window: WebviewWindow,
+    manager: State<'_, PackInstallManager>,
+    id: String,
+) -> Result<PackInstallJob, String> {
+    require_setup_window(&window)?;
+    Ok(manager.snapshot(&id))
 }
 
 #[tauri::command]

@@ -16,9 +16,12 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-CORE_SCRIPTS = Path(__file__).resolve().parents[2] / "my-llm-wiki" / "scripts"
+SCRIPT_DIR = Path(__file__).resolve().parent
+CORE_SCRIPTS = SCRIPT_DIR.parents[1] / "my-llm-wiki" / "scripts"
+sys.path.insert(0, str(SCRIPT_DIR))
 sys.path.insert(0, str(CORE_SCRIPTS))
 from tool_runtime import ensure_provider_python  # noqa: E402
+from prefetch_asr_zh import resolved_model_references  # noqa: E402
 
 
 # Keep Unicode controls escaped in source so command/security scanners never
@@ -92,9 +95,10 @@ def transcribe(
         )
     if getattr(wav, "ndim", 1) != 1:
         raise RuntimeError("SenseVoice requires mono WAV input")
+    vad_model, recognizer_model = resolved_model_references()
     print("sensevoice_to_srt: loading fsmn-vad", flush=True)
     vad = AutoModel(
-        model="fsmn-vad",
+        model=vad_model,
         max_single_segment_time=max_segment_ms,
         disable_update=True,
     )
@@ -102,7 +106,7 @@ def transcribe(
     spans = generated[0].get("value") or [[0, len(wav) // 16]]
     print(f"sensevoice_to_srt: VAD found {len(spans)} segments", flush=True)
     print("sensevoice_to_srt: loading SenseVoiceSmall", flush=True)
-    recognizer = AutoModel(model="iic/SenseVoiceSmall", disable_update=True)
+    recognizer = AutoModel(model=recognizer_model, disable_update=True)
 
     cues: list[tuple[float, float, str]] = []
     for index, span in enumerate(spans, start=1):
