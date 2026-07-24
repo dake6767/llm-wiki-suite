@@ -640,7 +640,7 @@ function Complete({ status, onManage, onOpenWiki }: {
       <div className="completion-seal">就绪</div>
       <p className="eyebrow">05 / Ready</p>
       <h1>工作台已经备好。</h1>
-      <p className="setup-lead">{Object.keys(status?.hosts ?? {}).length} 个 Agent 宿主已获得完整 Skills Pack，Wiki 已打开。官方工具链会作为默认工具，但不会限制你的选择。</p>
+      <p className="setup-lead">{Object.keys(status?.hosts ?? {}).length} 个 Agent 宿主已获得完整 Skills Pack，Wiki 服务已就绪。需要时点击下方按钮打开；官方工具链会作为默认工具，但不会限制你的选择。</p>
       {status?.backups.length ? <p className="backup-note">已保留 {status.backups.length} 份外来 Skill 备份。</p> : null}
       {status?.actions.length ? <section className="manual-actions"><p className="eyebrow">还需你完成</p>{status.actions.map((action) => <article key={action.id}><h2>{action.title}</h2><p>{action.detail}</p></article>)}</section> : null}
       <div className="setup-actions"><SecondaryButton onClick={onManage}>查看 Skills 与工具链</SecondaryButton><PrimaryButton onClick={onOpenWiki}>打开 Wiki</PrimaryButton></div>

@@ -72,7 +72,7 @@ def transcribe(
 ) -> tuple[int, int]:
     print("sensevoice_to_srt: loading managed dependencies", flush=True)
     try:
-        import librosa
+        import soundfile
         from funasr import AutoModel
         from funasr.utils.postprocess_utils import rich_transcription_postprocess
     except ImportError as exc:
@@ -81,7 +81,17 @@ def transcribe(
         ) from exc
 
     print("sensevoice_to_srt: decoding 16 kHz mono audio", flush=True)
-    wav, _ = librosa.load(str(audio), sr=16_000, mono=True)
+    wav, sample_rate = soundfile.read(
+        str(audio),
+        dtype="float32",
+        always_2d=False,
+    )
+    if sample_rate != 16_000:
+        raise RuntimeError(
+            f"SenseVoice requires 16 kHz WAV input; got {sample_rate} Hz"
+        )
+    if getattr(wav, "ndim", 1) != 1:
+        raise RuntimeError("SenseVoice requires mono WAV input")
     print("sensevoice_to_srt: loading fsmn-vad", flush=True)
     vad = AutoModel(
         model="fsmn-vad",

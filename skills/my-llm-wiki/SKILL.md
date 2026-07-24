@@ -164,7 +164,7 @@ dependencies ad hoc during capture. If no Provider satisfies the capability,
 offer `my-llm-wiki ensure-pack toolchain-base` as the supported fallback or ask
 the user to select/configure another Provider.
 
-ASR entry points resolve and re-exec the selected `asr-zh` or `asr-other`
+ASR entry points resolve and relaunch under the selected `asr-zh` or `asr-other`
 Python Provider themselves, including its scoped model environment. Never
 construct `PYTHONPATH` or activate an unrelated virtualenv by hand.
 

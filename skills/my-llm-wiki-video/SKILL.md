@@ -39,7 +39,7 @@ automatically.
 Inherit the sibling core's **Resolve tools through the Provider Resolver** rule
 for every external command in this skill and its references. Use
 `tool_exec.py` with the relevant capability on every platform. The ASR runners
-select and re-exec their Python Provider themselves. Honor a user-selected
+select and relaunch under their Python Provider themselves. Honor a user-selected
 Provider; otherwise prefer the healthy official toolchain and accept system or
 custom Providers only through the same resolver and output checks.
 

@@ -133,7 +133,7 @@ class ToolRuntimeTests(unittest.TestCase):
                     providers_path=root / "missing.json",
                 )
 
-    def test_python_provider_reexec_sets_identity_and_environment(self) -> None:
+    def test_python_provider_relaunch_sets_identity_and_environment(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             python = root / "pack" / "bin" / "python"
@@ -146,10 +146,15 @@ class ToolRuntimeTests(unittest.TestCase):
             )
             with mock.patch.dict(
                 os.environ,
-                {tool_runtime.SETUP_STATE_ENV: str(state)},
+                {
+                    tool_runtime.SETUP_STATE_ENV: str(state),
+                    tool_runtime.PROVIDERS_CONFIG_ENV: str(root / "missing.json"),
+                },
                 clear=True,
             ), mock.patch.object(
                 tool_runtime.sys, "argv", ["runner.py", "audio.wav"]
+            ), mock.patch.object(
+                tool_runtime, "_requires_spawn_relaunch", return_value=False
             ), mock.patch.object(tool_runtime.os, "execve") as execve:
                 tool_runtime.ensure_provider_python("asr-zh")
             executable, argv, environment = execve.call_args.args
@@ -158,9 +163,9 @@ class ToolRuntimeTests(unittest.TestCase):
             self.assertEqual(environment[tool_runtime.ACTIVE_PROVIDER_ENV], "official")
             self.assertEqual(environment["MODEL_ROUTE"], "official")
 
-    def test_reexec_pack_pythonpath_wins_over_inherited(self) -> None:
+    def test_relaunch_pack_pythonpath_wins_over_inherited(self) -> None:
         # A PYTHONPATH already in the launching environment (even empty) must not
-        # shadow the pack's isolated site dir when the runner re-execs.
+        # shadow the pack's isolated site dir when the runner relaunches.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             python = root / "pack" / "bin" / "python"
@@ -180,6 +185,8 @@ class ToolRuntimeTests(unittest.TestCase):
                     clear=True,
                 ), mock.patch.object(
                     tool_runtime.sys, "argv", ["runner.py", "audio.wav"]
+                ), mock.patch.object(
+                    tool_runtime, "_requires_spawn_relaunch", return_value=False
                 ), mock.patch.object(tool_runtime.os, "execve") as execve:
                     tool_runtime.ensure_provider_python("asr-zh")
                 _, _, environment = execve.call_args.args
@@ -189,8 +196,73 @@ class ToolRuntimeTests(unittest.TestCase):
                 if inherited:
                     self.assertIn(inherited, parts)
 
-    def test_reexec_pythonpath_merge_is_idempotent_when_active(self) -> None:
-        # The re-exec'd process re-enters ensure_provider_python; folding the pack
+    def test_windows_python_provider_spawns_and_propagates_exit_code(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            python = root / "pack" / "python.exe"
+            python.parent.mkdir(parents=True)
+            python.write_bytes(b"python")
+            state = self._state(
+                root,
+                python_profiles={"asr-zh": ["{pack}/python.exe"]},
+                environment={"asr-zh": {"MODEL_ROUTE": "official"}},
+            )
+            completed = mock.Mock(returncode=17)
+            with mock.patch.dict(
+                os.environ,
+                {
+                    tool_runtime.SETUP_STATE_ENV: str(state),
+                    tool_runtime.PROVIDERS_CONFIG_ENV: str(root / "missing.json"),
+                },
+                clear=True,
+            ), mock.patch.object(
+                tool_runtime.sys, "argv", ["runner.py", "audio.wav"]
+            ), mock.patch.object(
+                tool_runtime, "_requires_spawn_relaunch", return_value=True
+            ), mock.patch.object(
+                tool_runtime.subprocess, "run", return_value=completed
+            ) as run, mock.patch.object(
+                tool_runtime.os, "execve"
+            ) as execve:
+                with self.assertRaises(SystemExit) as raised:
+                    tool_runtime.ensure_provider_python("asr-zh")
+
+            self.assertEqual(raised.exception.code, 17)
+            execve.assert_not_called()
+            argv = run.call_args.args[0]
+            options = run.call_args.kwargs
+            self.assertEqual(argv[0], str(python.resolve()))
+            self.assertEqual(argv[-1], "audio.wav")
+            self.assertFalse(options["check"])
+            self.assertFalse(options["shell"])
+            self.assertNotIn("stdout", options)
+            self.assertNotIn("stderr", options)
+            self.assertEqual(
+                options["env"][tool_runtime.ACTIVE_PYTHON_PROFILE_ENV],
+                "asr-zh",
+            )
+            self.assertEqual(
+                options["env"][tool_runtime.ACTIVE_PROVIDER_ENV],
+                "official",
+            )
+            self.assertEqual(options["env"]["MODEL_ROUTE"], "official")
+
+    def test_spawn_boundary_covers_native_windows_and_msys(self) -> None:
+        with mock.patch.object(tool_runtime.os, "name", "nt"), mock.patch.object(
+            tool_runtime.sys, "platform", "win32"
+        ):
+            self.assertTrue(tool_runtime._requires_spawn_relaunch())
+        with mock.patch.object(tool_runtime.os, "name", "posix"), mock.patch.object(
+            tool_runtime.sys, "platform", "msys"
+        ):
+            self.assertTrue(tool_runtime._requires_spawn_relaunch())
+        with mock.patch.object(tool_runtime.os, "name", "posix"), mock.patch.object(
+            tool_runtime.sys, "platform", "linux"
+        ):
+            self.assertFalse(tool_runtime._requires_spawn_relaunch())
+
+    def test_relaunch_pythonpath_merge_is_idempotent_when_active(self) -> None:
+        # The relaunched process re-enters ensure_provider_python; folding the pack
         # PYTHONPATH again must not duplicate the site entry.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
