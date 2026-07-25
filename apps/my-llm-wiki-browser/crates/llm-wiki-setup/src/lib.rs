@@ -2,10 +2,12 @@ mod error;
 mod mcp_bridge;
 mod model;
 mod pack;
+mod process;
 mod wiki;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
+use std::io::{BufRead as _, BufReader, Read as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -31,6 +33,7 @@ const ASR_ZH_MODEL_CACHE_ID: &str = "asr-zh";
 const ASR_ZH_MODEL_MARKER: &str = ".my-llm-wiki-models.json";
 const ASR_ZH_VAD_ID: &str = "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch";
 const ASR_ZH_SENSEVOICE_ID: &str = "iic/SenseVoiceSmall";
+const ASR_PROGRESS_ENV: &str = "MY_LLM_WIKI_ASR_PROGRESS";
 
 pub struct SetupCore {
     home: PathBuf,
@@ -636,7 +639,16 @@ impl SetupCore {
             1,
             4,
         );
-        run_model_stage(&python, &environment, &script, &model_root, "fsmn-vad")?;
+        run_model_download(
+            &python,
+            &environment,
+            &script,
+            &model_root,
+            "fsmn-vad",
+            "语音分段模型 fsmn-vad",
+            1,
+            &progress,
+        )?;
         report(&progress, "asr-models", "fsmn-vad 已下载", 2, 4);
 
         report(
@@ -646,7 +658,16 @@ impl SetupCore {
             2,
             4,
         );
-        run_model_stage(&python, &environment, &script, &model_root, "sensevoice")?;
+        run_model_download(
+            &python,
+            &environment,
+            &script,
+            &model_root,
+            "sensevoice",
+            "中文转写模型 SenseVoiceSmall",
+            2,
+            &progress,
+        )?;
         report(&progress, "asr-models", "SenseVoiceSmall 已下载", 3, 4);
 
         report(
@@ -656,7 +677,24 @@ impl SetupCore {
             3,
             4,
         );
-        run_model_stage(&python, &environment, &script, &model_root, "verify")?;
+        run_model_stage(
+            &python,
+            &environment,
+            &script,
+            &model_root,
+            "verify",
+            |event| {
+                if let ModelStageEvent::Verify { index, count } = event {
+                    progress(SetupProgress {
+                        phase: "asr-models".into(),
+                        message: format!("正在离线加载并验证第 {index} / {count} 个转写模型"),
+                        current: 3,
+                        total: 4,
+                        detail_percent: Some(step_percent(index.saturating_sub(1), count)),
+                    });
+                }
+            },
+        )?;
         if !self.asr_zh_model_cache_status().ready {
             return Err(SetupError::Probe {
                 pack: "asr-zh models".into(),
@@ -1145,17 +1183,95 @@ struct AsrZhModelMarkerEntry {
     directory: String,
 }
 
+/// Run one download stage, turning observed bytes into the same
+/// message-plus-percent shape pack downloads already report. Without this the
+/// Setup card sat on an indeterminate spinner for the ~1GB SenseVoiceSmall
+/// download, which is indistinguishable from a stalled install.
+#[allow(clippy::too_many_arguments)]
+fn run_model_download(
+    python: &[String],
+    environment: &BTreeMap<String, String>,
+    script: &Path,
+    model_root: &Path,
+    stage: &str,
+    label: &str,
+    step: u32,
+    progress: &impl Fn(SetupProgress),
+) -> Result<()> {
+    run_model_stage(python, environment, script, model_root, stage, |event| {
+        if let ModelStageEvent::Download {
+            downloaded_bytes,
+            total_bytes,
+        } = event
+        {
+            progress(SetupProgress {
+                phase: "asr-models".into(),
+                message: format!(
+                    "正在下载{label} · {}",
+                    format_transfer(downloaded_bytes, total_bytes)
+                ),
+                current: step,
+                total: 4,
+                detail_percent: transfer_percent(downloaded_bytes, total_bytes),
+            });
+        }
+    })
+}
+
+/// Cap an in-flight download below 100% so the bar only fills when the stage
+/// actually finished: the repository size is an estimate, and a bar that sits
+/// at 100% while work continues is the same lie as no bar at all.
+fn transfer_percent(downloaded: u64, total: Option<u64>) -> Option<u8> {
+    let total = total.filter(|value| *value > 0)?;
+    Some((downloaded.saturating_mul(100) / total).min(99) as u8)
+}
+
+fn format_transfer(downloaded: u64, total: Option<u64>) -> String {
+    match total.filter(|value| *value > 0) {
+        Some(total) => format!("{} / {}", format_bytes(downloaded), format_bytes(total)),
+        None => format!("已下载 {}", format_bytes(downloaded)),
+    }
+}
+
+fn format_bytes(value: u64) -> String {
+    const MB: f64 = 1024.0 * 1024.0;
+    let megabytes = value as f64 / MB;
+    if megabytes >= 1024.0 {
+        format!("{:.2} GB", megabytes / 1024.0)
+    } else {
+        format!("{megabytes:.1} MB")
+    }
+}
+
+/// What the prefetch script reports while a stage runs. Downloading a gigabyte
+/// of models is the longest single wait in the whole install, so the script
+/// streams these instead of staying silent until it exits.
+#[derive(serde::Deserialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+enum ModelStageEvent {
+    Download {
+        downloaded_bytes: u64,
+        total_bytes: Option<u64>,
+    },
+    Verify {
+        index: u32,
+        count: u32,
+    },
+}
+
 fn run_model_stage(
     python: &[String],
     environment: &BTreeMap<String, String>,
     script: &Path,
     model_root: &Path,
     stage: &str,
+    mut on_event: impl FnMut(ModelStageEvent),
 ) -> Result<()> {
     let executable = python
         .first()
         .ok_or_else(|| SetupError::InvalidState("asr-zh Python argv is empty".into()))?;
-    let output = Command::new(executable)
+    let mut command = Command::new(executable);
+    command
         .args(&python[1..])
         .arg(script)
         .arg("--stage")
@@ -1163,22 +1279,54 @@ fn run_model_stage(
         .arg("--model-root")
         .arg(model_root)
         .envs(environment)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|error| SetupError::Probe {
-            pack: "asr-zh models".into(),
-            detail: format!("cannot start model {stage} stage: {error}"),
-        })?;
-    if output.status.success() {
+        // Asked for through the environment rather than a CLI flag: an older
+        // installed copy of the skill script ignores it instead of aborting on
+        // an unknown argument.
+        .env(ASR_PROGRESS_ENV, "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    process::hide_console(&mut command);
+    let mut child = command.spawn().map_err(|error| SetupError::Probe {
+        pack: "asr-zh models".into(),
+        detail: format!("cannot start model {stage} stage: {error}"),
+    })?;
+
+    // stderr carries the tqdm noise and any traceback: drain it on its own
+    // thread, otherwise a full pipe buffer would block the child forever while
+    // this thread waits for the next progress line.
+    let drain = child.stderr.take().map(|mut stderr| {
+        std::thread::spawn(move || {
+            let mut captured = String::new();
+            let _ = stderr.read_to_string(&mut captured);
+            captured
+        })
+    });
+    if let Some(stdout) = child.stdout.take() {
+        for line in BufReader::new(stdout)
+            .lines()
+            .map_while(std::result::Result::ok)
+        {
+            if let Ok(event) = serde_json::from_str::<ModelStageEvent>(&line) {
+                on_event(event);
+            }
+        }
+    }
+    let status = child.wait().map_err(|error| SetupError::Probe {
+        pack: "asr-zh models".into(),
+        detail: format!("cannot wait for model {stage} stage: {error}"),
+    })?;
+    let stderr = drain
+        .and_then(|handle| handle.join().ok())
+        .unwrap_or_default();
+    if status.success() {
         return Ok(());
     }
-    let stderr = String::from_utf8_lossy(&output.stderr);
     let detail = stderr.trim();
     Err(SetupError::Probe {
         pack: "asr-zh models".into(),
         detail: if detail.is_empty() {
-            format!("model {stage} stage exited with {}", output.status)
+            format!("model {stage} stage exited with {status}")
         } else {
             format!("model {stage} stage failed: {}", tail_chars(detail, 4000))
         },
@@ -1939,10 +2087,26 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 mkdir -p "$model_root"
+progress="${MY_LLM_WIKI_ASR_PROGRESS:-}"
 case "$stage" in
-  fsmn-vad) mkdir -p "$model_root/fsmn-vad" ;;
-  sensevoice) mkdir -p "$model_root/SenseVoiceSmall" ;;
+  fsmn-vad)
+    mkdir -p "$model_root/fsmn-vad"
+    if [ -n "$progress" ]; then
+      printf '%s\n' '{"event":"download","stage":"fsmn-vad","downloaded_bytes":524288,"total_bytes":1048576}'
+    fi
+    printf '%s\n' 'downloaded fsmn-vad'
+    ;;
+  sensevoice)
+    mkdir -p "$model_root/SenseVoiceSmall"
+    if [ -n "$progress" ]; then
+      printf '%s\n' '{"event":"download","stage":"sensevoice","downloaded_bytes":1048576,"total_bytes":null}'
+    fi
+    ;;
   verify)
+    if [ -n "$progress" ]; then
+      printf '%s\n' '{"event":"verify","step":"fsmn-vad","index":1,"count":2}'
+      printf '%s\n' '{"event":"verify","step":"sensevoice","index":2,"count":2}'
+    fi
     printf '%s\n' '{"schema":1,"models":{"fsmn-vad":{"id":"iic/speech_fsmn_vad_zh-cn-16k-common-pytorch","directory":"fsmn-vad"},"sensevoice":{"id":"iic/SenseVoiceSmall","directory":"SenseVoiceSmall"}}}' > "$model_root/.my-llm-wiki-models.json"
     ;;
 esac
@@ -2009,6 +2173,22 @@ esac
             event.message == "中文视频转写运行环境与模型均已就绪"
                 && event.current == 4
                 && event.total == 4
+        }));
+        // A known repository size becomes a real percentage, an unknown one at
+        // least keeps the downloaded volume moving on screen.
+        assert!(events.borrow().iter().any(|event| {
+            event.phase == "asr-models"
+                && event.message == "正在下载语音分段模型 fsmn-vad · 0.5 MB / 1.0 MB"
+                && event.detail_percent == Some(50)
+        }));
+        assert!(events.borrow().iter().any(|event| {
+            event.phase == "asr-models"
+                && event.message == "正在下载中文转写模型 SenseVoiceSmall · 已下载 1.0 MB"
+                && event.detail_percent.is_none()
+        }));
+        assert!(events.borrow().iter().any(|event| {
+            event.message == "正在离线加载并验证第 2 / 2 个转写模型"
+                && event.detail_percent == Some(50)
         }));
 
         let model_root = temp.path().join(".my-llm-wiki/models/asr-zh");
