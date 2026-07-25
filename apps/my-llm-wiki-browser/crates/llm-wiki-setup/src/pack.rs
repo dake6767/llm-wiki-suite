@@ -411,6 +411,7 @@ fn check_pack_with_progress(
                 command.env(key, expand(root, value));
             }
         }
+        crate::process::hide_console(&mut command);
         let mut child = command.spawn().map_err(|err| SetupError::Probe {
             pack: artifact.id.clone(),
             detail: format!("cannot run {}: {err}", probe.command),
