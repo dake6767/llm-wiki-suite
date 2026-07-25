@@ -691,9 +691,6 @@ impl SetupCore {
                 total,
             );
         }
-        let schema = BUNDLED_SKILLS
-            .get_file("my-llm-wiki/assets/schema.md")
-            .ok_or_else(|| SetupError::InvalidState("bundled schema.md is missing".into()))?;
         report(
             &progress,
             "wiki",
@@ -701,7 +698,25 @@ impl SetupCore {
             completed,
             total,
         );
-        wiki::ensure(&state.wiki_path, &self.registry_path, schema.contents())?;
+        // The Wiki is the user's data, not part of the installation. Repair
+        // therefore checks it and stops there: a volume that is still on disk
+        // is left alone, routing entries in `wikis.json` are never re-claimed,
+        // and a volume the user deleted is not resurrected. A recorded path
+        // that is gone is drift — adopt a wiki the user still keeps — and only
+        // a user left with no wiki at all gets a fresh one scaffolded.
+        if !wiki::is_volume(&state.wiki_path) {
+            match wiki::registered_volume(&self.registry_path) {
+                Some(existing) => state.wiki_path = existing,
+                None => {
+                    let schema = BUNDLED_SKILLS
+                        .get_file("my-llm-wiki/assets/schema.md")
+                        .ok_or_else(|| {
+                            SetupError::InvalidState("bundled schema.md is missing".into())
+                        })?;
+                    wiki::ensure(&state.wiki_path, &self.registry_path, schema.contents())?;
+                }
+            }
+        }
         completed += 1;
         report(&progress, "wiki", "Wiki 状态已校验", completed, total);
         for id in pack_ids {
@@ -2537,6 +2552,148 @@ mod tests {
         cancel.store(false, Ordering::Relaxed);
         assert_eq!(core.repair().unwrap().state, SetupHealth::Ready);
         assert!(skill.join("SKILL.md").is_file());
+    }
+
+    /// A wiki the user keeps outside of Setup: the volume on disk plus its
+    /// entry in the shared routing table.
+    fn user_wiki(temp: &Path, registry: &Path, dir: &str, name: &str, default: bool) -> PathBuf {
+        let root = temp.join("wikis").join(dir);
+        fs::create_dir_all(root.join("wiki")).unwrap();
+        fs::write(root.join("schema.md"), "user schema").unwrap();
+        let mut document: serde_json::Value = if registry.is_file() {
+            serde_json::from_slice(&fs::read(registry).unwrap()).unwrap()
+        } else {
+            serde_json::json!({ "version": 1, "wikis": [] })
+        };
+        document["wikis"].as_array_mut().unwrap().push(
+            serde_json::json!({ "path": root, "name": name, "description": "用户自己写的", "default": default }),
+        );
+        fs::create_dir_all(registry.parent().unwrap()).unwrap();
+        fs::write(registry, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
+        root
+    }
+
+    fn registry_entries(registry: &Path) -> Vec<serde_json::Value> {
+        let document: serde_json::Value =
+            serde_json::from_slice(&fs::read(registry).unwrap()).unwrap();
+        document["wikis"].as_array().unwrap().clone()
+    }
+
+    #[test]
+    fn setup_joins_the_routing_table_without_rewriting_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = SetupCore::new(temp.path().to_path_buf());
+        let registry = core.registry_path.clone();
+        let tech = user_wiki(temp.path(), &registry, "llm-wiki", "技术", true);
+        user_wiki(temp.path(), &registry, "llm-wiki-renwen", "人文", false);
+
+        core.setup(request("codex")).unwrap();
+
+        let entries = registry_entries(&registry);
+        assert_eq!(entries.len(), 3);
+        // Which wiki is default, and what each one is called, is the user's
+        // routing decision — installing does not get a vote.
+        assert_eq!(entries[0]["path"], serde_json::json!(tech));
+        assert_eq!(entries[0]["name"], "技术");
+        assert_eq!(entries[0]["description"], "用户自己写的");
+        assert_eq!(entries[0]["default"], serde_json::json!(true));
+        assert_eq!(entries[1]["default"], serde_json::json!(false));
+        assert_eq!(
+            entries[2]["path"],
+            serde_json::json!(temp.path().join("wikis/my-llm-wiki"))
+        );
+        assert_eq!(entries[2]["default"], serde_json::json!(false));
+    }
+
+    #[test]
+    fn setup_claims_default_only_for_the_first_wiki_and_is_idempotent() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = SetupCore::new(temp.path().to_path_buf());
+        core.setup(request("codex")).unwrap();
+        let registry = core.registry_path.clone();
+        let entries = registry_entries(&registry);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["default"], serde_json::json!(true));
+
+        // The user renames it and hands the default to a wiki of their own.
+        let mut document: serde_json::Value =
+            serde_json::from_slice(&fs::read(&registry).unwrap()).unwrap();
+        document["wikis"][0]["name"] = "技术".into();
+        document["wikis"][0]["default"] = false.into();
+        fs::write(&registry, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
+        user_wiki(temp.path(), &registry, "llm-wiki-work", "工作", true);
+
+        core.setup(request("codex")).unwrap();
+
+        let entries = registry_entries(&registry);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["name"], "技术");
+        assert_eq!(entries[0]["default"], serde_json::json!(false));
+        assert_eq!(entries[1]["default"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn repair_adopts_a_wiki_the_user_keeps_instead_of_recreating_a_deleted_one() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = SetupCore::new(temp.path().to_path_buf());
+        core.setup(request("codex")).unwrap();
+        let registry = core.registry_path.clone();
+        let created = temp.path().join("wikis/my-llm-wiki");
+
+        // The user works out of their own wikis and drops the one Setup made,
+        // registry entry and all.
+        fs::remove_dir_all(&created).unwrap();
+        fs::remove_file(&registry).unwrap();
+        let tech = user_wiki(temp.path(), &registry, "llm-wiki", "技术", false);
+        let history = user_wiki(temp.path(), &registry, "llm-wiki-history", "历史", true);
+
+        let result = core.repair().unwrap();
+
+        assert!(!created.exists(), "repair recreated a deleted wiki");
+        let entries = registry_entries(&registry);
+        assert_eq!(entries.len(), 2, "repair changed the routing table");
+        assert_eq!(entries[0]["path"], serde_json::json!(tech));
+        assert_eq!(entries[0]["default"], serde_json::json!(false));
+        assert_eq!(entries[1]["default"], serde_json::json!(true));
+        // The install follows the user's default rather than pointing at a
+        // volume that is no longer there.
+        assert_eq!(result.wiki.path, history);
+        assert!(result.wiki.ready);
+        assert_eq!(result.state, SetupHealth::Ready);
+        assert_eq!(core.load_state().unwrap().unwrap().wiki_path, history);
+    }
+
+    #[test]
+    fn repair_recreates_the_wiki_only_when_the_user_has_none_left() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = SetupCore::new(temp.path().to_path_buf());
+        core.setup(request("codex")).unwrap();
+        let created = temp.path().join("wikis/my-llm-wiki");
+        fs::remove_dir_all(&created).unwrap();
+        fs::remove_file(&core.registry_path).unwrap();
+
+        let result = core.repair().unwrap();
+
+        assert!(created.join("schema.md").is_file());
+        assert_eq!(result.wiki.path, created);
+        let entries = registry_entries(&core.registry_path);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["default"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn repair_leaves_an_intact_wiki_and_its_registry_entry_untouched() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = SetupCore::new(temp.path().to_path_buf());
+        core.setup(request("codex")).unwrap();
+        let registry = core.registry_path.clone();
+        // The user deregistered the volume but kept it on disk.
+        fs::remove_file(&registry).unwrap();
+
+        core.repair().unwrap();
+
+        assert!(!registry.exists(), "repair re-claimed a dropped entry");
+        assert!(temp.path().join("wikis/my-llm-wiki/schema.md").is_file());
     }
 
     #[test]
