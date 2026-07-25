@@ -94,6 +94,7 @@ Supported operations are:
 
 ```bash
 my-llm-wiki status --json
+my-llm-wiki add-host --host claude [--replace /exact/foreign/path] --json
 my-llm-wiki repair --json
 my-llm-wiki update --check --json
 my-llm-wiki update --json
@@ -102,6 +103,13 @@ my-llm-wiki ensure-pack asr-other --json
 my-llm-wiki uninstall --host codex --json
 my-llm-wiki uninstall --all --json
 ```
+
+`add-host` gives another known host the Skills Pack that is already installed:
+it links, needs no network, and leaves the install root, Wiki, packs, and the
+other hosts untouched. Use it — not a second `setup` — when the user wants one
+more agent to see the Skills, and authorize foreign destinations the same
+path-exact way. The tray item **Skills 与工具链…** exposes the same add and
+remove per host.
 
 `update --check` is read-only apart from network access. `update` reads one
 jointly tested distribution manifest and updates only owned artifacts. When a

@@ -331,32 +331,16 @@ impl SetupCore {
         state.official_toolchain = request.install_official_toolchain;
         state.wiki_path = wiki_path;
         self.install_cli(&mut state)?;
-        let definitions: BTreeMap<_, _> = host_definitions(&self.home)
-            .into_iter()
-            .map(|host| (host.id.clone(), host))
-            .collect();
-        let mut expected_replacements = BTreeSet::new();
-        for host_id in &request.hosts {
-            let host = definitions
-                .get(host_id)
-                .ok_or_else(|| SetupError::UnknownHost(host_id.clone()))?;
-            for slug in bundled_skill_slugs() {
-                let path = host.skills_dir.join(slug);
-                if destination_state(&path, Some(&state.install_id)) == DestinationState::Foreign {
-                    expected_replacements.insert(path);
-                }
-            }
-        }
-        if let Some(missing) = expected_replacements.difference(&request.replace).next() {
-            return Err(SetupError::ForeignDestination(missing.clone()));
-        }
-        if let Some(unused) = request.replace.difference(&expected_replacements).next() {
-            return Err(SetupError::UnusedReplacement(unused.clone()));
-        }
+        let definitions = host_definitions_by_id(&self.home);
+        let mut replacements = authorize_replacements(
+            &definitions,
+            &request.hosts,
+            &state.install_id,
+            &request.replace,
+        )?;
         if !request.install_official_toolchain {
             self.remove_owned_pack(&mut state, "toolchain-base")?;
         }
-        let mut replacements = request.replace;
         let mut backups = Vec::new();
         self.save_state(&state)?;
         let mut completed = 0;
@@ -508,6 +492,108 @@ impl SetupCore {
         }
     }
 
+    /// Give one more agent host the Skills Pack that is already installed.
+    ///
+    /// `setup` is the first-run decision — install root, Wiki, official
+    /// toolchain — and needs the distribution manifest to make it. Adding a
+    /// host afterwards decides none of that: the Skills Pack is on disk, so
+    /// this stays local and offline, and leaves packs, Wiki, and the hosts it
+    /// was not asked about untouched.
+    pub fn install_hosts(
+        &self,
+        hosts: &BTreeSet<String>,
+        replace: &BTreeSet<PathBuf>,
+    ) -> Result<SetupResult> {
+        self.install_hosts_with_progress(hosts, replace, |_| {})
+    }
+
+    pub fn install_hosts_with_progress(
+        &self,
+        hosts: &BTreeSet<String>,
+        replace: &BTreeSet<PathBuf>,
+        progress: impl Fn(SetupProgress),
+    ) -> Result<SetupResult> {
+        if hosts.is_empty() {
+            return Err(SetupError::NoHosts);
+        }
+        let total = hosts.len() as u32 + 1;
+        report(&progress, "preparing", "正在校验目标与所有权", 0, total);
+        let _lock = self.lock()?;
+        let mut state = self
+            .load_state()?
+            .ok_or_else(|| SetupError::InvalidState("setup has not been completed".into()))?;
+        let definitions = host_definitions_by_id(&self.home);
+        let mut replacements =
+            authorize_replacements(&definitions, hosts, &state.install_id, replace)?;
+        let mut backups = Vec::new();
+        let mut completed = 0;
+        report(
+            &progress,
+            "skills",
+            "正在校验 Skills Pack",
+            completed,
+            total,
+        );
+        let canonical =
+            self.install_skills(&state.install_id, |slug, skill_current, skill_total| {
+                report_skill_progress(
+                    &progress,
+                    "安装目录",
+                    slug,
+                    completed,
+                    total,
+                    skill_current,
+                    skill_total,
+                )
+            })?;
+        completed += 1;
+        for host_id in hosts {
+            let host = definitions
+                .get(host_id)
+                .ok_or_else(|| SetupError::UnknownHost(host_id.clone()))?;
+            report(
+                &progress,
+                "skills",
+                &format!("正在为 {} 激活 Skills Pack", host.label),
+                completed,
+                total,
+            );
+            let owned = self.link_host(
+                host,
+                &state.install_id,
+                &canonical,
+                &mut replacements,
+                &mut backups,
+                |slug, skill_current, skill_total| {
+                    report_skill_progress(
+                        &progress,
+                        &host.label,
+                        slug,
+                        completed,
+                        total,
+                        skill_current,
+                        skill_total,
+                    )
+                },
+            )?;
+            state.hosts.insert(host_id.clone(), owned);
+            // Saved per host, so a failure on the second one leaves the first
+            // recorded exactly as it is on disk.
+            self.save_state(&state)?;
+            completed += 1;
+            report(
+                &progress,
+                "skills",
+                &format!("{} 的 Skills Pack 已激活", host.label),
+                completed,
+                total,
+            );
+        }
+        let mut result = self.status()?;
+        result.backups = backups;
+        Ok(result)
+    }
+
     pub fn repair(&self) -> Result<SetupResult> {
         self.repair_with_progress(|_| {})
     }
@@ -518,10 +604,7 @@ impl SetupCore {
             .load_state()?
             .ok_or_else(|| SetupError::InvalidState("setup has not been completed".into()))?;
         self.install_cli(&mut state)?;
-        let definitions: BTreeMap<_, _> = host_definitions(&self.home)
-            .into_iter()
-            .map(|host| (host.id.clone(), host))
-            .collect();
+        let definitions = host_definitions_by_id(&self.home);
         let host_ids: Vec<_> = state.hosts.keys().cloned().collect();
         let mut pack_ids: BTreeSet<_> = state.packs.keys().cloned().collect();
         if state.official_toolchain {
@@ -1571,6 +1654,47 @@ fn host_definitions(home: &Path) -> Vec<HostDefinition> {
     .collect()
 }
 
+fn host_definitions_by_id(home: &Path) -> BTreeMap<String, HostDefinition> {
+    host_definitions(home)
+        .into_iter()
+        .map(|host| (host.id.clone(), host))
+        .collect()
+}
+
+/// Check replacement authority against exactly the foreign destinations the
+/// selected hosts hold right now, and hand back the authority to spend.
+///
+/// Both directions matter. A foreign destination without authority stops the
+/// run before anything is written, and authority for a path that is not
+/// actually foreign is refused rather than carried into the run, where it would
+/// sit waiting to authorize a destination that turned foreign in between.
+fn authorize_replacements(
+    definitions: &BTreeMap<String, HostDefinition>,
+    hosts: &BTreeSet<String>,
+    install_id: &str,
+    replace: &BTreeSet<PathBuf>,
+) -> Result<BTreeSet<PathBuf>> {
+    let mut expected = BTreeSet::new();
+    for host_id in hosts {
+        let host = definitions
+            .get(host_id)
+            .ok_or_else(|| SetupError::UnknownHost(host_id.clone()))?;
+        for slug in bundled_skill_slugs() {
+            let path = host.skills_dir.join(slug);
+            if destination_state(&path, Some(install_id)) == DestinationState::Foreign {
+                expected.insert(path);
+            }
+        }
+    }
+    if let Some(missing) = expected.difference(replace).next() {
+        return Err(SetupError::ForeignDestination(missing.clone()));
+    }
+    if let Some(unused) = replace.difference(&expected).next() {
+        return Err(SetupError::UnusedReplacement(unused.clone()));
+    }
+    Ok(replace.clone())
+}
+
 fn bundled_skill_slugs() -> Vec<String> {
     let mut slugs: Vec<_> = BUNDLED_SKILLS
         .dirs()
@@ -2022,6 +2146,106 @@ mod tests {
             assert!(link::links_to(&destination, &canonical), "{host} is linked");
             assert!(destination.join("SKILL.md").is_file());
         }
+        assert_eq!(core.status().unwrap().state, SetupHealth::Ready);
+    }
+
+    /// Manifest sources no run may reach. An operation that expects to work
+    /// without the network fails loudly here instead of quietly depending on it.
+    fn offline(core: SetupCore) -> SetupCore {
+        let unreachable = vec!["/nonexistent/distribution.json".to_owned()];
+        core.with_manifest_sources(unreachable.clone(), unreachable)
+    }
+
+    #[test]
+    fn a_host_added_after_setup_joins_the_installed_pack() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = offline(SetupCore::new(temp.path().to_path_buf()));
+        core.setup(request("codex")).unwrap();
+
+        let result = core
+            .install_hosts(&BTreeSet::from(["claude".to_owned()]), &BTreeSet::new())
+            .unwrap();
+
+        assert_eq!(result.hosts["claude"].installed, bundled_skill_slugs());
+        let canonical = temp.path().join(".my-llm-wiki/skills/my-llm-wiki");
+        assert!(link::links_to(
+            &temp.path().join(".claude/skills/my-llm-wiki"),
+            &canonical
+        ));
+        // The host that was already there keeps its links and its state entry.
+        assert!(result.hosts["codex"].healthy);
+        assert_eq!(core.status().unwrap().state, SetupHealth::Ready);
+    }
+
+    #[test]
+    fn adding_a_host_needs_the_same_exact_authority_as_setup() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = offline(SetupCore::new(temp.path().to_path_buf()));
+        core.setup(request("codex")).unwrap();
+        let foreign = temp.path().join(".claude/skills/my-llm-wiki");
+        fs::create_dir_all(&foreign).unwrap();
+        fs::write(foreign.join("user.txt"), "mine").unwrap();
+        let claude = BTreeSet::from(["claude".to_owned()]);
+
+        let error = core.install_hosts(&claude, &BTreeSet::new()).unwrap_err();
+        assert!(matches!(error, SetupError::ForeignDestination(path) if path == foreign));
+        assert!(foreign.join("user.txt").is_file(), "nothing was touched");
+
+        // Authority for a destination that is not foreign is refused too, so a
+        // page cannot carry a stale approval into the run.
+        let unrelated = temp.path().join(".claude/skills/my-llm-wiki-video");
+        assert!(matches!(
+            core.install_hosts(&claude, &BTreeSet::from([foreign.clone(), unrelated.clone()])),
+            Err(SetupError::UnusedReplacement(path)) if path == unrelated
+        ));
+
+        let result = core
+            .install_hosts(&claude, &BTreeSet::from([foreign.clone()]))
+            .unwrap();
+        assert_eq!(result.backups.len(), 1);
+        assert!(result.backups[0].join("user.txt").is_file());
+        assert!(link::is_dir_link(&foreign));
+    }
+
+    #[test]
+    fn adding_a_host_requires_an_installation_and_a_known_host() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = offline(SetupCore::new(temp.path().to_path_buf()));
+        let codex = BTreeSet::from(["codex".to_owned()]);
+        assert!(matches!(
+            core.install_hosts(&codex, &BTreeSet::new()),
+            Err(SetupError::InvalidState(_))
+        ));
+
+        core.setup(request("codex")).unwrap();
+        assert!(matches!(
+            core.install_hosts(&BTreeSet::from(["not-an-agent".to_owned()]), &BTreeSet::new()),
+            Err(SetupError::UnknownHost(id)) if id == "not-an-agent"
+        ));
+        assert!(matches!(
+            core.install_hosts(&BTreeSet::new(), &BTreeSet::new()),
+            Err(SetupError::NoHosts)
+        ));
+    }
+
+    #[test]
+    fn a_removed_host_can_be_added_back_without_touching_the_others() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = offline(SetupCore::new(temp.path().to_path_buf()));
+        let mut setup = request("codex");
+        setup.hosts.insert("claude".into());
+        core.setup(setup).unwrap();
+
+        core.uninstall(&BTreeSet::from(["codex".to_owned()]), false)
+            .unwrap();
+        assert!(!temp.path().join(".codex/skills/my-llm-wiki").exists());
+
+        let result = core
+            .install_hosts(&BTreeSet::from(["codex".to_owned()]), &BTreeSet::new())
+            .unwrap();
+
+        assert_eq!(result.hosts.len(), 2);
+        assert!(result.hosts["claude"].healthy);
         assert_eq!(core.status().unwrap().state, SetupHealth::Ready);
     }
 

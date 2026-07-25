@@ -3,7 +3,7 @@ use llm_wiki_setup::{
     SetupRequest, SetupResult, UpdateResult,
 };
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -491,6 +491,36 @@ pub(crate) async fn setup_apply(
     .await?;
     crate::start_browser(&app).map_err(|error| error.to_string())?;
     Ok(result)
+}
+
+/// Attach the installed Skills Pack to hosts the user picked after the first
+/// run. Nothing is downloaded and nothing else in the installation moves, so
+/// unlike `setup_apply` this neither needs the network nor restarts Browser.
+#[tauri::command]
+pub(crate) async fn setup_install_hosts(
+    app: AppHandle,
+    window: WebviewWindow,
+    hosts: BTreeSet<String>,
+    replace: BTreeSet<PathBuf>,
+) -> Result<SetupResult, String> {
+    require_setup_window(&window)?;
+    let progress_app = app.clone();
+    run(move || {
+        SetupCore::from_environment()?
+            .install_hosts_with_progress(&hosts, &replace, |event| emit(&progress_app, event))
+    })
+    .await
+}
+
+/// Detach one host from the installation. Only that host's links go: the
+/// installed Skills Pack, the packs, and the Wiki belong to the others.
+#[tauri::command]
+pub(crate) async fn setup_remove_host(
+    window: WebviewWindow,
+    host: String,
+) -> Result<SetupResult, String> {
+    require_setup_window(&window)?;
+    run(move || SetupCore::from_environment()?.uninstall(&BTreeSet::from([host]), false)).await
 }
 
 #[tauri::command]

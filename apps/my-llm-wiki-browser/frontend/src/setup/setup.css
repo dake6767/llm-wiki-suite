@@ -234,6 +234,24 @@
 .host-status { display: grid; grid-template-columns: 1fr auto; margin-bottom: 10px; }
 .host-status b { color: var(--color-ink); font: 600 14px var(--font-display); }
 .host-status small { grid-column: 1/-1; overflow: hidden; color: var(--color-ink-faint); font: 9px var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.manage-host { padding: 9px 0; border-bottom: 1px solid var(--rule); }
+.manage-host:last-of-type { border-bottom: 0; }
+/* Hosts holding the pack read as the settled state; the rest sit back. */
+.manage-host:not(.is-installed) .manage-host-name b { color: var(--color-ink-soft); font-weight: 400; }
+.manage-host-row { display: grid; grid-template-columns: minmax(0,1fr) auto auto; align-items: center; gap: 10px; }
+.manage-host-name { display: grid; min-width: 0; gap: 2px; }
+.manage-host-name b { color: var(--color-ink); font: 600 14px var(--font-display); }
+.manage-host-name small { overflow: hidden; color: var(--color-ink-faint); font: 9px var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.manage-host-mark { color: var(--color-ink-faint); font: 10px var(--font-mono); white-space: nowrap; }
+.manage-host-mark.is-warn { color: var(--color-cinnabar); }
+.manage-host-action { min-height: 28px; padding-inline: 11px; border: 1px solid var(--rule); color: var(--color-ink-soft); font: 600 10px var(--font-serif); white-space: nowrap; transition: border-color .16s ease, color .16s ease, opacity .16s ease; }
+.manage-host-action:hover:not(:disabled) { border-color: var(--color-ink); color: var(--color-ink); }
+.manage-host-action:disabled { cursor: not-allowed; opacity: .4; }
+.manage-host-confirm.conflict-box { margin-top: 9px; padding: 12px; }
+.manage-host-confirm > p { margin: 0 0 6px; font-size: 11px; line-height: 1.6; }
+.manage-host-confirm label { gap: 9px; padding: 7px 0; }
+.manage-host-confirm .primary-button { min-height: 32px; margin-top: 9px; padding-inline: 15px; font-size: 11px; }
+.manage-hosts-note { display: block; margin-top: 11px; color: var(--color-ink-faint); font: 10px/1.6 var(--font-mono); }
 .panel-version { margin-bottom: 8px; color: var(--color-ink); font: 600 24px var(--font-display); }
 .pack-status { display: flex; justify-content: space-between; gap: 12px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--rule); }
 .pack-status b { color: var(--color-ink); font: 600 12px var(--font-mono); }
