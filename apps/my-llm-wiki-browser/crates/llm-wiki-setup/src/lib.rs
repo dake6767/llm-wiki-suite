@@ -8,6 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub use error::{Result, SetupError};
 use fs2::FileExt as _;
@@ -41,6 +43,7 @@ pub struct SetupCore {
     registry_path: PathBuf,
     current_manifest_sources: Vec<String>,
     latest_manifest_sources: Vec<String>,
+    cancel: Arc<AtomicBool>,
 }
 
 impl SetupCore {
@@ -83,12 +86,34 @@ impl SetupCore {
                 "https://github.com/dake6767/llm-wiki-suite/releases/latest/download/distribution.json"
                     .into(),
             ],
+            cancel: Arc::new(AtomicBool::new(false)),
         }
     }
 
     pub fn with_cli_source(mut self, source: Option<PathBuf>) -> Self {
         self.cli_source = source;
         self
+    }
+
+    /// Share a stop flag with the caller. Long operations poll it between
+    /// steps and between download chunks, so setting it ends the run with
+    /// [`SetupError::Cancelled`] instead of leaving the caller to wait out a
+    /// download that is no longer wanted.
+    pub fn with_cancel(mut self, cancel: Arc<AtomicBool>) -> Self {
+        self.cancel = cancel;
+        self
+    }
+
+    fn cancel_check(&self) -> impl Fn() -> bool + use<> {
+        let flag = Arc::clone(&self.cancel);
+        move || flag.load(Ordering::Relaxed)
+    }
+
+    fn ensure_running(&self) -> Result<()> {
+        if self.cancel.load(Ordering::Relaxed) {
+            return Err(SetupError::Cancelled);
+        }
+        Ok(())
     }
 
     pub fn with_manifest_sources(mut self, current: Vec<String>, latest: Vec<String>) -> Self {
@@ -322,8 +347,11 @@ impl SetupCore {
             let manifest = pack::fetch_manifest(&self.current_manifest_sources)?;
             self.require_current_distribution(&manifest)?;
             let artifact = pack::select_artifact(&manifest, "toolchain-base")?;
-            let installed =
-                pack::install_pack_with_progress(&self.suite_home, artifact, |event| {
+            let installed = pack::install_pack_with_progress(
+                &self.suite_home,
+                artifact,
+                &self.cancel_check(),
+                |event| {
                     report_pack_progress(
                         &progress,
                         "toolchain",
@@ -332,7 +360,8 @@ impl SetupCore {
                         total,
                         event,
                     )
-                })?;
+                },
+            )?;
             state.packs.insert("toolchain-base".into(), installed);
             completed += 1;
             report(
@@ -401,6 +430,7 @@ impl SetupCore {
         let mut replacements = BTreeSet::new();
         let mut backups = Vec::new();
         for host_id in host_ids {
+            self.ensure_running()?;
             let host = definitions
                 .get(&host_id)
                 .ok_or_else(|| SetupError::UnknownHost(host_id.clone()))?;
@@ -459,6 +489,7 @@ impl SetupCore {
         completed += 1;
         report(&progress, "wiki", "Wiki 状态已校验", completed, total);
         for id in pack_ids {
+            self.ensure_running()?;
             let installed = if let Some(existing) = state.packs.get(&id) {
                 if pack::check_owned_pack(existing).is_ok() {
                     None
@@ -466,6 +497,7 @@ impl SetupCore {
                     Some(pack::install_pack_with_progress(
                         &self.suite_home,
                         &existing.artifact,
+                        &self.cancel_check(),
                         |event| {
                             report_pack_progress(
                                 &progress,
@@ -491,6 +523,7 @@ impl SetupCore {
                 Some(pack::install_pack_with_progress(
                     &self.suite_home,
                     pack::select_artifact(&manifest, &id)?,
+                    &self.cancel_check(),
                     |event| {
                         report_pack_progress(
                             &progress,
@@ -537,9 +570,12 @@ impl SetupCore {
         let manifest = pack::fetch_manifest(&self.current_manifest_sources)?;
         self.require_current_distribution(&manifest)?;
         let artifact = pack::select_artifact(&manifest, id)?;
-        let installed = pack::install_pack_with_progress(&self.suite_home, artifact, |event| {
-            report_pack_progress(&progress, "pack", &format!("{id} 能力包"), 0, 1, event)
-        })?;
+        let installed = pack::install_pack_with_progress(
+            &self.suite_home,
+            artifact,
+            &self.cancel_check(),
+            |event| report_pack_progress(&progress, "pack", &format!("{id} 能力包"), 0, 1, event),
+        )?;
         state.packs.insert(id.to_owned(), installed);
         if id == "toolchain-base" {
             state.official_toolchain = true;
@@ -1345,6 +1381,10 @@ fn report_pack_progress(
     let (message, detail_percent) = match event {
         pack::PackProgress::CheckingExisting => (format!("正在检查本地{label}"), None),
         pack::PackProgress::Downloading(percent) => (format!("正在下载{label}"), Some(percent)),
+        pack::PackProgress::SwitchingSource { remaining } => (
+            format!("{label}下载源无响应，正在切换备用源（还有 {remaining} 个）"),
+            None,
+        ),
         pack::PackProgress::VerifyingArchive => (format!("正在校验{label}下载文件"), None),
         pack::PackProgress::Extracting(percent) => (format!("正在解压{label}"), Some(percent)),
         pack::PackProgress::HealthChecking => (format!("正在检查{label}可用性"), None),
@@ -1646,6 +1686,25 @@ mod tests {
         assert!(skill.join("SKILL.md").is_file());
         fs::remove_file(skill.join(OWNER_FILE)).unwrap();
         assert!(matches!(core.repair(), Err(SetupError::OwnershipLost(path)) if path == skill));
+    }
+
+    #[test]
+    fn repair_stops_on_request_and_stays_retryable() {
+        let temp = tempfile::tempdir().unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let core = SetupCore::new(temp.path().to_path_buf()).with_cancel(Arc::clone(&cancel));
+        core.setup(request("codex")).unwrap();
+        let skill = temp.path().join(".codex/skills/my-llm-wiki-x");
+        fs::remove_dir_all(&skill).unwrap();
+
+        cancel.store(true, Ordering::Relaxed);
+        assert!(matches!(core.repair(), Err(SetupError::Cancelled)));
+
+        // Stopping releases the lock and changes nothing else, so the user's
+        // retry is an ordinary repair rather than a wedged install.
+        cancel.store(false, Ordering::Relaxed);
+        assert_eq!(core.repair().unwrap().state, SetupHealth::Ready);
+        assert!(skill.join("SKILL.md").is_file());
     }
 
     #[test]

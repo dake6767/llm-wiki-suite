@@ -26,6 +26,8 @@ pub enum SetupError {
     InvalidState(String),
     #[error("setup operation is already running")]
     Locked,
+    #[error("operation stopped on request")]
+    Cancelled,
     #[error("cannot download {label}: {detail}")]
     Download { label: String, detail: String },
     #[error("invalid distribution manifest: {0}")]

@@ -96,7 +96,9 @@ fn main() {
             setup::setup_status,
             setup::setup_pick_wiki_directory,
             setup::setup_apply,
-            setup::setup_repair,
+            setup::setup_start_repair,
+            setup::setup_repair_status,
+            setup::setup_stop_repair,
             setup::setup_open_wiki,
             setup::setup_open_wiki_directory,
             setup::setup_update,
@@ -136,6 +138,7 @@ fn main() {
             app_handle.manage(update_manager);
             app_handle.manage(browser_runtime);
             app_handle.manage(setup::PackInstallManager::default());
+            app_handle.manage(setup::RepairManager::default());
             match llm_wiki_setup::SetupCore::from_environment().and_then(|core| core.status()) {
                 Ok(status) if status.state == llm_wiki_setup::SetupHealth::Ready => {
                     activate_browser(app.handle())?;
