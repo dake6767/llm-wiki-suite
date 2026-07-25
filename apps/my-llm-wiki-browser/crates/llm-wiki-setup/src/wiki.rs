@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 use crate::error::{Result, SetupError};
 use crate::model::WikiStatus;
@@ -21,21 +22,35 @@ const SUBDIRS: &[&str] = &[
     "wiki/synthesis",
 ];
 static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+/// Schema version of `wikis.json`, matching the Skill's `wikis.py`.
+const REGISTRY_VERSION: u64 = 1;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Registry {
     #[serde(default)]
     wikis: Vec<RegistryEntry>,
+    /// Everything else the file carries — `version`, or keys a newer Skill
+    /// writes. Kept so registering a wiki never drops what we do not model.
+    #[serde(flatten)]
+    extra: Map<String, Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RegistryEntry {
     path: PathBuf,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     description: String,
     #[serde(default)]
     default: bool,
+    #[serde(flatten)]
+    extra: Map<String, Value>,
+}
+
+/// Whether `root` holds an initialized wiki volume.
+pub(crate) fn is_volume(root: &Path) -> bool {
+    root.join("schema.md").is_file() && root.join("wiki").is_dir()
 }
 
 pub(crate) fn status(root: &Path, registry_path: &Path) -> WikiStatus {
@@ -45,8 +60,32 @@ pub(crate) fn status(root: &Path, registry_path: &Path) -> WikiStatus {
         collection_root: root.parent().unwrap_or(root).to_path_buf(),
         path: root.to_path_buf(),
         registry_path: registry_path.to_path_buf(),
-        ready: root.join("schema.md").is_file() && root.join("wiki").is_dir(),
+        ready: is_volume(root),
     }
+}
+
+/// A wiki the user already keeps: the registered default when it exists on
+/// disk, otherwise the first registered volume that does.
+///
+/// Repair uses this to re-point an install whose recorded volume is gone,
+/// instead of resurrecting a volume the user deleted. An unreadable registry
+/// simply yields nothing — it is the user's file, and reading it must never
+/// turn into an error the installer reports.
+pub(crate) fn registered_volume(registry_path: &Path) -> Option<PathBuf> {
+    let registry: Registry = fs::read(registry_path)
+        .ok()
+        .and_then(|data| serde_json::from_slice(&data).ok())?;
+    let existing: Vec<_> = registry
+        .wikis
+        .into_iter()
+        .map(|entry| (expand_home(&entry.path), entry.default))
+        .filter(|(path, _)| is_volume(path))
+        .collect();
+    existing
+        .iter()
+        .find(|(_, is_default)| *is_default)
+        .or_else(|| existing.first())
+        .map(|(path, _)| path.clone())
 }
 
 pub(crate) fn ensure(root: &Path, registry_path: &Path, schema: &[u8]) -> Result<WikiStatus> {
@@ -97,6 +136,15 @@ fn write_new(path: &Path, contents: &[u8]) -> Result<()> {
     fs::write(path, contents).map_err(|err| SetupError::io(path, err))
 }
 
+/// Add this wiki to the shared routing registry without disturbing what is
+/// already in it.
+///
+/// `wikis.json` is the user's routing table: the agent picks a wiki by matching
+/// its `description`, and `default` decides where an unclassified capture
+/// lands. Both belong to the user (the Skill's `wikis.py register` follows the
+/// same rule), so registering is an insert and never an edit — an already
+/// registered path is left exactly as it is, a new one claims `default` only
+/// when it is the only wiki there, and no other entry is touched.
 fn register(root: &Path, registry_path: &Path) -> Result<()> {
     let mut registry = if registry_path.exists() {
         let data = fs::read(registry_path).map_err(|err| SetupError::io(registry_path, err))?;
@@ -104,32 +152,59 @@ fn register(root: &Path, registry_path: &Path) -> Result<()> {
     } else {
         Registry::default()
     };
+    if registry
+        .wikis
+        .iter()
+        .any(|entry| same_volume(&expand_home(&entry.path), root))
+    {
+        return Ok(());
+    }
     let name = root
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or("my-llm-wiki")
         .to_owned();
-    let mut found = false;
-    for entry in &mut registry.wikis {
-        if entry.path == root {
-            entry.name.clone_from(&name);
-            entry.default = true;
-            found = true;
-        } else {
-            entry.default = false;
-        }
-    }
-    if !found {
-        registry.wikis.push(RegistryEntry {
-            path: root.to_path_buf(),
-            name,
-            description: String::new(),
-            default: true,
-        });
-    }
+    // A lone wiki is the natural default; once the user keeps several, which
+    // one is default is their decision to make.
+    let default = registry.wikis.is_empty();
+    registry.wikis.push(RegistryEntry {
+        path: root.to_path_buf(),
+        name,
+        description: String::new(),
+        default,
+        extra: Map::new(),
+    });
+    registry
+        .extra
+        .entry("version".to_owned())
+        .or_insert_with(|| Value::from(REGISTRY_VERSION));
     let contents =
         serde_json::to_vec_pretty(&registry).map_err(|err| SetupError::json(registry_path, err))?;
     atomic_write(registry_path, &contents)
+}
+
+/// Whether two registered paths name the same wiki. Entries are written by
+/// several tools, so compare through symlinks when both sides exist and fall
+/// back to a literal match when they do not.
+fn same_volume(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
+/// Expand a leading `~`, which a hand-edited registry may carry.
+fn expand_home(path: &Path) -> PathBuf {
+    let Ok(relative) = path.strip_prefix("~") else {
+        return path.to_path_buf();
+    };
+    match dirs::home_dir() {
+        Some(home) => home.join(relative),
+        None => path.to_path_buf(),
+    }
 }
 
 pub(crate) fn atomic_write(path: &Path, contents: &[u8]) -> Result<()> {
