@@ -95,6 +95,8 @@ fn main() {
             setup::setup_inspect,
             setup::setup_status,
             setup::setup_pick_wiki_directory,
+            setup::setup_pick_install_directory,
+            setup::setup_probe_install_root,
             setup::setup_apply,
             setup::setup_start_repair,
             setup::setup_repair_status,

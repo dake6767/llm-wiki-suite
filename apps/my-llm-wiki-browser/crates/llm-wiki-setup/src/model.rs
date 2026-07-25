@@ -49,6 +49,26 @@ pub struct SetupInspection {
     pub hosts: Vec<HostInspection>,
     pub wiki: WikiStatus,
     pub official_toolchain: PackStatus,
+    /// Where packs, models, and the Skills Pack actually live.
+    pub install_root: PathBuf,
+    /// The fixed `~/.my-llm-wiki` path every Skill resolves on its own.
+    pub install_anchor: PathBuf,
+    /// True when the anchor is a link because the root was moved off the home
+    /// volume. The Setup page shows the real location in that case.
+    pub install_root_relocated: bool,
+}
+
+/// How much room a candidate install root has, and whether it can be used.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InstallRootProbe {
+    pub path: PathBuf,
+    pub exists: bool,
+    pub writable: bool,
+    /// `None` when the volume cannot be queried, e.g. the path is unreachable.
+    pub free_bytes: Option<u64>,
+    /// True when the directory already carries a suite installation, which
+    /// setup reuses rather than treating as a conflict.
+    pub existing_install: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -60,6 +80,10 @@ pub struct SetupRequest {
     pub install_official_toolchain: bool,
     #[serde(default)]
     pub wiki_path: Option<PathBuf>,
+    /// Where to install packs, models, and the Skills Pack. `None` keeps the
+    /// default `~/.my-llm-wiki`; anything else makes the anchor a link.
+    #[serde(default)]
+    pub install_root: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -167,6 +191,19 @@ pub struct OwnedHost {
 pub struct OwnedSkill {
     pub path: PathBuf,
     pub digest: String,
+    /// Whether `path` is a link to the shared copy under the install root or a
+    /// standalone copy. Links are the norm; a filesystem that cannot hold one
+    /// falls back to copying and says so here.
+    #[serde(default)]
+    pub mode: SkillInstallMode,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SkillInstallMode {
+    #[default]
+    Link,
+    Copy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

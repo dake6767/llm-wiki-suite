@@ -2340,6 +2340,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "junction"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "160f2eade097f30263b548aae5deb12ad349c909baa710fa24b92c9090b2e006"
+dependencies = [
+ "scopeguard",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "keyboard-types"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2459,7 +2469,7 @@ checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 
 [[package]]
 name = "llm-wiki-connector"
-version = "2.0.8"
+version = "2.0.9"
 dependencies = [
  "base64 0.22.1",
  "dirs 6.0.0",
@@ -2479,7 +2489,7 @@ dependencies = [
 
 [[package]]
 name = "llm-wiki-core"
-version = "2.0.8"
+version = "2.0.9"
 dependencies = [
  "regex",
  "rusqlite",
@@ -2493,7 +2503,7 @@ dependencies = [
 
 [[package]]
 name = "llm-wiki-desktop"
-version = "2.0.8"
+version = "2.0.9"
 dependencies = [
  "anyhow",
  "arboard",
@@ -2522,7 +2532,7 @@ dependencies = [
 
 [[package]]
 name = "llm-wiki-mcp"
-version = "2.0.8"
+version = "2.0.9"
 dependencies = [
  "llm-wiki-core",
  "serde",
@@ -2531,7 +2541,7 @@ dependencies = [
 
 [[package]]
 name = "llm-wiki-server"
-version = "2.0.8"
+version = "2.0.9"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -2555,12 +2565,13 @@ dependencies = [
 
 [[package]]
 name = "llm-wiki-setup"
-version = "2.0.8"
+version = "2.0.9"
 dependencies = [
  "clap",
  "dirs 6.0.0",
  "fs2",
  "include_dir",
+ "junction",
  "reqwest 0.12.28",
  "semver",
  "serde",

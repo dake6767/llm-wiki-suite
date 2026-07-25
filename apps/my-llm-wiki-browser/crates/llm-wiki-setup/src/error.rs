@@ -16,6 +16,22 @@ pub enum SetupError {
     InvalidProviderConfig(String),
     #[error("wiki path must be absolute or start with ~/: {0}")]
     InvalidWikiPath(PathBuf),
+    #[error("install root must be an absolute directory outside ~/.my-llm-wiki: {0}")]
+    InvalidInstallRoot(PathBuf),
+    #[error(
+        "{0} is not empty and does not hold a My LLM Wiki installation; choose an empty folder"
+    )]
+    InstallRootOccupied(PathBuf),
+    #[error(
+        "{0} already holds an installation; uninstall it or remove the directory before installing elsewhere"
+    )]
+    InstallAnchorOccupied(PathBuf),
+    #[error("{anchor} already points at {current}, not {requested}")]
+    InstallRootConflict {
+        anchor: PathBuf,
+        current: PathBuf,
+        requested: PathBuf,
+    },
     #[error("foreign skill destination requires explicit replacement authority: {0}")]
     ForeignDestination(PathBuf),
     #[error("replacement authority was not used: {0}")]

@@ -47,6 +47,17 @@ interface SetupInspection {
   hosts: HostInspection[];
   wiki: WikiStatus;
   official_toolchain: PackStatus;
+  install_root: string;
+  install_anchor: string;
+  install_root_relocated: boolean;
+}
+
+interface InstallRootProbe {
+  path: string;
+  exists: boolean;
+  writable: boolean;
+  free_bytes: number | null;
+  existing_install: boolean;
 }
 
 interface HostResult {
@@ -159,6 +170,9 @@ export default function SetupApp() {
     }],
     wiki: { path: "~/wikis/my-llm-wiki", collection_root: "~/wikis", registry_path: "", ready: false },
     official_toolchain: { id: "toolchain-base", version: null, installed: false, healthy: false },
+    install_root: "~/.my-llm-wiki",
+    install_anchor: "~/.my-llm-wiki",
+    install_root_relocated: false,
   } : null;
   const previewBroken = previewRepair && !previewRepairDone;
   const previewStatus: SetupResult | null = previewComplete || previewRepair ? {
@@ -205,6 +219,8 @@ export default function SetupApp() {
   const [approvedConflicts, setApprovedConflicts] = useState<Set<string>>(new Set());
   const [installToolchain, setInstallToolchain] = useState(true);
   const [wikiPath, setWikiPath] = useState(previewMode ? "~/wikis" : "");
+  const [installRoot, setInstallRoot] = useState(previewMode ? "~/.my-llm-wiki" : "");
+  const [installRootProbe, setInstallRootProbe] = useState<InstallRootProbe | null>(null);
   const [progress, setProgress] = useState<Progress>(previewToolchain ? {
     phase: "toolchain",
     message: "正在下载推荐工具链",
@@ -228,6 +244,7 @@ export default function SetupApp() {
   const [update, setUpdate] = useState<UpdateResult | null>(null);
   const [browserUpdate, setBrowserUpdate] = useState<BrowserUpdateStatus | null>(null);
   const [pickingWikiPath, setPickingWikiPath] = useState(false);
+  const [pickingInstallRoot, setPickingInstallRoot] = useState(false);
   const [asrInstall, setAsrInstall] = useState<PackInstallJob | null>(null);
   const [repairJob, setRepairJob] = useState<RepairJob | null>(previewRepairDone ? {
     state: "done",
@@ -278,6 +295,7 @@ export default function SetupApp() {
         setRepairJob(nextRepair);
         setSelectedHosts(new Set());
         setWikiPath(nextInspection.wiki.collection_root);
+        setInstallRoot(nextInspection.install_root);
         setView(nextStatus.state === "not-configured" ? "welcome" : "manage");
       })
       .catch((reason: unknown) => {
@@ -290,6 +308,28 @@ export default function SetupApp() {
       void unlisten.then((dispose) => dispose());
     };
   }, []);
+
+  // Free space is the reason people move the install, so the chosen location is
+  // checked while it is being typed rather than only when a multi-gigabyte
+  // download runs out of room.
+  useEffect(() => {
+    if (previewMode) return;
+    const path = installRoot.trim();
+    if (!path) {
+      setInstallRootProbe(null);
+      return;
+    }
+    let mounted = true;
+    const timer = setTimeout(() => {
+      invoke<InstallRootProbe>("setup_probe_install_root", { path })
+        .then((probe) => mounted && setInstallRootProbe(probe))
+        .catch(() => mounted && setInstallRootProbe(null));
+    }, 250);
+    return () => {
+      mounted = false;
+      clearTimeout(timer);
+    };
+  }, [installRoot]);
 
   const pollingBrowserUpdate =
     browserUpdate?.state === "checking" || browserUpdate?.state === "downloading";
@@ -360,7 +400,7 @@ export default function SetupApp() {
       phase: "preparing",
       message: "安装任务已启动",
       current: 0,
-      total: selectedHosts.size + 1 + Number(installToolchain),
+      total: selectedHosts.size + 2 + Number(installToolchain),
     });
     try {
       const result = await invoke<SetupResult>("setup_apply", {
@@ -369,6 +409,7 @@ export default function SetupApp() {
           replace: [...approvedConflicts],
           install_official_toolchain: installToolchain,
           wiki_path: wikiPath.trim(),
+          install_root: installRoot.trim() || null,
         },
       });
       setStatus(result);
@@ -378,6 +419,22 @@ export default function SetupApp() {
       setView("review");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function pickInstallRoot() {
+    if (previewMode) return;
+    setPickingInstallRoot(true);
+    setError(null);
+    try {
+      const selected = await invoke<string | null>("setup_pick_install_directory", {
+        current: installRoot.trim() || null,
+      });
+      if (selected) setInstallRoot(selected);
+    } catch (reason) {
+      setError(messageOf(reason));
+    } finally {
+      setPickingInstallRoot(false);
     }
   }
 
@@ -522,18 +579,30 @@ export default function SetupApp() {
             installToolchain={installToolchain}
             wikiPath={wikiPath}
             pickingWikiPath={pickingWikiPath}
+            installRoot={installRoot}
+            installRootProbe={installRootProbe}
+            pickingInstallRoot={pickingInstallRoot}
             onToggleConflict={toggleConflict}
             onToggleToolchain={() => setInstallToolchain((value) => !value)}
             onWikiPathChange={setWikiPath}
             onPickWikiPath={() => void pickWikiPath()}
+            onInstallRootChange={setInstallRoot}
+            onPickInstallRoot={() => void pickInstallRoot()}
             onBack={() => setView("hosts")}
             onApply={() => void apply()}
-            disabled={busy || !selectedHosts.size || !conflictsApproved || !wikiPath.trim()}
+            disabled={
+              busy
+              || !selectedHosts.size
+              || !conflictsApproved
+              || !wikiPath.trim()
+              || !installRoot.trim()
+            }
           />
         ) : view === "progress" ? (
           <ProgressView
             progress={progress}
             tasks={[
+              "展开 Skills Pack 到安装目录",
               ...[...selected]
                 .sort((left, right) => left.id.localeCompare(right.id))
                 .map((host) => `为 ${host.label} 激活 Skills Pack`),
@@ -631,17 +700,22 @@ function HostSelection({ hosts, selected, onToggle, onBack, onContinue }: {
   );
 }
 
-function Review({ hosts, conflicts, approved, installToolchain, wikiPath, pickingWikiPath, onToggleConflict, onToggleToolchain, onWikiPathChange, onPickWikiPath, onBack, onApply, disabled }: {
+function Review({ hosts, conflicts, approved, installToolchain, wikiPath, pickingWikiPath, installRoot, installRootProbe, pickingInstallRoot, onToggleConflict, onToggleToolchain, onWikiPathChange, onPickWikiPath, onInstallRootChange, onPickInstallRoot, onBack, onApply, disabled }: {
   hosts: HostInspection[];
   conflicts: SkillDestination[];
   approved: Set<string>;
   installToolchain: boolean;
   wikiPath: string;
   pickingWikiPath: boolean;
+  installRoot: string;
+  installRootProbe: InstallRootProbe | null;
+  pickingInstallRoot: boolean;
   onToggleConflict: (path: string) => void;
   onToggleToolchain: () => void;
   onWikiPathChange: (path: string) => void;
   onPickWikiPath: () => void;
+  onInstallRootChange: (path: string) => void;
+  onPickInstallRoot: () => void;
   onBack: () => void;
   onApply: () => void;
   disabled: boolean;
@@ -653,6 +727,13 @@ function Review({ hosts, conflicts, approved, installToolchain, wikiPath, pickin
       <div className="review-sheet">
         <ReviewRow label="Skills Pack" value={`完整安装 · ${hosts.length} 个宿主`} note={hosts.map((host) => host.label).join("、")} />
         <RecommendedToolchain install={installToolchain} onToggle={onToggleToolchain} />
+        <InstallLocation
+          path={installRoot}
+          probe={installRootProbe}
+          picking={pickingInstallRoot}
+          onChange={onInstallRootChange}
+          onPick={onPickInstallRoot}
+        />
         <WikiLocation path={wikiPath} picking={pickingWikiPath} onChange={onWikiPathChange} onPick={onPickWikiPath} />
       </div>
       {conflicts.length ? (
@@ -671,6 +752,56 @@ function Review({ hosts, conflicts, approved, installToolchain, wikiPath, pickin
 
 function ReviewRow({ label, value, note, action }: { label: string; value: string; note: string; action?: React.ReactNode }) {
   return <div><span>{label}</span><div><b>{value}</b><small>{note}</small></div>{action}</div>;
+}
+
+function InstallLocation({ path, probe, picking, onChange, onPick }: {
+  path: string;
+  probe: InstallRootProbe | null;
+  picking: boolean;
+  onChange: (path: string) => void;
+  onPick: () => void;
+}) {
+  const blocked = probe && probe.exists && !probe.existing_install && !probe.writable;
+  return (
+    <div className="wiki-location-row">
+      <span>安装位置</span>
+      <div className="wiki-location-copy">
+        <b>选择工具链与 Skills 的安装目录</b>
+        <div className="wiki-path-control">
+          <input
+            aria-label="工具链安装目录"
+            value={path}
+            onChange={(event) => onChange(event.target.value)}
+            placeholder="~/.my-llm-wiki"
+            spellCheck={false}
+          />
+          <button type="button" onClick={onPick} disabled={picking}>
+            {picking ? "正在打开…" : "选择文件夹"}
+          </button>
+        </div>
+        <small>
+          工具链、语音模型和 Skills 都会装在这里，合计可能超过 5 GB。放到非系统盘可以省下系统盘空间，重装系统后数据也还在。
+          {probe?.existing_install
+            ? " 该目录已有一份安装，将直接复用。"
+            : blocked
+              ? " 该目录不可写，请换一个位置。"
+              : null}
+          {probe?.free_bytes != null ? ` 可用空间 ${formatBytes(probe.free_bytes)}。` : null}
+        </small>
+      </div>
+    </div>
+  );
+}
+
+function formatBytes(bytes: number) {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value < 10 && unit > 0 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
 }
 
 function WikiLocation({ path, picking, onChange, onPick }: {

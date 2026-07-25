@@ -1,8 +1,10 @@
 mod error;
+mod link;
 mod mcp_bridge;
 mod model;
 mod pack;
 mod process;
+mod root;
 mod wiki;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -35,8 +37,14 @@ const ASR_ZH_VAD_ID: &str = "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch";
 const ASR_ZH_SENSEVOICE_ID: &str = "iic/SenseVoiceSmall";
 const ASR_PROGRESS_ENV: &str = "MY_LLM_WIKI_ASR_PROGRESS";
 
+#[derive(Clone)]
 pub struct SetupCore {
     home: PathBuf,
+    /// The fixed `~/.my-llm-wiki` path. Every Skill and every already-registered
+    /// MCP server resolves this on its own, so it never moves; when the user
+    /// installs elsewhere it becomes a link to `suite_home`.
+    anchor: PathBuf,
+    /// The real install root. Equal to `anchor` for a default install.
     suite_home: PathBuf,
     state_path: PathBuf,
     providers_path: PathBuf,
@@ -63,20 +71,20 @@ impl SetupCore {
     }
 
     pub fn new(home: PathBuf) -> Self {
-        let suite_home = home.join(".my-llm-wiki");
+        let anchor = home.join(root::ANCHOR_NAME);
+        let suite_home = root::resolve(&anchor);
         let version = DISTRIBUTION_VERSION;
         Self {
-            state_path: suite_home.join("setup-state.json"),
-            providers_path: suite_home.join("providers.json"),
-            cli_path: suite_home
-                .join("bin")
-                .join(if cfg!(windows) { "my-llm-wiki.exe" } else { "my-llm-wiki" }),
+            state_path: PathBuf::new(),
+            providers_path: PathBuf::new(),
+            cli_path: PathBuf::new(),
             cli_source: None,
-            registry_path: suite_home.join("wikis.json"),
+            registry_path: PathBuf::new(),
             wiki_path: home
                 .join(DEFAULT_WIKI_COLLECTION_RELATIVE)
                 .join(DEFAULT_WIKI_NAME),
-            suite_home,
+            anchor,
+            suite_home: PathBuf::new(),
             home,
             current_manifest_sources: vec![
                 format!("https://wiki.htmlgo.to/_distribution/v{version}/distribution.json"),
@@ -91,6 +99,57 @@ impl SetupCore {
             ],
             cancel: Arc::new(AtomicBool::new(false)),
         }
+        .with_suite_home(suite_home)
+    }
+
+    /// Re-derive every path that hangs off the install root.
+    ///
+    /// Setup calls this after the user picks a location, so the same core can
+    /// be built from the anchor and then rebased onto the chosen root before it
+    /// takes the lock or writes anything.
+    fn with_suite_home(mut self, suite_home: PathBuf) -> Self {
+        self.state_path = suite_home.join("setup-state.json");
+        self.providers_path = suite_home.join("providers.json");
+        self.cli_path = suite_home.join("bin").join(if cfg!(windows) {
+            "my-llm-wiki.exe"
+        } else {
+            "my-llm-wiki"
+        });
+        self.registry_path = suite_home.join("wikis.json");
+        self.suite_home = suite_home;
+        self
+    }
+
+    /// The one installed copy of the Skills Pack, which every host links to.
+    fn canonical_skills_dir(&self) -> PathBuf {
+        self.suite_home.join("skills")
+    }
+
+    /// Where packs, models, and the Skills Pack actually live.
+    pub fn install_root(&self) -> &Path {
+        &self.suite_home
+    }
+
+    /// The fixed `~/.my-llm-wiki` path. Equal to [`Self::install_root`] unless
+    /// the install was moved to another location.
+    pub fn install_anchor(&self) -> &Path {
+        &self.anchor
+    }
+
+    /// Report free space and usability for a location the user is considering.
+    pub fn probe_install_root(&self, path: &Path) -> Result<InstallRootProbe> {
+        let path = root::requested(&self.anchor, &self.home, Some(path))?;
+        let existing = path.join("setup-state.json").is_file();
+        // Free space and write access belong to the nearest directory that
+        // exists: a root the user is about to create has neither yet.
+        let probe_dir = nearest_existing_dir(&path);
+        Ok(InstallRootProbe {
+            exists: path.is_dir(),
+            writable: probe_dir.is_some_and(is_writable_dir),
+            free_bytes: probe_dir.and_then(|dir| fs2::available_space(dir).ok()),
+            existing_install: existing,
+            path,
+        })
     }
 
     pub fn with_cli_source(mut self, source: Option<PathBuf>) -> Self {
@@ -163,6 +222,9 @@ impl SetupCore {
             hosts,
             wiki: wiki::status(wiki_path, &self.registry_path),
             official_toolchain: self.toolchain_status(state.as_ref()),
+            install_root_relocated: self.suite_home != self.anchor,
+            install_root: self.suite_home.clone(),
+            install_anchor: self.anchor.clone(),
         })
     }
 
@@ -228,7 +290,23 @@ impl SetupCore {
         if request.hosts.is_empty() {
             return Err(SetupError::NoHosts);
         }
-        let total = request.hosts.len() as u32 + 1 + u32::from(request.install_official_toolchain);
+        // Settle the install location before anything else touches disk: the
+        // lock, the state file, and every pack path below have to belong to the
+        // root the user chose, not to the one this core was built from.
+        let install_root =
+            root::requested(&self.anchor, &self.home, request.install_root.as_deref())?;
+        root::ensure_anchor(&self.anchor, &install_root)?;
+        self.clone()
+            .with_suite_home(install_root)
+            .setup_resolved(request, progress)
+    }
+
+    fn setup_resolved(
+        &self,
+        request: SetupRequest,
+        progress: impl Fn(SetupProgress),
+    ) -> Result<SetupResult> {
+        let total = request.hosts.len() as u32 + 2 + u32::from(request.install_official_toolchain);
         report(&progress, "preparing", "正在校验目标与所有权", 0, total);
         let _lock = self.lock()?;
         let existing_state = self.load_state()?;
@@ -282,6 +360,27 @@ impl SetupCore {
         let mut backups = Vec::new();
         self.save_state(&state)?;
         let mut completed = 0;
+        report(
+            &progress,
+            "skills",
+            "正在展开 Skills Pack",
+            completed,
+            total,
+        );
+        let canonical =
+            self.install_skills(&state.install_id, |slug, skill_current, skill_total| {
+                report_skill_progress(
+                    &progress,
+                    "安装目录",
+                    slug,
+                    completed,
+                    total,
+                    skill_current,
+                    skill_total,
+                )
+            })?;
+        completed += 1;
+        report(&progress, "skills", "Skills Pack 已展开", completed, total);
         for host_id in request.hosts {
             let host = definitions
                 .get(&host_id)
@@ -293,9 +392,10 @@ impl SetupCore {
                 completed,
                 total,
             );
-            let owned = self.install_host(
+            let owned = self.link_host(
                 host,
                 &state.install_id,
+                &canonical,
                 &mut replacements,
                 &mut backups,
                 |slug, skill_current, skill_total| {
@@ -427,15 +527,17 @@ impl SetupCore {
         if state.official_toolchain {
             pack_ids.insert("toolchain-base".into());
         }
-        let total = host_ids.len() as u32 + 1 + pack_ids.len() as u32;
+        let total = host_ids.len() as u32 + 2 + pack_ids.len() as u32;
         report(&progress, "preparing", "正在检查当前安装", 0, total);
         let mut completed = 0;
         let mut replacements = BTreeSet::new();
         let mut backups = Vec::new();
-        for host_id in host_ids {
-            self.ensure_running()?;
+        // Prove ownership of every recorded destination before writing
+        // anything, so a host that was taken over stops the run instead of
+        // stopping it halfway through.
+        for host_id in &host_ids {
             let host = definitions
-                .get(&host_id)
+                .get(host_id)
                 .ok_or_else(|| SetupError::UnknownHost(host_id.clone()))?;
             for slug in bundled_skill_slugs() {
                 let path = host.skills_dir.join(&slug);
@@ -444,6 +546,33 @@ impl SetupCore {
                     DestinationState::Absent | DestinationState::Owned => {}
                 }
             }
+        }
+        report(
+            &progress,
+            "skills",
+            "正在校验 Skills Pack",
+            completed,
+            total,
+        );
+        let canonical =
+            self.install_skills(&state.install_id, |slug, skill_current, skill_total| {
+                report_skill_progress(
+                    &progress,
+                    "安装目录",
+                    slug,
+                    completed,
+                    total,
+                    skill_current,
+                    skill_total,
+                )
+            })?;
+        completed += 1;
+        report(&progress, "skills", "Skills Pack 已校验", completed, total);
+        for host_id in host_ids {
+            self.ensure_running()?;
+            let host = definitions
+                .get(&host_id)
+                .ok_or_else(|| SetupError::UnknownHost(host_id.clone()))?;
             report(
                 &progress,
                 "skills",
@@ -451,9 +580,10 @@ impl SetupCore {
                 completed,
                 total,
             );
-            let owned = self.install_host(
+            let owned = self.link_host(
                 host,
                 &state.install_id,
+                &canonical,
                 &mut replacements,
                 &mut backups,
                 |slug, skill_current, skill_total| {
@@ -765,6 +895,7 @@ impl SetupCore {
             .collect();
         let mut replacements = BTreeSet::new();
         let mut backups = Vec::new();
+        let canonical = self.install_skills(&state.install_id, |_, _, _| {})?;
         for host_id in state.hosts.keys().cloned().collect::<Vec<_>>() {
             let host = definitions
                 .get(&host_id)
@@ -775,9 +906,10 @@ impl SetupCore {
                     return Err(SetupError::OwnershipLost(path));
                 }
             }
-            let owned = self.install_host(
+            let owned = self.link_host(
                 host,
                 &state.install_id,
+                &canonical,
                 &mut replacements,
                 &mut backups,
                 |_, _, _| {},
@@ -850,13 +982,20 @@ impl SetupCore {
                 .get(&host_id)
                 .ok_or_else(|| SetupError::UnknownHost(host_id.clone()))?;
             for skill in owned.skills.values() {
-                fs::remove_dir_all(&skill.path).map_err(|err| SetupError::io(&skill.path, err))?;
+                remove_installed_skill(&skill.path)?;
             }
             state.hosts.remove(&host_id);
         }
         if all {
             for id in state.packs.keys().cloned().collect::<Vec<_>>() {
                 self.remove_owned_pack(&mut state, &id)?;
+            }
+            // The installed Skills Pack goes only once every host that linked
+            // to it has been detached above.
+            let skills_dir = self.canonical_skills_dir();
+            if skills_dir.is_dir() {
+                fs::remove_dir_all(&skills_dir)
+                    .map_err(|error| SetupError::io(&skills_dir, error))?;
             }
             if let Some(cli) = state.cli_path.take()
                 && cli.exists()
@@ -896,10 +1035,55 @@ impl SetupCore {
         Ok(config.clone())
     }
 
-    fn install_host(
+    /// Expand the bundled Skills Pack into the install root.
+    ///
+    /// This is the only copy written to disk; hosts get links to it. One copy
+    /// instead of one per host also means a Skills Pack that moves with the
+    /// install root when the user puts it on another volume.
+    fn install_skills(
+        &self,
+        install_id: &str,
+        progress: impl Fn(&str, u32, u32),
+    ) -> Result<BTreeMap<String, CanonicalSkill>> {
+        let skills_dir = self.canonical_skills_dir();
+        fs::create_dir_all(&skills_dir).map_err(|err| SetupError::io(&skills_dir, err))?;
+        let mut installed = BTreeMap::new();
+        let slugs = bundled_skill_slugs();
+        let total = slugs.len() as u32;
+        for (index, slug) in slugs.into_iter().enumerate() {
+            progress(&slug, index as u32, total);
+            let source = BUNDLED_SKILLS.get_dir(&slug).ok_or_else(|| {
+                SetupError::InvalidState(format!("bundled skill missing: {slug}"))
+            })?;
+            let digest = digest_dir(source);
+            let destination = skills_dir.join(&slug);
+            let stage =
+                skills_dir.join(format!(".my-llm-wiki-stage-{}-{slug}", std::process::id()));
+            stage_skill(source, &stage, install_id, &slug, &digest)?;
+            swap_dir(&stage, &destination)?;
+            installed.insert(
+                slug,
+                CanonicalSkill {
+                    path: destination,
+                    digest,
+                },
+            );
+        }
+        progress("", total, total);
+        Ok(installed)
+    }
+
+    /// Point one host's skills directory at the installed Skills Pack.
+    ///
+    /// A destination that already links to the right place is left alone, so
+    /// repeated setup and repair runs are quiet. Anything else the host holds
+    /// is treated exactly as before: ours to replace, or foreign and requiring
+    /// the caller's explicit per-path authority before it is backed up.
+    fn link_host(
         &self,
         host: &HostDefinition,
         install_id: &str,
+        canonical: &BTreeMap<String, CanonicalSkill>,
         replacements: &mut BTreeSet<PathBuf>,
         backups: &mut Vec<PathBuf>,
         progress: impl Fn(&str, u32, u32),
@@ -907,72 +1091,21 @@ impl SetupCore {
         fs::create_dir_all(&host.skills_dir)
             .map_err(|err| SetupError::io(&host.skills_dir, err))?;
         let mut skills = BTreeMap::new();
-        let slugs = bundled_skill_slugs();
-        let total = slugs.len() as u32;
-        for (index, slug) in slugs.into_iter().enumerate() {
-            progress(&slug, index as u32, total);
-            let destination = host.skills_dir.join(&slug);
-            let current = destination_state(&destination, Some(install_id));
-            if current == DestinationState::Foreign && !replacements.remove(&destination) {
-                return Err(SetupError::ForeignDestination(destination));
-            }
-            let source = BUNDLED_SKILLS.get_dir(&slug).ok_or_else(|| {
-                SetupError::InvalidState(format!("bundled skill missing: {slug}"))
-            })?;
-            let digest = digest_dir(source);
-            let stage = host
-                .skills_dir
-                .join(format!(".my-llm-wiki-stage-{}-{slug}", std::process::id()));
-            if stage.exists() {
-                fs::remove_dir_all(&stage).map_err(|err| SetupError::io(&stage, err))?;
-            }
-            write_dir(source, &stage)?;
-            let marker = OwnershipMarker {
-                schema: OWNER_SCHEMA,
-                install_id: install_id.to_owned(),
-                artifact: slug.clone(),
-                version: DISTRIBUTION_VERSION.to_owned(),
-                digest: digest.clone(),
-            };
-            let marker_path = stage.join(OWNER_FILE);
-            let marker_data = serde_json::to_vec_pretty(&marker)
-                .map_err(|err| SetupError::json(&marker_path, err))?;
-            fs::write(&marker_path, marker_data)
-                .map_err(|err| SetupError::io(&marker_path, err))?;
-
-            let old = if destination.exists() {
-                let old = if current == DestinationState::Foreign {
-                    backup_path(&host.skills_dir, &slug)
-                } else {
-                    host.skills_dir
-                        .join(format!(".my-llm-wiki-old-{}-{slug}", std::process::id()))
-                };
-                if let Some(parent) = old.parent() {
-                    fs::create_dir_all(parent).map_err(|err| SetupError::io(parent, err))?;
-                }
-                fs::rename(&destination, &old).map_err(|err| SetupError::io(&destination, err))?;
-                Some((old, current == DestinationState::Foreign))
+        let total = canonical.len() as u32;
+        for (index, (slug, skill)) in canonical.iter().enumerate() {
+            progress(slug, index as u32, total);
+            let destination = host.skills_dir.join(slug);
+            let mode = if link::links_to(&destination, &skill.path) {
+                SkillInstallMode::Link
             } else {
-                None
+                self.attach_skill(host, install_id, slug, skill, replacements, backups)?
             };
-            if let Err(err) = fs::rename(&stage, &destination) {
-                if let Some((old, _)) = old.as_ref() {
-                    let _ = fs::rename(old, &destination);
-                }
-                return Err(SetupError::io(&stage, err));
-            }
-            if let Some((old, foreign)) = old {
-                if foreign {
-                    backups.push(old);
-                } else {
-                    fs::remove_dir_all(&old).map_err(|err| SetupError::io(&old, err))?;
-                }
-            }
             skills.insert(
-                slug,
+                slug.clone(),
                 OwnedSkill {
                     path: destination,
-                    digest,
+                    digest: skill.digest.clone(),
+                    mode,
                 },
             );
         }
@@ -981,6 +1114,53 @@ impl SetupCore {
             skills_dir: host.skills_dir.clone(),
             skills,
         })
+    }
+
+    /// Clear one host destination and attach the Skills Pack to it.
+    fn attach_skill(
+        &self,
+        host: &HostDefinition,
+        install_id: &str,
+        slug: &str,
+        skill: &CanonicalSkill,
+        replacements: &mut BTreeSet<PathBuf>,
+        backups: &mut Vec<PathBuf>,
+    ) -> Result<SkillInstallMode> {
+        let destination = host.skills_dir.join(slug);
+        let current = destination_state(&destination, Some(install_id));
+        if current == DestinationState::Foreign && !replacements.remove(&destination) {
+            return Err(SetupError::ForeignDestination(destination));
+        }
+        // `symlink_metadata` rather than `exists`, so a link left dangling by a
+        // detached volume is cleared instead of read straight through.
+        if fs::symlink_metadata(&destination).is_ok() {
+            if current == DestinationState::Foreign {
+                let backup = backup_path(&host.skills_dir, slug);
+                if let Some(parent) = backup.parent() {
+                    fs::create_dir_all(parent).map_err(|err| SetupError::io(parent, err))?;
+                }
+                fs::rename(&destination, &backup)
+                    .map_err(|err| SetupError::io(&destination, err))?;
+                backups.push(backup);
+            } else {
+                remove_installed_skill(&destination)?;
+            }
+        }
+        if link::create_dir_link(&destination, &skill.path).is_ok() {
+            return Ok(SkillInstallMode::Link);
+        }
+        // A destination that cannot hold a link — a host directory on a
+        // filesystem without them — still gets a working Skills Pack; it just
+        // does not get to share the installed one.
+        let source = BUNDLED_SKILLS
+            .get_dir(slug)
+            .ok_or_else(|| SetupError::InvalidState(format!("bundled skill missing: {slug}")))?;
+        let stage = host
+            .skills_dir
+            .join(format!(".my-llm-wiki-stage-{}-{slug}", std::process::id()));
+        stage_skill(source, &stage, install_id, slug, &skill.digest)?;
+        swap_dir(&stage, &destination)?;
+        Ok(SkillInstallMode::Copy)
     }
 
     fn install_cli(&self, state: &mut SetupState) -> Result<()> {
@@ -1024,15 +1204,40 @@ impl SetupCore {
     }
 
     fn host_results(&self, state: &SetupState) -> BTreeMap<String, HostResult> {
+        // Linked hosts all read the same tree, so hash it once here instead of
+        // once per host per skill.
+        let skills_dir = self.canonical_skills_dir();
+        let canonical: BTreeMap<String, Option<String>> = bundled_skill_slugs()
+            .into_iter()
+            .map(|slug| {
+                let digest = digest_path(&skills_dir.join(&slug));
+                (slug, digest)
+            })
+            .collect();
         state
             .hosts
             .iter()
             .map(|(id, host)| {
                 let installed: Vec<_> = host.skills.keys().cloned().collect();
-                let healthy = host.skills.values().all(|skill| {
-                    destination_state(&skill.path, Some(&state.install_id))
-                        == DestinationState::Owned
-                        && digest_path(&skill.path).as_deref() == Some(skill.digest.as_str())
+                let healthy = host.skills.iter().all(|(slug, skill)| {
+                    let content = match skill.mode {
+                        // A link is healthy only when it still resolves to the
+                        // installed copy: one that drifted elsewhere could pass
+                        // an ownership check on whatever it now points at.
+                        SkillInstallMode::Link => {
+                            link::links_to(&skill.path, &skills_dir.join(slug))
+                                && canonical.get(slug).and_then(Option::as_deref)
+                                    == Some(skill.digest.as_str())
+                        }
+                        SkillInstallMode::Copy => {
+                            !link::is_dir_link(&skill.path)
+                                && digest_path(&skill.path).as_deref()
+                                    == Some(skill.digest.as_str())
+                        }
+                    };
+                    content
+                        && destination_state(&skill.path, Some(&state.install_id))
+                            == DestinationState::Owned
                 });
                 (
                     id.clone(),
@@ -1397,6 +1602,105 @@ fn destination_state(path: &Path, install_id: Option<&str>) -> DestinationState 
     }
 }
 
+/// One skill as installed under the install root, which host destinations link
+/// to and health checks compare against.
+struct CanonicalSkill {
+    path: PathBuf,
+    digest: String,
+}
+
+/// Write a skill and its ownership marker into a staging directory.
+fn stage_skill(
+    source: &Dir<'_>,
+    stage: &Path,
+    install_id: &str,
+    slug: &str,
+    digest: &str,
+) -> Result<()> {
+    if stage.exists() {
+        fs::remove_dir_all(stage).map_err(|err| SetupError::io(stage, err))?;
+    }
+    write_dir(source, stage)?;
+    let marker = OwnershipMarker {
+        schema: OWNER_SCHEMA,
+        install_id: install_id.to_owned(),
+        artifact: slug.to_owned(),
+        version: DISTRIBUTION_VERSION.to_owned(),
+        digest: digest.to_owned(),
+    };
+    let marker_path = stage.join(OWNER_FILE);
+    let marker_data =
+        serde_json::to_vec_pretty(&marker).map_err(|err| SetupError::json(&marker_path, err))?;
+    fs::write(&marker_path, marker_data).map_err(|err| SetupError::io(&marker_path, err))
+}
+
+/// Move a staged directory into place, keeping whatever was there until the
+/// move succeeds so a failure leaves the destination as it was found.
+fn swap_dir(stage: &Path, destination: &Path) -> Result<()> {
+    let previous = if fs::symlink_metadata(destination).is_ok() {
+        let name = destination
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("skill");
+        let previous =
+            destination.with_file_name(format!(".my-llm-wiki-old-{}-{name}", std::process::id()));
+        if fs::symlink_metadata(&previous).is_ok() {
+            remove_installed_skill(&previous)?;
+        }
+        fs::rename(destination, &previous).map_err(|err| SetupError::io(destination, err))?;
+        Some(previous)
+    } else {
+        None
+    };
+    if let Err(err) = fs::rename(stage, destination) {
+        if let Some(previous) = previous.as_ref() {
+            let _ = fs::rename(previous, destination);
+        }
+        return Err(SetupError::io(stage, err));
+    }
+    if let Some(previous) = previous {
+        remove_installed_skill(&previous)?;
+    }
+    Ok(())
+}
+
+/// Remove a skill destination we own.
+///
+/// A link is detached rather than followed: the target holds the one installed
+/// copy every other host is also using, so recursing through it would delete
+/// the installation instead of one reference to it.
+fn remove_installed_skill(path: &Path) -> Result<()> {
+    if link::is_dir_link(path) {
+        link::remove_dir_link(path).map_err(|err| SetupError::io(path, err))
+    } else {
+        fs::remove_dir_all(path).map_err(|err| SetupError::io(path, err))
+    }
+}
+
+fn nearest_existing_dir(path: &Path) -> Option<&Path> {
+    let mut candidate = Some(path);
+    while let Some(directory) = candidate {
+        if directory.is_dir() {
+            return Some(directory);
+        }
+        candidate = directory.parent();
+    }
+    None
+}
+
+/// Whether a directory accepts new entries, answered by trying rather than by
+/// reading permission bits, which do not tell the whole story on Windows.
+fn is_writable_dir(path: &Path) -> bool {
+    let probe = path.join(format!(".my-llm-wiki-probe-{}", std::process::id()));
+    match fs::create_dir(&probe) {
+        Ok(()) => {
+            let _ = fs::remove_dir(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 fn write_dir(source: &Dir<'_>, destination: &Path) -> Result<()> {
     fs::create_dir_all(destination).map_err(|err| SetupError::io(destination, err))?;
     for dir in source.dirs() {
@@ -1663,6 +1967,7 @@ mod tests {
             replace: BTreeSet::new(),
             install_official_toolchain: false,
             wiki_path: None,
+            install_root: None,
         }
     }
 
@@ -1698,6 +2003,153 @@ mod tests {
                 .is_file()
         );
         assert_eq!(core.status().unwrap().state, SetupHealth::Ready);
+    }
+
+    #[test]
+    fn skills_are_installed_once_and_every_host_links_to_that_copy() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = SetupCore::new(temp.path().to_path_buf());
+        let mut setup = request("codex");
+        setup.hosts.insert("claude".into());
+        core.setup(setup).unwrap();
+
+        let canonical = temp.path().join(".my-llm-wiki/skills/my-llm-wiki");
+        assert!(canonical.join("SKILL.md").is_file());
+        assert!(!link::is_dir_link(&canonical));
+        for host in [".codex", ".claude"] {
+            let destination = temp.path().join(host).join("skills/my-llm-wiki");
+            assert!(link::links_to(&destination, &canonical), "{host} is linked");
+            assert!(destination.join("SKILL.md").is_file());
+        }
+        assert_eq!(core.status().unwrap().state, SetupHealth::Ready);
+    }
+
+    #[test]
+    fn a_chosen_install_root_holds_the_install_and_the_anchor_points_at_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let cli_source = temp.path().join("source-cli");
+        fs::write(&cli_source, "cli").unwrap();
+        let root = temp.path().join("volume").join("my-llm-wiki");
+        let core = SetupCore::new(temp.path().to_path_buf()).with_cli_source(Some(cli_source));
+        let mut setup = request("codex");
+        setup.install_root = Some(root.clone());
+
+        core.setup(setup).unwrap();
+
+        // Everything large lives at the chosen location...
+        assert!(root.join("setup-state.json").is_file());
+        assert!(root.join("skills/my-llm-wiki/SKILL.md").is_file());
+        assert!(root.join("bin").is_dir());
+        // ...and the fixed path every Skill resolves on its own still reaches
+        // it, which is the whole point of moving the root behind a link.
+        let anchor = temp.path().join(".my-llm-wiki");
+        assert!(link::links_to(&anchor, &root));
+        assert!(anchor.join("skills/my-llm-wiki/SKILL.md").is_file());
+        assert!(link::links_to(
+            &temp.path().join(".codex/skills/my-llm-wiki"),
+            &root.join("skills/my-llm-wiki")
+        ));
+
+        // A core built fresh from the home directory finds the moved root.
+        let reopened = SetupCore::new(temp.path().to_path_buf());
+        assert_eq!(reopened.install_root(), root);
+        assert_eq!(reopened.status().unwrap().state, SetupHealth::Ready);
+        let inspection = reopened.inspect().unwrap();
+        assert!(inspection.install_root_relocated);
+        assert_eq!(inspection.install_root, root);
+        assert_eq!(inspection.install_anchor, anchor);
+    }
+
+    #[test]
+    fn the_default_install_root_uses_no_link() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = SetupCore::new(temp.path().to_path_buf());
+        core.setup(request("codex")).unwrap();
+
+        let anchor = temp.path().join(".my-llm-wiki");
+        assert!(!link::is_dir_link(&anchor));
+        assert_eq!(core.install_root(), anchor);
+        assert!(!core.inspect().unwrap().install_root_relocated);
+    }
+
+    #[test]
+    fn an_install_root_holding_unrelated_files_is_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("documents");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("notes.txt"), "mine").unwrap();
+        let core = SetupCore::new(temp.path().to_path_buf());
+        let mut setup = request("codex");
+        setup.install_root = Some(root.clone());
+
+        let error = core.setup(setup).unwrap_err();
+
+        assert!(matches!(error, SetupError::InstallRootOccupied(path) if path == root));
+        assert!(root.join("notes.txt").is_file());
+        assert!(!temp.path().join(".my-llm-wiki").exists());
+    }
+
+    #[test]
+    fn uninstalling_one_host_detaches_its_links_and_keeps_the_installed_pack() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = SetupCore::new(temp.path().to_path_buf());
+        let mut setup = request("codex");
+        setup.hosts.insert("claude".into());
+        core.setup(setup).unwrap();
+        let canonical = temp.path().join(".my-llm-wiki/skills/my-llm-wiki");
+
+        core.uninstall(&BTreeSet::from(["codex".to_owned()]), false)
+            .unwrap();
+
+        assert!(!temp.path().join(".codex/skills/my-llm-wiki").exists());
+        assert!(
+            !link::is_dir_link(&temp.path().join(".codex/skills/my-llm-wiki")),
+            "the link entry is gone, not just its target"
+        );
+        // Detaching one host must not disturb the copy the others still use.
+        assert!(canonical.join("SKILL.md").is_file());
+        assert!(
+            temp.path()
+                .join(".claude/skills/my-llm-wiki/SKILL.md")
+                .is_file()
+        );
+    }
+
+    #[test]
+    fn uninstalling_everything_removes_the_installed_pack() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = SetupCore::new(temp.path().to_path_buf());
+        core.setup(request("codex")).unwrap();
+
+        core.uninstall(&BTreeSet::new(), true).unwrap();
+
+        assert!(!temp.path().join(".codex/skills/my-llm-wiki").exists());
+        assert!(!temp.path().join(".my-llm-wiki/skills").exists());
+    }
+
+    #[test]
+    fn a_host_link_pointing_somewhere_else_is_not_healthy() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = SetupCore::new(temp.path().to_path_buf());
+        core.setup(request("codex")).unwrap();
+        assert_eq!(core.status().unwrap().state, SetupHealth::Ready);
+
+        // Re-aim one link at a directory that carries a valid marker copied
+        // from the real install: ownership alone would call this healthy.
+        let destination = temp.path().join(".codex/skills/my-llm-wiki");
+        let decoy = temp.path().join("decoy");
+        fs::create_dir_all(&decoy).unwrap();
+        fs::copy(
+            temp.path()
+                .join(".my-llm-wiki/skills/my-llm-wiki")
+                .join(OWNER_FILE),
+            decoy.join(OWNER_FILE),
+        )
+        .unwrap();
+        remove_installed_skill(&destination).unwrap();
+        link::create_dir_link(&destination, &decoy).unwrap();
+
+        assert_eq!(core.status().unwrap().state, SetupHealth::NeedsRepair);
     }
 
     #[test]
@@ -1784,10 +2236,10 @@ mod tests {
         core.setup_with_progress(request("codex"), |event| events.borrow_mut().push(event))
             .unwrap();
         let events = events.into_inner();
-        assert_eq!((events[0].current, events[0].total), (0, 2));
+        assert_eq!((events[0].current, events[0].total), (0, 3));
         assert_eq!(
             (events.last().unwrap().current, events.last().unwrap().total),
-            (2, 2)
+            (3, 3)
         );
         assert!(events.iter().any(|event| {
             event.phase == "skills"
@@ -1832,8 +2284,15 @@ mod tests {
         fs::remove_dir_all(&skill).unwrap();
         core.repair().unwrap();
         assert!(skill.join("SKILL.md").is_file());
-        fs::remove_file(skill.join(OWNER_FILE)).unwrap();
+
+        // Someone replaced the destination with a directory of their own. The
+        // ownership marker is gone with it, so repair refuses rather than
+        // overwriting whatever is now there.
+        remove_installed_skill(&skill).unwrap();
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(skill.join("SKILL.md"), "mine").unwrap();
         assert!(matches!(core.repair(), Err(SetupError::OwnershipLost(path)) if path == skill));
+        assert_eq!(fs::read_to_string(skill.join("SKILL.md")).unwrap(), "mine");
     }
 
     #[test]

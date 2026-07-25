@@ -50,7 +50,9 @@ Show the user one complete choice containing:
 
 - one or more known host ids returned by inspection;
 - every exact `foreign` destination that would be backed up and replaced;
-- whether to use the recommended official toolchain or the open path.
+- whether to use the recommended official toolchain or the open path;
+- where to install, when the default volume is a poor fit. Inspection returns
+  `install_root`, `install_anchor`, and `install_root_relocated`.
 
 After one confirmation, run one command. Do not invent component or skill-subset
 choices; the one-click path always installs the complete Skills Pack and the
@@ -59,6 +61,15 @@ official baseline is one product choice.
 ```bash
 my-llm-wiki setup --host codex --replace /exact/foreign/path --json
 ```
+
+`--install-root` moves packs, ASR models, and the Skills Pack off the home
+volume, which matters most on Windows where they add several gigabytes to the
+system drive and vanish with the profile on a reinstall. `~/.my-llm-wiki` then
+becomes a directory link to that location, so every path Skills and MCP already
+resolve keeps working unchanged; do not teach Skills to look anywhere else. The
+target must be empty or already hold an installation — Setup Core never merges
+into a directory holding unrelated files, and never moves or deletes an existing
+install to satisfy a new choice.
 
 Use `--without-toolchain` only when the user selected the open path. Setup Core
 owns downloads, SHA-256 verification, size/free-space checks, pack postchecks,
@@ -73,6 +84,11 @@ The minimal state is:
 ~/.my-llm-wiki/setup-state.json
 ~/.my-llm-wiki/providers.json
 ```
+
+`~/.my-llm-wiki` is a fixed path, not necessarily a directory: when the user
+installed elsewhere it is a link to the install root, and these paths resolve
+through it either way. Read the location from `inspect`/`status` rather than
+assuming the two are the same.
 
 Supported operations are:
 
@@ -95,7 +111,9 @@ restart. `repair` restores the current distribution and never upgrades.
 
 Uninstall requires explicit hosts or `--all`. It removes only paths carrying
 the active ownership identity. Wiki, RAW, Provider configuration, and foreign
-Skills are user data and are never removed by these commands.
+Skills are user data and are never removed by these commands. A host
+destination that is a link is detached, never followed: the target is the one
+installed Skills Pack the remaining hosts still read.
 
 ## 4. Official packs and network behavior
 
