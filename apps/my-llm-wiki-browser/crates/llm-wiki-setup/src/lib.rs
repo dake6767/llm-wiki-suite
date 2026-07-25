@@ -2936,7 +2936,10 @@ mod tests {
         assert_eq!(entries[1]["default"], serde_json::json!(false));
         assert_eq!(
             entries[2]["path"],
-            serde_json::json!(temp.path().join("wikis/my-llm-wiki"))
+            // Built one component at a time: this compares against the string
+            // stored in the routing table, and `join` leaves an embedded "/"
+            // alone, so a single joined literal would only match on POSIX.
+            serde_json::json!(temp.path().join("wikis").join("my-llm-wiki"))
         );
         assert_eq!(entries[2]["default"], serde_json::json!(false));
     }
