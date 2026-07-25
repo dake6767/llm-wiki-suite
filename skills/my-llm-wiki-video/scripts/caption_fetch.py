@@ -34,6 +34,7 @@ from urllib.parse import urlparse
 
 CORE_SCRIPTS = Path(__file__).resolve().parents[2] / "my-llm-wiki" / "scripts"
 sys.path.insert(0, str(CORE_SCRIPTS))
+from path_compat import native_path  # noqa: E402
 from tool_runtime import ToolRuntimeError, resolve_command_argv  # noqa: E402
 
 _BV = re.compile(r"(BV[0-9A-Za-z]{6,})")
@@ -230,9 +231,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--url", help="video URL to fetch captions for (absolute HTTPS)")
-    source.add_argument("--from-json", type=Path,
+    source.add_argument("--from-json", type=native_path,
                         help="convert an already-saved opencli cue JSON instead of fetching")
-    parser.add_argument("--out", required=True, type=Path,
+    parser.add_argument("--out", required=True, type=native_path,
                         help="temp dir for the payload and subs (created if missing)")
     parser.add_argument("--tool", choices=("auto", "opencli", "yt-dlp"), default="auto")
     parser.add_argument("--provider", help="explicit Provider id for this task only")

@@ -27,13 +27,24 @@ Apply the loaded SKILL.md Provider Resolver rule to every external command
 below. Use `tool_exec.py --capability capture.video.captions yt-dlp -- ...`
 and `tool_exec.py --capability media.extract-audio ffmpeg -- ...` on every
 platform. Download audio only with yt-dlp (never the video), e.g.
-`yt-dlp -x --audio-format mp3 -o "<tmp>/audio.%(ext)s" <url>` — but prefer the
+`yt-dlp -x --audio-format mp3 -o "$VIDEO_WORKDIR/audio.%(ext)s" <url>` — but
+prefer the
 `audio_format_id` the §2 probe (`video_probe.py`) already picked from the
-metadata's `formats` and force it: `yt-dlp -f <audio_format_id> -o "<tmp>/audio.%(ext)s" <url>`.
+metadata's `formats` and force it:
+`yt-dlp -f <audio_format_id> -o "$VIDEO_WORKDIR/audio.%(ext)s" <url>`.
 This avoids the Bilibili format trap in `video-bilibili-pitfalls.md`, where a
 bare `-x` grabs a merged DASH stream whose audio silently truncates. If the
 probe returned no `audio_format_id` (rare extractor gap), fall back to listing
 formats manually as that file describes.
+
+If the selected format fails with a transport/CDN error such as connection
+refused, timeout, TLS failure, or HTTP 5xx, retry the next entry in the probe's
+ranked `audio_formats` list. Use a fresh output name so a `.part` file from the
+failed attempt cannot be mistaken for the result, and run the same duration
+check on the successful candidate. Do not hard-code observed Bilibili format
+ids or CDN ports: both can change. Authentication, login, geo, and HTTP
+401/403/412 failures are not format failover signals; surface or handle those
+through the platform's documented login-wall path.
 
 **Convert m4a → wav for Python-API ASR backends** (soundfile can't
 read m4a): `ffmpeg -i audio.m4a -ar 16000 -ac 1 audio.wav` anywhere, or
@@ -133,8 +144,8 @@ will return a single untimed blob (see the bullet above):
 
 ```bash
 python3 "$VIDEO_SKILL/scripts/sensevoice_to_srt.py" \
-  "$TMPDIR/audio.wav" "$TMPDIR/transcript.srt" \
-  --status "$TMPDIR/status.yaml" --language zh \
+  "$VIDEO_WORKDIR/audio.wav" "$VIDEO_WORKDIR/transcript.srt" \
+  --status "$VIDEO_WORKDIR/status.yaml" --language zh \
   --source-url "$URL" --original-id "$VIDEO_ID"
 ```
 
@@ -168,8 +179,8 @@ hallucinated cues in silence), SRT assembly, and the atomic status contract:
 
 ```bash
 python3 "$VIDEO_SKILL/scripts/faster_whisper_to_srt.py" \
-  "$TMPDIR/audio.m4a" "$TMPDIR/transcript.srt" \
-  --status "$TMPDIR/status.yaml" --model medium \
+  "$VIDEO_WORKDIR/audio.m4a" "$VIDEO_WORKDIR/transcript.srt" \
+  --status "$VIDEO_WORKDIR/status.yaml" --model medium \
   --initial-prompt "<title + keywords + first description line>" \
   --source-url "$URL" --original-id "$VIDEO_ID"
 ```
@@ -216,8 +227,9 @@ one command at 300 s). The universal contract:
 - **Fresh temp dir per capture, always** — `mkdir -p` does not clean an
   existing dir, and a poller that reads a *previous* run's `status.yaml` /
   `transcript.md` will polish and ingest the **wrong video** (a real, documented
-  incident). Always allocate `/tmp/llmwiki-vid-$(date +%s)`; do not reuse and
-  recursively clear a shared directory. Keep the status file inside that fresh
+  incident). Always allocate the directory with the SOP §1
+  `create_temp_dir.py --prefix llmwiki-vid-` command; do not reuse or recursively
+  clear a shared directory. Keep the status file inside that fresh native
   directory.
 - Backgrounding changes nothing about speed — only how promptly you *notice*
   completion. Poll every ~30–60 s; a long video legitimately takes 10–25 min

@@ -49,7 +49,7 @@ proxies for the China-domestic CDN, and parses `_ROUTER_DATA` as data:
 
 ```bash
 python3 "$VIDEO_SKILL/scripts/douyin_probe.py" --aweme-id "$AWEME_ID" \
-  --output "$TMPDIR/metadata.json"
+  --output "$VIDEO_WORKDIR/metadata.json"
 ```
 
 Do not reproduce the parser as inline Python. The helper preserves CJK without

@@ -47,7 +47,7 @@ full signed URL (`xsec_token` included). Resolve the short link to get one:
 ```bash
 curl --fail --silent --show-error --location --max-time 15 \
   --output /dev/null --write-out '%{url_effective}\n' \
-  'https://xhslink.com/o/<code>' > "$TMPDIR/resolved-url.txt"
+  'https://xhslink.com/o/<code>' > "$VIDEO_WORKDIR/resolved-url.txt"
 opencli xiaohongshu note '<resolved-https-url>' -f yaml
 # → title, author, content (the note text — keep it as the 简介), likes,
 #   collects, comments, tags.  NO publish time — if you need one, grab it from

@@ -31,10 +31,23 @@ extraction, like a `doc`'s markitdown text). source_type = `video`.
 
 ## 1. The acceptance contract (any pipeline must produce this)
 
-A finished capture is a temp dir in the `--from` folder shape:
+Allocate the workspace once, before the metadata probe or any native Provider:
+
+```bash
+VIDEO_WORKDIR="$(python3 "$CORE_SKILL/scripts/create_temp_dir.py" --prefix llmwiki-vid-)"
+```
+
+The helper uses the host's real system temp root and prints a native absolute
+path (`C:/Users/.../AppData/Local/Temp/...` on Windows). Keep that exact quoted
+value for `yt-dlp`, `ffmpeg`, the ASR runner, status polling, assembly, and
+normalization. In Windows + Git Bash, `/tmp/...` is an MSYS path whose physical
+mapping is not preserved when Python launches a native tool without a shell;
+do not create or substitute one for this workflow.
+
+A finished capture has this `--from` folder shape:
 
 ```
-/tmp/llmwiki-vid-<unique>/
+<VIDEO_WORKDIR>/
   transcript.md        # see layout below
   images/cover.jpg     # the thumbnail — the ONLY stored media
   status.yaml          # completion signal when running backgrounded (video-asr.md §4)
@@ -109,7 +122,7 @@ bot" wall), falls back to yt-dlp, lands the raw payload plus a normalized
 subs path, cue count, text chars, first/last anchor):
 
 ```bash
-python3 "$VIDEO_SKILL/scripts/caption_fetch.py" --url "$URL" --out "$TMPDIR"
+python3 "$VIDEO_SKILL/scripts/caption_fetch.py" --url "$URL" --out "$VIDEO_WORKDIR"
 ```
 
 - **exit 0 / `status: ok`** — captions are on disk; feed the reported `subs`
@@ -135,7 +148,7 @@ an argv list and parses JSON in-process:
 
 ```bash
 python3 "$VIDEO_SKILL/scripts/video_probe.py" --url "$URL" \
-  --output "$TMPDIR/metadata.json"
+  --output "$VIDEO_WORKDIR/metadata.json"
 ```
 
 On a confirmed auth/bot wall, retry with `--cookies-from-browser chrome` only
@@ -143,8 +156,15 @@ after the user allows browser-login access. Its `subtitle_languages` /
 `automatic_caption_languages` fields tell you up front whether Path A can
 succeed; on Path B, `audio_format_id` is the pre-picked audio-only stream to
 pass to `yt-dlp -f` (with the ranked `audio_formats` list as backup) — no
-separate `--list-formats` pass needed. Thumbnail:
-`yt-dlp --skip-download --write-thumbnail --convert-thumbnails jpg -o "<tmp>/images/cover" <url>`.
+separate `--list-formats` pass needed. Fetch the thumbnail through the selected
+Provider too:
+
+```bash
+python3 "$CORE_SKILL/scripts/tool_exec.py" \
+  --capability capture.video.metadata yt-dlp -- \
+  --skip-download --write-thumbnail --convert-thumbnails jpg \
+  -o "$VIDEO_WORKDIR/images/cover" "$URL"
+```
 
 ### Path B — no captions: audio-only download + local ASR
 

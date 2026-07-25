@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 
 CORE_SCRIPTS = Path(__file__).resolve().parents[2] / "my-llm-wiki" / "scripts"
 sys.path.insert(0, str(CORE_SCRIPTS))
+from path_compat import native_path  # noqa: E402
 from tool_runtime import ToolRuntimeError, resolve_command_argv  # noqa: E402
 
 
@@ -171,7 +172,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--url", help="online video URL to probe with yt-dlp")
-    source.add_argument("--from-json", type=Path, help="parse an existing yt-dlp JSON file")
+    source.add_argument(
+        "--from-json", type=native_path, help="parse an existing yt-dlp JSON file"
+    )
     parser.add_argument(
         "--cookies-from-browser",
         metavar="BROWSER",
@@ -179,7 +182,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--timeout", type=int, default=60)
     parser.add_argument("--provider", help="explicit Provider id for this task only")
-    parser.add_argument("--output", type=Path, help="write normalized JSON to this file")
+    parser.add_argument(
+        "--output", type=native_path, help="write normalized JSON to this file"
+    )
     return parser
 
 

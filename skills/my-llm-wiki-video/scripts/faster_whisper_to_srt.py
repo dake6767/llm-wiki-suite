@@ -18,6 +18,7 @@ from typing import Any
 
 CORE_SCRIPTS = Path(__file__).resolve().parents[2] / "my-llm-wiki" / "scripts"
 sys.path.insert(0, str(CORE_SCRIPTS))
+from path_compat import native_path  # noqa: E402
 from tool_runtime import ensure_provider_python  # noqa: E402
 
 
@@ -107,9 +108,9 @@ def transcribe(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("audio", type=Path)
-    parser.add_argument("output", type=Path)
-    parser.add_argument("--status", type=Path, required=True)
+    parser.add_argument("audio", type=native_path)
+    parser.add_argument("output", type=native_path)
+    parser.add_argument("--status", type=native_path, required=True)
     parser.add_argument("--model", default="medium")
     parser.add_argument(
         "--language",

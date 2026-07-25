@@ -17,6 +17,13 @@ are in `references/video-asr.md`.
   `yt-dlp --cookies-from-browser chrome --list-formats <url> | grep audio` →
   `yt-dlp -f <audio-id> …`. Always ffprobe the result against the expected
   duration.
+- **One audio format can resolve to a dead CDN while the next one works.**
+  Connection refused, timeout, TLS, and HTTP 5xx errors are transport failures:
+  retry the next ranked entry from `video_probe.py`'s `audio_formats` list with
+  a fresh output name, then ffprobe it. Do not bake a format id or CDN port from
+  one incident into the Skill. HTTP 401/403/412, login, or geo failures are
+  access failures instead; do not churn through every format or silently add
+  browser cookies.
 - **m4a AAC corruption → download with `--downloader aria2c`.**
   yt-dlp's default HTTP downloader can produce m4a files whose AAC payload is
   damaged mid-stream (ffmpeg truncates; macOS `afconvert` errors `'bada'`).

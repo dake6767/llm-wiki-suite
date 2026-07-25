@@ -53,8 +53,9 @@ The capture itself is the `my-llm-wiki-video` skill's job — follow its
 `references/video-capture-sop.md` (probe tools → captions first → else
 audio + local ASR → assemble the anchored transcript). The contract that
 matters here: run the long step as a **non-blocking background job** that
-writes a `status.yaml` into a **fresh** temp dir (`/tmp/llmwiki-vidN`) as its
-last act, then **poll that file yourself** — don't wait to be notified. When
+writes a `status.yaml` into the **fresh native** `VIDEO_WORKDIR` allocated by
+that SOP as its last act, then **poll that file yourself** — don't wait to be
+notified. When
 this same turn will continue into polishing and ingest, launch it with
 asynchronous completion delivery disabled (`notify_on_complete=false` in
 Hermes). After the matching status appears, wait/reap the retained process
@@ -63,19 +64,24 @@ poll or timed-out wait can leave a stale completion push queued behind the real
 conclusion.
 Captions finish in seconds; an ASR pass takes minutes to tens of minutes.
 
-**Pitfall: unique temp dir per video.** When processing multiple videos in one session,
-use `/tmp/llmwiki-vid`, `/tmp/llmwiki-vid2`, `/tmp/llmwiki-vid3`, etc. Reusing the same
-dir causes stale status.yaml from the previous video.
+**Pitfall: unique temp dir per video.** When processing multiple videos in one
+session, run the upstream `create_temp_dir.py --prefix llmwiki-vid-` command
+once per video. Reusing the same directory causes stale `status.yaml` from the
+previous video.
 
 **Pitfall: stale data from a PREVIOUS session.** `mkdir -p` does NOT clean an existing
-directory. If `/tmp/llmwiki-vid/` already exists from a prior session, it contains old
-`status.yaml` and `transcript.md`. Reading those before the new background process
-completes gives you the WRONG video's data — and you may polish/normalize the wrong
-transcript without realizing it. **Always use a timestamped directory:**
+directory. A reused workspace can contain old `status.yaml` and `transcript.md`.
+Reading those before the new background process completes gives you the WRONG
+video's data — and you may polish/normalize the wrong transcript without
+realizing it. **Always use the native allocator from the upstream core:**
+
 ```bash
-TMPDIR="/tmp/llmwiki-vid-$(date +%s)"
-mkdir -p "$TMPDIR"
+VIDEO_WORKDIR="$(python3 "$CORE_SKILL/scripts/create_temp_dir.py" --prefix llmwiki-vid-)"
 ```
+
+On Windows it returns the real system temp path in drive-qualified `C:/...`
+form. Never replace it with Git Bash `/tmp/...`; native Providers launched
+without a shell may resolve that pseudo-path to a different directory.
 After the background process completes, verify `status.yaml`'s `source_url` matches
 the URL you requested. See `my-llm-wiki-video` skill's `references/video-asr.md`
 (§4, background + poll discipline) for the full incident report.
@@ -84,9 +90,10 @@ the URL you requested. See `my-llm-wiki-video` skill's `references/video-asr.md`
 silently downloads only a fraction of Bilibili audio (e.g. 2.5 min of 25 min).
 SenseVoice then reports `status: ok` with a tiny transcript. Before polishing,
 **verify audio duration** matches the video:
+
 ```bash
 ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 \
-  /tmp/llmwiki-vid/audio.mp3
+  "$VIDEO_WORKDIR/audio.mp3"
 ```
 Also check `transcript_chars` in status.yaml — <1,000 chars for a 20+ min video
 is a red flag. If truncated, re-run with `--browser chrome`.
@@ -133,7 +140,7 @@ For dash-prefixed video IDs (e.g. `-dQhTC--Voo`), ALWAYS use equals-sign form:
 
 ```bash
 python3 <skill>/scripts/normalize_raw.py \
-  --from /tmp/llmwiki-vidN \
+  --from "$VIDEO_WORKDIR" \
   --wiki /path/to/wiki \
   --source-type video \
   --title "<video title>" \
@@ -215,7 +222,7 @@ Write ALL new pages into one blocks file, then ALL updates into another.
 **Pass 1 — new pages (no --overwrite):**
 ```bash
 python3 <maintainer>/scripts/wiki_ops.py apply-blocks <root> \
-  --blocks-file /tmp/llmwiki-ming-blocksN.txt \
+  --blocks-file "$VIDEO_WORKDIR/ingest-blocks.txt" \
   --source raw/sources/video/<filename>.md
 ```
 New pages: source, entities, concepts, index delta, log delta — **and the REVIEW
@@ -232,7 +239,7 @@ line in each REVIEW block so `affectedPages` is populated too.
 **Pass 2 — existing pages (--overwrite):**
 ```bash
 python3 <maintainer>/scripts/wiki_ops.py apply-blocks <root> \
-  --blocks-file /tmp/llmwiki-ming-updateN.txt --overwrite \
+  --blocks-file "$VIDEO_WORKDIR/update-blocks.txt" --overwrite \
   --source raw/sources/video/<filename>.md
 ```
 Updated pages: existing entities, existing concepts that need expansion.
@@ -254,7 +261,7 @@ This avoids long/CJK shell argv without generating a Python subprocess wrapper:
 
 ```bash
 python3 "$MAINTAINER/scripts/wiki_ops.py" cache save "$ROOT" "$RAW" \
-  --files-file "$TMPDIR/pages.json"
+  --files-file "$VIDEO_WORKDIR/pages.json"
 python3 "$MAINTAINER/scripts/wiki_ops.py" cache check "$ROOT" "$RAW"
 ```
 
@@ -267,9 +274,10 @@ deterministic operation.
 
 When processing 6+ videos from the same YouTube series:
 
-1. Use incrementing temp dirs: `/tmp/llmwiki-vid`, `/tmp/llmwiki-vid2`, ...
-2. Use incrementing block files: `/tmp/llmwiki-ming-blocks.txt`, `blocks2.txt`, ...
-3. Separate update files: `/tmp/llmwiki-ming-update.txt`, `update2.txt`, ...
+1. Allocate one fresh native `VIDEO_WORKDIR` per video.
+2. Keep that video's `ingest-blocks.txt`, `update-blocks.txt`, and `pages.json`
+   inside its workspace.
+3. Never reuse or recursively clear a workspace to prepare the next video.
 4. Each video's ingest cache save is independent
 5. Existing pages accumulate updates across videos (e.g. 朱元璋 entity got updated
    after the first video, then again referenced in later videos)
@@ -290,12 +298,12 @@ When processing **sequential episodes** from the same channel (e.g. 正直讲史
 3. New sections added to body (don't replace — append)
 4. `related:` expanded with new entities/concepts from this episode
 
-**Batch block file naming**: Use incrementing numbers per video to avoid confusion:
-- `/tmp/llmwiki-qing-blocks.txt` (episode 1 new pages)
-- `/tmp/llmwiki-qing-update.txt` (episode 1 updates)
-- `/tmp/llmwiki-qing-blocks2.txt` (episode 2 new pages)
-- `/tmp/llmwiki-qing-update2.txt` (episode 2 updates)
-- etc.
+**Batch block file naming**: use the same stable names inside each video's
+distinct workspace:
+- `<episode-1-workdir>/ingest-blocks.txt`
+- `<episode-1-workdir>/update-blocks.txt`
+- `<episode-2-workdir>/ingest-blocks.txt`
+- `<episode-2-workdir>/update-blocks.txt`
 
 ## Cross-Linking Patterns for Video Series
 

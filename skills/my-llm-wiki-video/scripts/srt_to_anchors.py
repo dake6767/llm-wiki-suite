@@ -36,6 +36,10 @@ import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
+CORE_SCRIPTS = Path(__file__).resolve().parents[2] / "my-llm-wiki" / "scripts"
+sys.path.insert(0, str(CORE_SCRIPTS))
+from path_compat import native_path  # noqa: E402
+
 _TAG = re.compile(r"<[^>]+>")            # inline <i>/<c.color>/SenseVoice tags
 _CJK = re.compile(r"[一-鿿]")
 _LATIN = re.compile(r"[A-Za-z]")
@@ -115,12 +119,12 @@ def assemble(cues: list[tuple[float, str]], url: str, chunk_s: float) -> str:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("subs", help="input .srt or .vtt file")
+    ap.add_argument("subs", type=native_path, help="input .srt or .vtt file")
     ap.add_argument("--url", required=True, help="canonical video URL for deep links")
     ap.add_argument("--chunk", type=float, default=30.0, help="min chunk length in seconds (default 30)")
     args = ap.parse_args()
 
-    cues = parse_cues(Path(args.subs).read_text(encoding="utf-8"))
+    cues = parse_cues(args.subs.read_text(encoding="utf-8"))
     if not cues:
         sys.exit(f"srt_to_anchors: no cues found in {args.subs}")
     print(assemble(cues, args.url, args.chunk))

@@ -58,12 +58,19 @@ custom Providers only through the same resolver and output checks.
    ASR Provider is absent, ask before downloading the large fallback pack:
    `my-llm-wiki ensure-pack asr-zh` or `asr-other`. A configured custom
    Provider remains an equally valid choice when it passes the same checks.
-3. **Probe metadata without executable pipes.** Run
-   `python3 "$VIDEO_SKILL/scripts/video_probe.py" --url <url> --output <temp>/metadata.json`.
+3. **Create one native temp workspace.** Run
+   `VIDEO_WORKDIR="$(python3 "$CORE_SKILL/scripts/create_temp_dir.py" --prefix llmwiki-vid-)"`.
+   The helper allocates under the host's real system temp root and prints a
+   drive-qualified `C:/...` path on Windows. Retain that exact absolute path for
+   every Python runner and native Provider in this capture. Do not substitute a
+   Git Bash `/tmp/...` path: once a shell-free child launches `yt-dlp.exe` or
+   another native tool, MSYS path mapping is no longer a reliable shared boundary.
+4. **Probe metadata without executable pipes.** Run
+   `python3 "$VIDEO_SKILL/scripts/video_probe.py" --url <url> --output "$VIDEO_WORKDIR/metadata.json"`.
    Retry with `--cookies-from-browser <browser>` only after a real auth/bot wall
    and explicit permission to read that browser's login state. Do not pipe
    yt-dlp/opencli/network output into an interpreter.
-4. **Build the temp acceptance shape.** Produce a fresh directory containing
+5. **Build the temp acceptance shape.** Produce a fresh directory containing
    `transcript.md`, `images/cover.jpg`, and `status.yaml` as specified by the SOP.
    Fetch caption tracks with the shipped `scripts/caption_fetch.py` — the
    payload and a normalized `subs.srt` land in the temp dir; only its compact
@@ -76,7 +83,7 @@ custom Providers only through the same resolver and output checks.
    Convert subtitle cues with
    `python3 "$VIDEO_SKILL/scripts/srt_to_anchors.py" ...`. Never normalize the
    converter's bare intermediate output.
-5. **Handle long work safely.** Run long ASR in the background and poll its
+6. **Handle long work safely.** Run long ASR in the background and poll its
    `status.yaml`; do not rely on a foreground tool timeout or passive notification.
    When the same turn will wait for the result, explicitly disable asynchronous
    completion delivery (`notify_on_complete=false` in Hermes). After the matching
@@ -84,19 +91,19 @@ custom Providers only through the same resolver and output checks.
    before reporting success; a status-file check or read-only process poll alone
    is not a lifecycle barrier. Confirm the status belongs to the requested video
    before reading the transcript.
-6. **Polish faithfully.** Repair punctuation, paragraphing, and obvious ASR
+7. **Polish faithfully.** Repair punctuation, paragraphing, and obvious ASR
    errors without summarizing or dropping content. Preserve every timestamp anchor
    exactly. For non-Chinese videos, append a full `## 中文译文` with the same anchors.
-7. **Verify before commit.** Confirm URL/ID/title, duration plausibility,
+8. **Verify before commit.** Confirm URL/ID/title, duration plausibility,
    transcript length, timestamp coverage, and cover presence. Stop on an error or
    stub rather than writing degraded RAW silently.
-8. **Resolve the wiki.** Apply the sibling core's routing policy using title,
+9. **Resolve the wiki.** Apply the sibling core's routing policy using title,
    channel, description, and transcript. Pass the chosen wiki explicitly when
    auto-classification was used.
-9. **Normalize once.** Commit the verified temp directory through the shared core:
+10. **Normalize once.** Commit the verified temp directory through the shared core:
 
    ```bash
-   python3 "$CORE_SKILL/scripts/normalize_raw.py" --from <temp-dir> \
+   python3 "$CORE_SKILL/scripts/normalize_raw.py" --from "$VIDEO_WORKDIR" \
      --source-type video --wiki <wiki-root> \
      --title "<video title>" --source-url "<canonical url>" \
      --original-id "<platform id>" --author "<channel>" \
@@ -106,7 +113,7 @@ custom Providers only through the same resolver and output checks.
 
    Require a meaningful title and at least one localized asset (the cover).
    Surface every `capture_health` warning.
-10. **Report and optionally synthesize.** Report the wiki, RAW path, transcript
+11. **Report and optionally synthesize.** Report the wiki, RAW path, transcript
    source, timestamp/translation status, and cover. For capture-only intent, leave
    it pending. For explicit synthesis intent, hand the exact wiki root and new RAW
    path to `my-llm-wiki-maintainer`; do not start a second ingest path when the

@@ -14,6 +14,10 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+CORE_SCRIPTS = Path(__file__).resolve().parents[2] / "my-llm-wiki" / "scripts"
+sys.path.insert(0, str(CORE_SCRIPTS))
+from path_compat import native_path  # noqa: E402
+
 
 IPHONE_UA = (
     "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) "
@@ -83,8 +87,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--aweme-id")
-    source.add_argument("--from-html", type=Path)
-    parser.add_argument("--output", type=Path)
+    source.add_argument("--from-html", type=native_path)
+    parser.add_argument("--output", type=native_path)
     parser.add_argument("--timeout", type=int, default=20)
     return parser
 
