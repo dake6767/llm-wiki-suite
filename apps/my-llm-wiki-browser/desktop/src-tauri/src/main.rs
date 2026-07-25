@@ -29,7 +29,9 @@ use tauri::ActivationPolicy;
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as _};
 
 mod setup;
+mod skills_watch;
 mod update;
+use skills_watch::SkillsWatch;
 use update::UpdateManager;
 
 const DEFAULT_PORT: u16 = 8800;
@@ -111,6 +113,7 @@ fn main() {
             setup::setup_ensure_pack,
             setup::setup_start_pack_install,
             setup::setup_pack_install_status,
+            setup::setup_update_cached,
             setup::setup_provider_config,
             setup::setup_save_provider_config,
         ])
@@ -123,14 +126,17 @@ fn main() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(ActivationPolicy::Accessory);
             let relay_runtime = RelayRuntime::new(tray.clone(), online_urls.clone());
+            let skills_watch = SkillsWatch::new(tray.show_setup.clone());
             let browser_runtime = BrowserRuntime {
                 started: Arc::new(AtomicBool::new(false)),
                 online_urls,
                 update_manager: update_manager.clone(),
+                skills_watch: skills_watch.clone(),
             };
 
             tracing::info!("started {}", app.package_info().name);
             update_manager.spawn_periodic_check();
+            skills_watch.spawn_periodic_check();
             app_handle.manage(DesktopState {
                 local_url: local_url.clone(),
             });
@@ -259,6 +265,7 @@ struct BrowserRuntime {
     started: Arc<AtomicBool>,
     online_urls: Arc<Mutex<OnlineUrls>>,
     update_manager: UpdateManager,
+    skills_watch: SkillsWatch,
 }
 
 pub(crate) fn activate_browser(app: &tauri::AppHandle) -> Result<()> {
@@ -347,6 +354,7 @@ struct OnlineUrls {
 #[derive(Clone)]
 struct TrayState {
     relay_status: MenuItem<tauri::Wry>,
+    show_setup: MenuItem<tauri::Wry>,
     open_local_wiki: MenuItem<tauri::Wry>,
     open_online_wiki: MenuItem<tauri::Wry>,
     copy_online_wiki: MenuItem<tauri::Wry>,
@@ -828,6 +836,7 @@ fn build_tray(
 
     Ok(TrayState {
         relay_status,
+        show_setup,
         open_local_wiki,
         open_online_wiki,
         copy_online_wiki,

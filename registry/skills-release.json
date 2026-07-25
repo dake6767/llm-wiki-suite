@@ -1,0 +1,5 @@
+{
+  "schema": 1,
+  "pack_version": "2.1.0",
+  "pack_notes": "preflight 不再把耗时的 Provider 健康检查判成未安装：解析成功但 postcheck 超时改报 unverified，python-profile 的超时放宽到 30 秒，missing 也会说明原因。"
+}

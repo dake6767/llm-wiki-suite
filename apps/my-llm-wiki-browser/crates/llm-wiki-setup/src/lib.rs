@@ -5,6 +5,7 @@ mod model;
 mod pack;
 mod process;
 mod root;
+mod skills;
 mod wiki;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -25,6 +26,11 @@ use sha2::{Digest as _, Sha256};
 static BUNDLED_SKILLS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../../../skills");
 
 const DISTRIBUTION_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The Skills Pack release metadata this build embedded its baseline from.
+/// Compiled in rather than read at runtime so the baseline can never disagree
+/// with the skills that actually shipped inside the binary.
+static SKILLS_BASELINE_METADATA: &str =
+    include_str!("../../../../../registry/skills-release.json");
 /// The wiki collection root the user picks by default — the parent that holds
 /// every wiki volume.
 const DEFAULT_WIKI_COLLECTION_RELATIVE: &str = "wikis";
@@ -54,6 +60,8 @@ pub struct SetupCore {
     registry_path: PathBuf,
     current_manifest_sources: Vec<String>,
     latest_manifest_sources: Vec<String>,
+    skills_version_sources: Vec<String>,
+    skills_archive_sources: Vec<String>,
     cancel: Arc<AtomicBool>,
 }
 
@@ -97,6 +105,8 @@ impl SetupCore {
                 "https://github.com/dake6767/llm-wiki-suite/releases/latest/download/distribution.json"
                     .into(),
             ],
+            skills_version_sources: skills::version_sources(),
+            skills_archive_sources: skills::archive_sources(),
             cancel: Arc::new(AtomicBool::new(false)),
         }
         .with_suite_home(suite_home)
@@ -181,6 +191,16 @@ impl SetupCore {
     pub fn with_manifest_sources(mut self, current: Vec<String>, latest: Vec<String>) -> Self {
         self.current_manifest_sources = current;
         self.latest_manifest_sources = latest;
+        self
+    }
+
+    /// Point the Skills Pack channel somewhere else.
+    ///
+    /// `archives` are templates expanded with the release version; they are
+    /// configuration, never anything the published signal can influence.
+    pub fn with_skills_sources(mut self, version: Vec<String>, archives: Vec<String>) -> Self {
+        self.skills_version_sources = version;
+        self.skills_archive_sources = archives;
         self
     }
 
@@ -321,7 +341,7 @@ impl SetupCore {
             schema: STATE_SCHEMA,
             install_id: new_install_id(),
             distribution_version: DISTRIBUTION_VERSION.to_owned(),
-            skills_pack_version: DISTRIBUTION_VERSION.to_owned(),
+            skills_pack_version: skills_baseline_version(),
             cli_path: None,
             official_toolchain: request.install_official_toolchain,
             hosts: BTreeMap::new(),
@@ -352,7 +372,11 @@ impl SetupCore {
             total,
         );
         let canonical =
-            self.install_skills(&state.install_id, |slug, skill_current, skill_total| {
+            self.install_skills(
+                &state.install_id,
+                &SkillsSource::Bundled,
+                &mut backups,
+                |slug, skill_current, skill_total| {
                 report_skill_progress(
                     &progress,
                     "安装目录",
@@ -422,7 +446,7 @@ impl SetupCore {
         completed += 1;
         report(&progress, "wiki", "Wiki 已初始化", completed, total);
         state.distribution_version = DISTRIBUTION_VERSION.to_owned();
-        state.skills_pack_version = DISTRIBUTION_VERSION.to_owned();
+        state.skills_pack_version = skills_baseline_version();
         if request.install_official_toolchain {
             report(
                 &progress,
@@ -535,7 +559,11 @@ impl SetupCore {
             total,
         );
         let canonical =
-            self.install_skills(&state.install_id, |slug, skill_current, skill_total| {
+            self.install_skills(
+                &state.install_id,
+                &SkillsSource::Bundled,
+                &mut backups,
+                |slug, skill_current, skill_total| {
                 report_skill_progress(
                     &progress,
                     "安装目录",
@@ -638,7 +666,11 @@ impl SetupCore {
             total,
         );
         let canonical =
-            self.install_skills(&state.install_id, |slug, skill_current, skill_total| {
+            self.install_skills(
+                &state.install_id,
+                &SkillsSource::Bundled,
+                &mut backups,
+                |slug, skill_current, skill_total| {
                 report_skill_progress(
                     &progress,
                     "安装目录",
@@ -946,10 +978,17 @@ impl SetupCore {
             .as_ref()
             .map(|state| state.distribution_version.clone())
             .unwrap_or_else(|| DISTRIBUTION_VERSION.to_owned());
+        let installed_skills = state
+            .as_ref()
+            .map(|state| state.skills_pack_version.clone())
+            .unwrap_or_else(skills_baseline_version);
+        let (mut skills_report, target) = self.plan_skills(&installed_skills);
         let latest = semver::Version::parse(&manifest.distribution_version)
             .map_err(|err| SetupError::InvalidManifest(err.to_string()))?;
         let running = semver::Version::parse(DISTRIBUTION_VERSION)
             .map_err(|err| SetupError::InvalidState(err.to_string()))?;
+        // A pending Browser update takes precedence: the new build may expect a
+        // different Skills Pack, so skills wait and are re-planned afterwards.
         if latest > running {
             return Ok(UpdateResult {
                 state: if check_only {
@@ -960,6 +999,7 @@ impl SetupCore {
                 current_version: current,
                 latest_version: manifest.distribution_version,
                 restart_required: !check_only,
+                skills: skills_report,
             });
         }
         if latest < running {
@@ -968,6 +1008,7 @@ impl SetupCore {
                 current_version: current,
                 latest_version: manifest.distribution_version,
                 restart_required: false,
+                skills: skills_report,
             });
         }
         if check_only {
@@ -980,6 +1021,7 @@ impl SetupCore {
                 current_version: current,
                 latest_version: manifest.distribution_version,
                 restart_required: false,
+                skills: skills_report,
             });
         }
 
@@ -993,27 +1035,53 @@ impl SetupCore {
             .collect();
         let mut replacements = BTreeSet::new();
         let mut backups = Vec::new();
-        let canonical = self.install_skills(&state.install_id, |_, _, _| {})?;
-        for host_id in state.hosts.keys().cloned().collect::<Vec<_>>() {
-            let host = definitions
-                .get(&host_id)
-                .ok_or_else(|| SetupError::UnknownHost(host_id.clone()))?;
-            for slug in bundled_skill_slugs() {
-                let path = host.skills_dir.join(slug);
-                if destination_state(&path, Some(&state.install_id)) == DestinationState::Foreign {
-                    return Err(SetupError::OwnershipLost(path));
+        // Held until the swap is done: the expanded pack lives inside it.
+        let staged = match &target {
+            SkillsTarget::Release(release) => Some(self.stage_skills_release(release)?),
+            _ => None,
+        };
+        let source = match (&target, &staged) {
+            (SkillsTarget::Release(_), Some(staged)) => SkillsSource::Directory(staged.path()),
+            (SkillsTarget::Baseline, _) => SkillsSource::Bundled,
+            _ => SkillsSource::Bundled,
+        };
+        if !matches!(target, SkillsTarget::Keep) {
+            let canonical =
+                self.install_skills(&state.install_id, &source, &mut skills_report.backups, |_, _, _| {})?;
+            for host_id in state.hosts.keys().cloned().collect::<Vec<_>>() {
+                let host = definitions
+                    .get(&host_id)
+                    .ok_or_else(|| SetupError::UnknownHost(host_id.clone()))?;
+                for slug in canonical.keys() {
+                    let path = host.skills_dir.join(slug);
+                    if destination_state(&path, Some(&state.install_id))
+                        == DestinationState::Foreign
+                    {
+                        return Err(SetupError::OwnershipLost(path));
+                    }
                 }
+                let owned = self.link_host(
+                    host,
+                    &state.install_id,
+                    &canonical,
+                    &mut replacements,
+                    &mut backups,
+                    |_, _, _| {},
+                )?;
+                state.hosts.insert(host_id, owned);
             }
-            let owned = self.link_host(
-                host,
-                &state.install_id,
-                &canonical,
-                &mut replacements,
-                &mut backups,
-                |_, _, _| {},
-            )?;
-            state.hosts.insert(host_id, owned);
+            state.skills_pack_version = match &target {
+                SkillsTarget::Release(release) => release.pack_version.clone(),
+                _ => skills_baseline_version(),
+            };
+            // Reinstalling the version already on disk is a repair, not an
+            // update; only a version change gets reported as one.
+            if state.skills_pack_version != skills_report.installed_version {
+                skills_report.state = SkillsUpdateState::Updated;
+                skills_report.installed_version = state.skills_pack_version.clone();
+            }
         }
+        drop(staged);
         let pack_ids: Vec<_> = state.packs.keys().cloned().collect();
         for id in pack_ids {
             let artifact = pack::select_artifact(&manifest, &id)?;
@@ -1021,7 +1089,6 @@ impl SetupCore {
             state.packs.insert(id, installed);
         }
         state.distribution_version = manifest.distribution_version.clone();
-        state.skills_pack_version = manifest.skills_pack_version.clone();
         self.save_state(&state)?;
         self.prune_active_packs(&state);
         Ok(UpdateResult {
@@ -1029,7 +1096,95 @@ impl SetupCore {
             current_version: current,
             latest_version: manifest.distribution_version,
             restart_required: false,
+            skills: skills_report,
         })
+    }
+
+    /// Decide what should happen to the installed Skills Pack.
+    ///
+    /// The rule that matters: never install a pack older than the one already
+    /// on disk. A user who upgraded skills from the channel and then updates
+    /// the Browser offline must not be quietly rolled back to the baseline
+    /// compiled into the new build.
+    fn plan_skills(&self, installed: &str) -> (SkillsUpdate, SkillsTarget) {
+        let mut report = SkillsUpdate {
+            state: SkillsUpdateState::UpToDate,
+            installed_version: installed.to_owned(),
+            ..SkillsUpdate::default()
+        };
+        let installed_version = semver::Version::parse(installed).ok();
+        let baseline_version = semver::Version::parse(&skills_baseline_version()).ok();
+        // Reinstalling from a source at the installed version is how drift gets
+        // repaired, so matching the installed version is enough to be useful —
+        // only a source that would move the pack backwards is refused.
+        let usable = |candidate: &semver::Version| {
+            installed_version
+                .as_ref()
+                .is_none_or(|installed| candidate >= installed)
+        };
+        let fallback = if baseline_version.as_ref().is_some_and(usable) {
+            SkillsTarget::Baseline
+        } else {
+            SkillsTarget::Keep
+        };
+        let release = match skills::fetch_release(&self.skills_version_sources, &self.skills_archive_sources) {
+            Ok(release) => release,
+            Err(_) => {
+                // No signal is not the same as no update: say so rather than
+                // claiming the installed pack is current.
+                report.state = SkillsUpdateState::Unknown;
+                return (report, fallback);
+            }
+        };
+        report.latest_version = Some(release.pack_version.clone());
+        report.notes = release.notes.clone();
+        let Ok(latest) = semver::Version::parse(&release.pack_version) else {
+            report.state = SkillsUpdateState::Unknown;
+            return (report, fallback);
+        };
+        let newer = installed_version
+            .as_ref()
+            .is_none_or(|installed| latest > *installed);
+        if !newer {
+            return (report, fallback);
+        }
+        if !self.supports_skills_release(&release) {
+            report.state = SkillsUpdateState::BlockedByApp;
+            return (report, fallback);
+        }
+        report.state = SkillsUpdateState::Available;
+        (report, SkillsTarget::Release(release))
+    }
+
+    fn supports_skills_release(&self, release: &skills::SkillsRelease) -> bool {
+        let Some(floor) = release.min_app_version.as_deref() else {
+            return true;
+        };
+        match (
+            semver::Version::parse(floor),
+            semver::Version::parse(DISTRIBUTION_VERSION),
+        ) {
+            (Ok(floor), Ok(running)) => running >= floor,
+            _ => false,
+        }
+    }
+
+    /// Download a Skills Pack and expand it into a temporary directory.
+    ///
+    /// Nothing under the install root is touched until the archive has matched
+    /// its declared digest and expanded cleanly, so a failed download leaves
+    /// the working Skills Pack exactly as it was.
+    fn stage_skills_release(&self, release: &skills::SkillsRelease) -> Result<TempDir> {
+        let archive = pack::download_archive(
+            &self.suite_home,
+            &release.archive_spec(),
+            &|| self.cancel.load(Ordering::Relaxed),
+            &|_| {},
+        )?;
+        self.ensure_running()?;
+        let staged = TempDir::new_in(&self.suite_home, "skills-stage")?;
+        pack::extract_zip(&archive, staged.path(), release.installed_size, |_| {})?;
+        Ok(staged)
     }
 
     pub fn uninstall(&self, hosts: &BTreeSet<String>, all: bool) -> Result<SetupResult> {
@@ -1141,23 +1296,36 @@ impl SetupCore {
     fn install_skills(
         &self,
         install_id: &str,
+        source: &SkillsSource<'_>,
+        edited: &mut Vec<PathBuf>,
         progress: impl Fn(&str, u32, u32),
     ) -> Result<BTreeMap<String, CanonicalSkill>> {
         let skills_dir = self.canonical_skills_dir();
         fs::create_dir_all(&skills_dir).map_err(|err| SetupError::io(&skills_dir, err))?;
         let mut installed = BTreeMap::new();
-        let slugs = bundled_skill_slugs();
+        let slugs = source.slugs()?;
         let total = slugs.len() as u32;
         for (index, slug) in slugs.into_iter().enumerate() {
             progress(&slug, index as u32, total);
-            let source = BUNDLED_SKILLS.get_dir(&slug).ok_or_else(|| {
-                SetupError::InvalidState(format!("bundled skill missing: {slug}"))
-            })?;
-            let digest = digest_dir(source);
+            let digest = source.digest(&slug)?;
             let destination = skills_dir.join(&slug);
+            // Anything the user changed under an installed skill is theirs, and
+            // `swap_dir` would drop it without a trace. Set it aside first: the
+            // official copy still goes in, but the edits stay recoverable and
+            // the caller gets to say where they went.
+            if let Some(previous) = marker_digest(&destination, install_id)
+                && digest_path(&destination).as_deref() != Some(previous.as_str())
+            {
+                let backup = backup_path(&skills_dir, &slug);
+                fs::create_dir_all(backup.parent().unwrap_or(&skills_dir))
+                    .map_err(|err| SetupError::io(&skills_dir, err))?;
+                fs::rename(&destination, &backup)
+                    .map_err(|err| SetupError::io(&destination, err))?;
+                edited.push(backup);
+            }
             let stage =
                 skills_dir.join(format!(".my-llm-wiki-stage-{}-{slug}", std::process::id()));
-            stage_skill(source, &stage, install_id, &slug, &digest)?;
+            source.stage(&slug, &stage, install_id, &digest)?;
             swap_dir(&stage, &destination)?;
             installed.insert(
                 slug,
@@ -1710,6 +1878,24 @@ fn authorize_replacements(
     Ok(replace.clone())
 }
 
+/// The Skills Pack version the embedded baseline corresponds to.
+///
+/// The metadata is compiled in and CI keeps it valid, so the fallback exists
+/// only so a malformed file degrades to "as old as this Browser" rather than
+/// stopping an install.
+fn skills_baseline_version() -> String {
+    serde_json::from_str::<serde_json::Value>(SKILLS_BASELINE_METADATA)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("pack_version")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .filter(|version| semver::Version::parse(version).is_ok())
+        .unwrap_or_else(|| DISTRIBUTION_VERSION.to_owned())
+}
+
 fn bundled_skill_slugs() -> Vec<String> {
     let mut slugs: Vec<_> = BUNDLED_SKILLS
         .dirs()
@@ -1748,6 +1934,105 @@ struct CanonicalSkill {
     digest: String,
 }
 
+/// What `plan_skills` decided should happen to the installed Skills Pack.
+enum SkillsTarget {
+    /// Leave it alone — nothing reachable is newer than what is installed.
+    Keep,
+    /// Expand the copy compiled into this Browser.
+    Baseline,
+    /// Fetch and expand this published release.
+    Release(skills::SkillsRelease),
+}
+
+/// A directory removed when the value is dropped.
+///
+/// The crate already stages under process-id-suffixed names; this adds the
+/// cleanup, so an interrupted update leaves no expanded pack behind.
+struct TempDir(PathBuf);
+
+impl TempDir {
+    fn new_in(parent: &Path, prefix: &str) -> Result<Self> {
+        let path = parent.join(format!(".my-llm-wiki-{prefix}-{}", std::process::id()));
+        if path.exists() {
+            fs::remove_dir_all(&path).map_err(|err| SetupError::io(&path, err))?;
+        }
+        fs::create_dir_all(&path).map_err(|err| SetupError::io(&path, err))?;
+        Ok(Self(path))
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Where one Skills Pack install reads its files from.
+///
+/// The two arms carry the same tree from different places, so everything after
+/// the read — digests, ownership markers, staging, the atomic swap — is shared.
+enum SkillsSource<'a> {
+    /// The copy compiled into this Browser. Always present, which is what lets
+    /// a first install finish with no network.
+    Bundled,
+    /// A downloaded pack expanded under this directory, one child per slug.
+    Directory(&'a Path),
+}
+
+impl SkillsSource<'_> {
+    fn slugs(&self) -> Result<Vec<String>> {
+        match self {
+            Self::Bundled => Ok(bundled_skill_slugs()),
+            Self::Directory(root) => {
+                let mut slugs: Vec<String> = fs::read_dir(root)
+                    .map_err(|err| SetupError::io(root, err))?
+                    .filter_map(|entry| entry.ok())
+                    .filter(|entry| entry.path().join("SKILL.md").is_file())
+                    .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
+                    .collect();
+                if slugs.is_empty() {
+                    return Err(SetupError::InvalidState(format!(
+                        "downloaded Skills Pack holds no skills: {}",
+                        root.display()
+                    )));
+                }
+                slugs.sort();
+                Ok(slugs)
+            }
+        }
+    }
+
+    fn digest(&self, slug: &str) -> Result<String> {
+        match self {
+            Self::Bundled => Ok(digest_dir(self.bundled_dir(slug)?)),
+            Self::Directory(root) => digest_path(&root.join(slug)).ok_or_else(|| {
+                SetupError::InvalidState(format!("cannot read downloaded skill: {slug}"))
+            }),
+        }
+    }
+
+    fn stage(&self, slug: &str, stage: &Path, install_id: &str, digest: &str) -> Result<()> {
+        match self {
+            Self::Bundled => {
+                stage_skill(self.bundled_dir(slug)?, stage, install_id, slug, digest)
+            }
+            Self::Directory(root) => {
+                stage_skill_from_path(&root.join(slug), stage, install_id, slug, digest)
+            }
+        }
+    }
+
+    fn bundled_dir(&self, slug: &str) -> Result<&'static Dir<'static>> {
+        BUNDLED_SKILLS
+            .get_dir(slug)
+            .ok_or_else(|| SetupError::InvalidState(format!("bundled skill missing: {slug}")))
+    }
+}
+
 /// Write a skill and its ownership marker into a staging directory.
 fn stage_skill(
     source: &Dir<'_>,
@@ -1760,6 +2045,46 @@ fn stage_skill(
         fs::remove_dir_all(stage).map_err(|err| SetupError::io(stage, err))?;
     }
     write_dir(source, stage)?;
+    write_ownership_marker(stage, install_id, slug, digest)
+}
+
+/// Write a skill read from disk, and its ownership marker, into a staging
+/// directory. The on-disk twin of `stage_skill`, matching the `digest_dir` /
+/// `digest_path` pair.
+fn stage_skill_from_path(
+    source: &Path,
+    stage: &Path,
+    install_id: &str,
+    slug: &str,
+    digest: &str,
+) -> Result<()> {
+    if stage.exists() {
+        fs::remove_dir_all(stage).map_err(|err| SetupError::io(stage, err))?;
+    }
+    copy_tree(source, stage)?;
+    write_ownership_marker(stage, install_id, slug, digest)
+}
+
+fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
+    fs::create_dir_all(destination).map_err(|err| SetupError::io(destination, err))?;
+    for entry in fs::read_dir(source).map_err(|err| SetupError::io(source, err))? {
+        let entry = entry.map_err(|err| SetupError::io(source, err))?;
+        let target = destination.join(entry.file_name());
+        if entry.path().is_dir() {
+            copy_tree(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), &target).map_err(|err| SetupError::io(&entry.path(), err))?;
+        }
+    }
+    Ok(())
+}
+
+fn write_ownership_marker(
+    stage: &Path,
+    install_id: &str,
+    slug: &str,
+    digest: &str,
+) -> Result<()> {
     let marker = OwnershipMarker {
         schema: OWNER_SCHEMA,
         install_id: install_id.to_owned(),
@@ -1771,6 +2096,17 @@ fn stage_skill(
     let marker_data =
         serde_json::to_vec_pretty(&marker).map_err(|err| SetupError::json(&marker_path, err))?;
     fs::write(&marker_path, marker_data).map_err(|err| SetupError::io(&marker_path, err))
+}
+
+/// The digest an installed skill was written with, when this install owns it.
+///
+/// `destination_state` answers "is this ours"; this answers "is it still what
+/// we wrote". Comparing it against `digest_path` is what separates a skill the
+/// user edited from one that is untouched.
+fn marker_digest(path: &Path, install_id: &str) -> Option<String> {
+    let marker: OwnershipMarker =
+        serde_json::from_slice(&fs::read(path.join(OWNER_FILE)).ok()?).ok()?;
+    (marker.schema == OWNER_SCHEMA && marker.install_id == install_id).then_some(marker.digest)
 }
 
 /// Move a staged directory into place, keeping whatever was there until the
@@ -2784,14 +3120,60 @@ mod tests {
         ));
     }
 
+    /// A core whose Skills Pack channel is wired to local files, so tests never
+    /// depend on the network. An empty version list means "channel unreachable".
+    fn offline_core(temp: &Path, manifest: &Path) -> SetupCore {
+        SetupCore::new(temp.to_path_buf())
+            .with_manifest_sources(
+                vec![manifest.to_string_lossy().into_owned()],
+                vec![manifest.to_string_lossy().into_owned()],
+            )
+            .with_skills_sources(Vec::new(), skills::archive_sources())
+    }
+
+    /// Build a Skills Pack archive plus the signal that publishes it.
+    fn publish_skills(root: &Path, version: &str, marker: &str) -> (PathBuf, PathBuf) {
+        let archive = root.join(format!("skills-{version}.zip"));
+        let file = File::create(&archive).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        for slug in bundled_skill_slugs() {
+            zip.start_file(
+                format!("{slug}/SKILL.md"),
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+            zip.write_all(marker.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+        let data = fs::read(&archive).unwrap();
+        let installed_size = {
+            let mut zip = zip::ZipArchive::new(File::open(&archive).unwrap()).unwrap();
+            (0..zip.len())
+                .map(|index| zip.by_index(index).unwrap().size())
+                .sum::<u64>()
+        };
+        let signal = root.join(format!("skills-version-{version}.json"));
+        fs::write(
+            &signal,
+            serde_json::json!({
+                "schema": 2,
+                "pack_version": version,
+                "sha256": format!("{:x}", Sha256::digest(&data)),
+                "size": data.len(),
+                "installed_size": installed_size,
+                "pack_notes": "published for the test",
+            })
+            .to_string(),
+        )
+        .unwrap();
+        (archive, signal)
+    }
+
     #[test]
     fn update_reinstalls_the_owned_embedded_skills_pack() {
         let temp = tempfile::tempdir().unwrap();
         let manifest_path = write_manifest(temp.path(), &empty_manifest());
-        let core = SetupCore::new(temp.path().to_path_buf()).with_manifest_sources(
-            vec![manifest_path.to_string_lossy().into_owned()],
-            vec![manifest_path.to_string_lossy().into_owned()],
-        );
+        let core = offline_core(temp.path(), &manifest_path);
         core.setup(request("codex")).unwrap();
         let skill_file = temp.path().join(".codex/skills/my-llm-wiki/SKILL.md");
         let expected = fs::read(&skill_file).unwrap();
@@ -2801,6 +3183,155 @@ mod tests {
         assert_eq!(core.update(false).unwrap().state, UpdateState::Updated);
         assert_eq!(fs::read(skill_file).unwrap(), expected);
         assert_eq!(core.status().unwrap().state, SetupHealth::Ready);
+    }
+
+    #[test]
+    fn a_locally_edited_skill_is_backed_up_rather_than_dropped() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest_path = write_manifest(temp.path(), &empty_manifest());
+        let core = offline_core(temp.path(), &manifest_path);
+        core.setup(request("codex")).unwrap();
+        let skill_file = temp.path().join(".codex/skills/my-llm-wiki/SKILL.md");
+        let official = fs::read(&skill_file).unwrap();
+        fs::write(&skill_file, "my own edit").unwrap();
+
+        let result = core.update(false).unwrap();
+
+        // The official copy is back in place...
+        assert_eq!(fs::read(&skill_file).unwrap(), official);
+        // ...and the edit survived somewhere the user is told about.
+        assert_eq!(result.skills.backups.len(), 1);
+        let backup = &result.skills.backups[0];
+        assert_eq!(
+            fs::read(backup.join("SKILL.md")).unwrap(),
+            b"my own edit".to_vec()
+        );
+    }
+
+    #[test]
+    fn an_untouched_skills_pack_produces_no_backups() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest_path = write_manifest(temp.path(), &empty_manifest());
+        let core = offline_core(temp.path(), &manifest_path);
+        core.setup(request("codex")).unwrap();
+
+        let result = core.update(false).unwrap();
+
+        assert!(result.skills.backups.is_empty());
+        assert_eq!(result.skills.state, SkillsUpdateState::Unknown);
+    }
+
+    #[test]
+    fn a_published_skills_pack_replaces_the_embedded_baseline() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest_path = write_manifest(temp.path(), &empty_manifest());
+        let (archive, signal) = publish_skills(temp.path(), "9.0.0", "published skill\n");
+        let core = SetupCore::new(temp.path().to_path_buf())
+            .with_manifest_sources(
+                vec![manifest_path.to_string_lossy().into_owned()],
+                vec![manifest_path.to_string_lossy().into_owned()],
+            )
+            .with_skills_sources(
+                vec![signal.to_string_lossy().into_owned()],
+                vec![archive.to_string_lossy().into_owned()],
+            );
+        core.setup(request("codex")).unwrap();
+        assert_eq!(core.update(true).unwrap().skills.state, SkillsUpdateState::Available);
+
+        let result = core.update(false).unwrap();
+
+        assert_eq!(result.skills.state, SkillsUpdateState::Updated);
+        assert_eq!(result.skills.installed_version, "9.0.0");
+        assert_eq!(result.skills.notes.as_deref(), Some("published for the test"));
+        assert_eq!(
+            fs::read(temp.path().join(".codex/skills/my-llm-wiki/SKILL.md")).unwrap(),
+            b"published skill\n".to_vec()
+        );
+        assert_eq!(core.status().unwrap().state, SetupHealth::Ready);
+    }
+
+    #[test]
+    fn a_published_pack_older_than_the_installed_one_is_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest_path = write_manifest(temp.path(), &empty_manifest());
+        let (archive, signal) = publish_skills(temp.path(), "0.0.1", "stale skill\n");
+        let core = SetupCore::new(temp.path().to_path_buf())
+            .with_manifest_sources(
+                vec![manifest_path.to_string_lossy().into_owned()],
+                vec![manifest_path.to_string_lossy().into_owned()],
+            )
+            .with_skills_sources(
+                vec![signal.to_string_lossy().into_owned()],
+                vec![archive.to_string_lossy().into_owned()],
+            );
+        core.setup(request("codex")).unwrap();
+        let official = fs::read(temp.path().join(".codex/skills/my-llm-wiki/SKILL.md")).unwrap();
+
+        let result = core.update(false).unwrap();
+
+        assert_eq!(result.skills.state, SkillsUpdateState::UpToDate);
+        assert_eq!(result.skills.installed_version, skills_baseline_version());
+        assert_eq!(
+            fs::read(temp.path().join(".codex/skills/my-llm-wiki/SKILL.md")).unwrap(),
+            official
+        );
+    }
+
+    #[test]
+    fn a_pack_demanding_a_newer_browser_is_reported_not_installed() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest_path = write_manifest(temp.path(), &empty_manifest());
+        let (archive, signal) = publish_skills(temp.path(), "9.0.0", "too new\n");
+        let mut payload: serde_json::Value =
+            serde_json::from_slice(&fs::read(&signal).unwrap()).unwrap();
+        payload["min_app_version"] = serde_json::json!("99.0.0");
+        fs::write(&signal, payload.to_string()).unwrap();
+        let core = SetupCore::new(temp.path().to_path_buf())
+            .with_manifest_sources(
+                vec![manifest_path.to_string_lossy().into_owned()],
+                vec![manifest_path.to_string_lossy().into_owned()],
+            )
+            .with_skills_sources(
+                vec![signal.to_string_lossy().into_owned()],
+                vec![archive.to_string_lossy().into_owned()],
+            );
+        core.setup(request("codex")).unwrap();
+        let official = fs::read(temp.path().join(".codex/skills/my-llm-wiki/SKILL.md")).unwrap();
+
+        let result = core.update(false).unwrap();
+
+        assert_eq!(result.skills.state, SkillsUpdateState::BlockedByApp);
+        assert_eq!(result.skills.latest_version.as_deref(), Some("9.0.0"));
+        assert_eq!(
+            fs::read(temp.path().join(".codex/skills/my-llm-wiki/SKILL.md")).unwrap(),
+            official
+        );
+    }
+
+    #[test]
+    fn an_invalid_signal_falls_through_to_the_next_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest_path = write_manifest(temp.path(), &empty_manifest());
+        let (archive, signal) = publish_skills(temp.path(), "9.0.0", "published skill\n");
+        let poisoned = temp.path().join("poisoned.json");
+        fs::write(&poisoned, r#"{"schema":1,"pack_version":"999.0.0"}"#).unwrap();
+        let core = SetupCore::new(temp.path().to_path_buf())
+            .with_manifest_sources(
+                vec![manifest_path.to_string_lossy().into_owned()],
+                vec![manifest_path.to_string_lossy().into_owned()],
+            )
+            .with_skills_sources(
+                vec![
+                    poisoned.to_string_lossy().into_owned(),
+                    signal.to_string_lossy().into_owned(),
+                ],
+                vec![archive.to_string_lossy().into_owned()],
+            );
+        core.setup(request("codex")).unwrap();
+
+        let result = core.update(false).unwrap();
+
+        assert_eq!(result.skills.installed_version, "9.0.0");
     }
 
     #[test]

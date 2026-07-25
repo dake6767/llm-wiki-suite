@@ -578,6 +578,9 @@ pub(crate) async fn setup_update(
     require_setup_window(&window)?;
     let result = run(move || SetupCore::from_environment()?.update(check)).await?;
     if let Some(runtime) = app.try_state::<crate::BrowserRuntime>() {
+        // A manual check is fresher than whatever the daily poll last saw, so
+        // it becomes the cached answer and retires any tray badge it clears.
+        runtime.skills_watch.record(&result);
         if check {
             runtime.update_manager.check();
         } else if result.restart_required || runtime.update_manager.status().state == "available" {
@@ -585,6 +588,21 @@ pub(crate) async fn setup_update(
         }
     }
     Ok(result)
+}
+
+/// The last completed background check, if any.
+///
+/// Lets the Setup page open already showing what is available instead of
+/// making the user press a button to find out.
+#[tauri::command]
+pub(crate) fn setup_update_cached(
+    app: AppHandle,
+    window: WebviewWindow,
+) -> Result<Option<UpdateResult>, String> {
+    require_setup_window(&window)?;
+    Ok(app
+        .try_state::<crate::BrowserRuntime>()
+        .and_then(|runtime| runtime.skills_watch.latest()))
 }
 
 #[tauri::command]

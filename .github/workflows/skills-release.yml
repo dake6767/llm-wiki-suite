@@ -1,0 +1,95 @@
+name: skills-release
+
+# Publishes the Skills Pack on its own cadence, so a skill fix reaches users
+# without rebuilding, signing and reinstalling the Browser.
+#
+# Two releases, deliberately different in kind:
+#   skills-v<version>  immutable — the archive itself, never rebuilt or replaced.
+#   skills-latest      rolling  — a single tiny skills-version.json pointing at it.
+#
+# Both are prereleases so neither can become GitHub's "latest" and hijack the
+# Browser updater. The PR-side gate that forces a version bump lives in
+# distribution-ci.yml, which already watches skills/**.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'registry/skills-release.json'
+      - 'skills/**'
+      - '.github/workflows/skills-release.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      LATEST_TAG: skills-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Resolve the Skills Pack version
+        id: version
+        run: |
+          version="$(python -c 'from scripts.skills_release import load_metadata; print(load_metadata()["pack_version"])')"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=skills-v$version" >> "$GITHUB_OUTPUT"
+          echo "archive=skills-$version.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Build the archive
+        run: python -m scripts.build_skills_archive --out "${{ steps.version.outputs.archive }}"
+
+      - name: Publish or reuse the immutable release
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          ARCHIVE: ${{ steps.version.outputs.archive }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # Already published: that artifact is what clients fetch, so describe
+            # it rather than whatever we just built. The archive is deterministic,
+            # so a difference means this version shipped different content — the
+            # one thing an immutable release must never do.
+            mv "$ARCHIVE" "rebuilt-$ARCHIVE"
+            gh release download "$TAG" --pattern "$ARCHIVE" --dir .
+            if ! cmp -s "$ARCHIVE" "rebuilt-$ARCHIVE"; then
+              echo "::error::$TAG already exists with different content; bump pack_version instead of reusing $VERSION"
+              exit 1
+            fi
+            rm -f "rebuilt-$ARCHIVE"
+          else
+            gh release create "$TAG" "$ARCHIVE" \
+              --title "Skills Pack $VERSION" \
+              --notes "Immutable Skills Pack archive. Consumed by the Browser through wiki.htmlgo.to/_skills/dl/$VERSION and pinned by the SHA-256 in skills-latest/skills-version.json." \
+              --prerelease \
+              --target main
+          fi
+
+      - name: Generate the version signal
+        run: |
+          python -m scripts.gen_skills_version \
+            --archive "${{ steps.version.outputs.archive }}" \
+            --source-commit "$GITHUB_SHA" \
+            -o skills-version.json
+          cat skills-version.json
+
+      - name: Ensure the rolling release exists
+        run: |
+          if ! gh release view "$LATEST_TAG" >/dev/null 2>&1; then
+            gh release create "$LATEST_TAG" \
+              --title "Skills Pack version signal (rolling)" \
+              --notes "Rolling single-file release carrying skills-version.json, which names the current immutable skills-v<version> release and pins its SHA-256. Kept as a prerelease so it never becomes GitHub's latest." \
+              --prerelease \
+              --target main
+          fi
+
+      - name: Publish the version signal
+        run: gh release upload "$LATEST_TAG" skills-version.json --clobber
