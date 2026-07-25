@@ -836,7 +836,7 @@ function WikiLocation({ path, picking, onChange, onPick }: {
 function RecommendedToolchain({ install, onToggle }: { install: boolean; onToggle: () => void }) {
   const tools = [
     ["OpenCLI", "采集网页及需要登录态的社交内容"],
-    ["yt-dlp", "获取在线视频的字幕、元数据与音频"],
+    ["yt-dlp + aria2c", "获取在线视频的字幕、元数据与音频，链路异常时多线程重试"],
     ["FFmpeg", "完成音视频转码与音频提取"],
     ["MarkItDown", "将 PDF、DOCX、PPTX、XLSX、EPUB 转为 Markdown"],
   ];
@@ -911,7 +911,7 @@ function ProgressView({ progress, tasks }: { progress: Progress; tasks: string[]
             <b>{progress.detail_percent !== undefined ? `${progress.detail_percent}%` : "处理中"}</b>
           </div>
           <p>{progress.message}</p>
-          {progress.phase === "toolchain" ? <small>包含 OpenCLI · yt-dlp · FFmpeg · MarkItDown</small> : null}
+          {progress.phase === "toolchain" ? <small>包含 OpenCLI · yt-dlp + aria2c · FFmpeg · MarkItDown</small> : null}
           <div className={progress.detail_percent === undefined ? "is-indeterminate" : ""}>
             <i style={progress.detail_percent === undefined ? undefined : { width: `${progress.detail_percent}%` }} />
           </div>

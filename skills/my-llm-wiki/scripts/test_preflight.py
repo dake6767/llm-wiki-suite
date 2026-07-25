@@ -19,6 +19,7 @@ class PreflightTests(unittest.TestCase):
             tools={
                 "opencli": {"status": "ok", "provider": "official"},
                 "yt-dlp": {"status": "missing"},
+                "aria2c": {"status": "missing"},
                 "ffmpeg": {"status": "missing"},
                 "sensevoice": {"status": "missing"},
                 "faster-whisper": {"status": "missing"},

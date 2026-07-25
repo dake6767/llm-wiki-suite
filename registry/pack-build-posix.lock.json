@@ -70,12 +70,21 @@
     },
     "video": {
       "label": "Video base",
-      "description": "Pinned yt-dlp and portable FFmpeg for captions and audio conversion",
+      "description": "Pinned yt-dlp, aria2c and portable FFmpeg for resilient captions and audio retrieval",
       "default": true,
       "packages": ["yt-dlp==2026.7.4", "imageio-ffmpeg==0.6.0"],
+      "aria2": {
+        "version": "1.37.0",
+        "url": "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0.tar.xz",
+        "sha256": "60a420ad7085eb616cb6e2bdf0a7206d68ff3d37fb5a956dc44242eb2f79b66b"
+      },
       "tools": {
         "yt-dlp": {
           "argv": ["{runtime_python}", "{component}/yt_dlp_runner.py"],
+          "postcheck": ["--version"]
+        },
+        "aria2c": {
+          "argv": ["{component}/aria2c"],
           "postcheck": ["--version"]
         },
         "ffmpeg": {

@@ -51,9 +51,9 @@
     },
     "video": {
       "label": "Video base",
-      "description": "Pinned yt-dlp and portable FFmpeg for captions and audio conversion",
+      "description": "Pinned yt-dlp, aria2c and portable FFmpeg for resilient captions and audio retrieval",
       "label_zh": "视频基础",
-      "description_zh": "锁定版本的 yt-dlp 与便携版 FFmpeg，用于字幕与音频转换",
+      "description_zh": "锁定版本的 yt-dlp、aria2c 与便携版 FFmpeg，用于可靠获取字幕与音频",
       "default": true,
       "yt_dlp": {
         "version": "2026.07.04",
@@ -65,9 +65,18 @@
         "url": "https://github.com/GyanD/codexffmpeg/releases/download/8.1.2/ffmpeg-8.1.2-essentials_build.zip",
         "sha256": "db580001caa24ac104c8cb856cd113a87b0a443f7bdf47d8c12b1d740584a2ec"
       },
+      "aria2": {
+        "version": "1.37.0",
+        "url": "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip",
+        "sha256": "67d015301eef0b612191212d564c5bb0a14b5b9c4796b76454276a4d28d9b288"
+      },
       "tools": {
         "yt-dlp": {
-          "argv": ["{component}/yt-dlp.exe"],
+          "argv": ["{runtime}/python.exe", "{component}/yt_dlp_runner.py"],
+          "postcheck": ["--version"]
+        },
+        "aria2c": {
+          "argv": ["{component}/aria2c.exe"],
           "postcheck": ["--version"]
         },
         "ffmpeg": {

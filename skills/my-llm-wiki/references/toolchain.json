@@ -8,7 +8,7 @@
     "capture.x.bookmarks": {"label": "X bookmark sync", "tools": ["opencli"]},
     "capture.video": {
       "label": "Online video transcript capture",
-      "tools": ["opencli", "yt-dlp", "ffmpeg", "sensevoice", "faster-whisper"]
+      "tools": ["opencli", "yt-dlp", "aria2c", "ffmpeg", "sensevoice", "faster-whisper"]
     }
   },
   "tools": {
@@ -29,6 +29,13 @@
       "kind": "command",
       "description": "video metadata, captions, and audio retrieval",
       "home": "https://github.com/yt-dlp/yt-dlp",
+      "official_pack": "toolchain-base",
+      "postcheck": ["--version"]
+    },
+    "aria2c": {
+      "kind": "command",
+      "description": "parallel and retryable media download fallback",
+      "home": "https://github.com/aria2/aria2",
       "official_pack": "toolchain-base",
       "postcheck": ["--version"]
     },

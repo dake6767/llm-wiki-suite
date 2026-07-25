@@ -213,6 +213,7 @@ def assess_profiles(tools: dict, catalog: dict, profiles: list[str]) -> tuple[di
             }
             for name, reason, priority in (
                 ("yt-dlp", "caption and audio retrieval", "required" if not caption_path else "recommended"),
+                ("aria2c", "resilient parallel audio download fallback", "recommended"),
                 ("ffmpeg", "audio extraction", "recommended"),
                 ("sensevoice", "Chinese timestamped ASR", "recommended"),
                 ("faster-whisper", "non-Chinese timestamped ASR", "recommended"),

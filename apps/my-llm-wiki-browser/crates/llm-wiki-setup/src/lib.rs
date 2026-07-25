@@ -1902,6 +1902,7 @@ fn friendly_tool_name(name: &str) -> &str {
         "markitdown" => "MarkItDown",
         "opencli" => "OpenCLI",
         "yt-dlp" => "yt-dlp",
+        "aria2c" => "aria2c",
         "ffmpeg" => "FFmpeg",
         "asr-zh-postcheck" => "FunASR",
         "asr-other-postcheck" => "Whisper",

@@ -114,7 +114,7 @@ def extract(archive: Path, destination: Path) -> None:
 
 def extract_tar(archive: Path, destination: Path) -> None:
     destination.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(archive, "r:gz") as bundle:
+    with tarfile.open(archive, "r:*") as bundle:
         bundle.extractall(destination, filter="data")
 
 
@@ -122,11 +122,18 @@ def copy_tree(source: Path, destination: Path) -> None:
     shutil.copytree(source, destination, symlinks=True)
 
 
-def checked(argv: list[str], *, env: dict[str, str] | None = None, timeout: int = 300) -> str:
+def checked(
+    argv: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    cwd: Path | None = None,
+    timeout: int = 300,
+) -> str:
     environment = (env or os.environ).copy()
     environment.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     completed = subprocess.run(
         argv,
+        cwd=cwd,
         env=environment,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
@@ -299,7 +306,9 @@ def build_posix_video(
     )
     runner = stage / "yt_dlp_runner.py"
     runner.write_text(
-        "from pathlib import Path\nimport sys\n"
+        "from pathlib import Path\nimport os\nimport sys\n"
+        "root = Path(__file__).parent\n"
+        "os.environ['PATH'] = str(root) + os.pathsep + os.environ.get('PATH', '')\n"
         "sys.path.insert(0, str(Path(__file__).with_name('site')))\n"
         "from yt_dlp import main\n"
         "if '--ffmpeg-location' not in sys.argv:\n"
@@ -318,9 +327,69 @@ def build_posix_video(
         raise BuildError("imageio-ffmpeg did not provide an executable")
     shutil.copy2(ffmpeg, stage / "ffmpeg")
     (stage / "ffmpeg").chmod(0o755)
+    aria2 = build_posix_aria2(spec["aria2"], work, system)
+    shutil.copy2(aria2, stage / "aria2c")
+    (stage / "aria2c").chmod(0o755)
     checked([str(python), str(runner), "--version"])
     checked([str(stage / "ffmpeg"), "-version"])
+    checked([str(stage / "aria2c"), "--version"])
     return stage
+
+
+def build_posix_aria2(spec: dict, work: Path, system: str) -> Path:
+    archive = download_verified(
+        spec["url"], work / "aria2-source.tar.xz", spec["sha256"]
+    )
+    unpacked = work / "aria2-source"
+    extract_tar(archive, unpacked)
+    roots = [path for path in unpacked.iterdir() if path.is_dir()]
+    if len(roots) != 1 or not (roots[0] / "configure").is_file():
+        raise BuildError("unexpected aria2 source archive layout")
+    install = work / "aria2-install"
+    configure = [
+        str(roots[0] / "configure"),
+        f"--prefix={install}",
+        "--disable-dependency-tracking",
+        "--disable-nls",
+        "--disable-bittorrent",
+        "--disable-metalink",
+        "--disable-websocket",
+        "--without-libcares",
+        "--without-sqlite3",
+        "--without-libxml2",
+        "--without-libexpat",
+        "--without-libssh2",
+        "--disable-shared",
+    ]
+    # Pin one TLS backend per platform so the build never silently falls back to
+    # whatever headers the runner happens to carry: AppleTLS on macOS, OpenSSL
+    # elsewhere.
+    configure.append("--without-gnutls")
+    if system == "darwin":
+        configure.append("--without-openssl")
+    else:
+        configure.append("--without-appletls")
+    checked(configure, cwd=roots[0], timeout=900)
+    jobs = str(max(1, min(4, os.cpu_count() or 1)))
+    checked(["make", f"-j{jobs}"], cwd=roots[0], timeout=3600)
+    checked(["make", "install"], cwd=roots[0], timeout=900)
+    executable = install / "bin" / "aria2c"
+    banner = checked([str(executable), "--version"]).splitlines()
+    if banner[0] != f"aria2 version {spec['version']}":
+        raise BuildError("aria2 version differs from lock")
+    features = next(
+        (
+            line.split(":", 1)[1]
+            for line in banner
+            if line.startswith("Enabled Features:")
+        ),
+        "",
+    )
+    # Without a TLS backend configure still succeeds and `--version` still
+    # works; the binary just cannot fetch https media.
+    if "HTTPS" not in {item.strip() for item in features.split(",")}:
+        raise BuildError("aria2 was built without HTTPS support")
+    return executable
 
 
 def posix_asr_install(spec: dict, system: str) -> tuple[list[str], str | None]:
@@ -429,6 +498,7 @@ def validate_windows_lock(lock: dict) -> None:
         lock["components"]["web"]["extension"],
         lock["components"]["video"]["yt_dlp"],
         lock["components"]["video"]["ffmpeg"],
+        lock["components"]["video"]["aria2"],
     ]
     for source in direct:
         if not str(source.get("url", "")).startswith("https://") or not re.fullmatch(
@@ -567,8 +637,38 @@ def build_windows_video(base: Path, spec: dict, downloads: Path, work: Path) -> 
     first_line = checked([str(stage / "ffmpeg" / "bin" / "ffmpeg.exe"), "-version"]).splitlines()[0]
     if spec["ffmpeg"]["version"] not in first_line:
         raise BuildError("FFmpeg version differs from lock")
+    aria2_archive = download_verified(
+        spec["aria2"]["url"], downloads / "aria2.zip", spec["aria2"]["sha256"]
+    )
+    aria2_unpacked = work / "aria2-unpack"
+    extract(aria2_archive, aria2_unpacked)
+    aria2_executables = sorted(aria2_unpacked.rglob("aria2c.exe"))
+    if len(aria2_executables) != 1:
+        raise BuildError("aria2 archive does not contain exactly one aria2c.exe")
+    shutil.copy2(aria2_executables[0], stage / "aria2c.exe")
+    aria2_line = checked([str(stage / "aria2c.exe"), "--version"]).splitlines()[0]
+    if aria2_line != f"aria2 version {spec['aria2']['version']}":
+        raise BuildError("aria2 version differs from lock")
+    (stage / "yt_dlp_runner.py").write_text(
+        "from pathlib import Path\nimport os\nimport subprocess\nimport sys\n"
+        "root = Path(__file__).parent\n"
+        "os.environ['PATH'] = str(root) + os.pathsep + os.environ.get('PATH', '')\n"
+        "args = list(sys.argv[1:])\n"
+        "if '--ffmpeg-location' not in args:\n"
+        "    args[0:0] = ['--ffmpeg-location', str(root / 'ffmpeg' / 'bin')]\n"
+        "raise SystemExit(subprocess.run([str(root / 'yt-dlp.exe'), *args], check=False).returncode)\n",
+        encoding="utf-8",
+    )
+    checked(
+        [
+            str(base / "runtime" / "python.exe"),
+            str(stage / "yt_dlp_runner.py"),
+            "--version",
+        ]
+    )
     write_notice(stage, "video", [
         "yt-dlp: https://github.com/yt-dlp/yt-dlp",
+        "aria2: https://github.com/aria2/aria2",
         "FFmpeg source: https://ffmpeg.org/",
         "Gyan Windows build: https://www.gyan.dev/ffmpeg/builds/",
     ])
@@ -639,12 +739,14 @@ def build_posix(
             ],
             "yt-dlp": ["{pack}/runtime/bin/python3", "{pack}/video/yt_dlp_runner.py"],
             "ffmpeg": ["{pack}/video/ffmpeg"],
+            "aria2c": ["{pack}/video/aria2c"],
         }
         release_checks = [
             {"command": "markitdown", "args": ["--help"]},
             {"command": "opencli", "args": ["--version"]},
             {"command": "yt-dlp", "args": ["--version"]},
             {"command": "ffmpeg", "args": ["-version"]},
+            {"command": "aria2c", "args": ["--version"]},
         ]
         artifacts["toolchain-base"] = pack_spec(
             base,
@@ -660,6 +762,7 @@ def build_posix(
                 "capture.web.authenticated",
                 "capture.video.captions",
                 "media.extract-audio",
+                "media.parallel-download",
                 "document.to-markdown",
             ],
             manual_actions=[{
@@ -740,8 +843,12 @@ def build_windows(
                 "{pack}/web/node/node.exe",
                 "{pack}/web/opencli/node_modules/@jackwener/opencli/dist/src/main.js",
             ],
-            "yt-dlp": ["{pack}/video/yt-dlp.exe"],
+            "yt-dlp": [
+                "{pack}/runtime/python.exe",
+                "{pack}/video/yt_dlp_runner.py",
+            ],
             "ffmpeg": ["{pack}/video/ffmpeg/bin/ffmpeg.exe"],
+            "aria2c": ["{pack}/video/aria2c.exe"],
         }
         artifacts["toolchain-base"] = pack_spec(
             base,
@@ -757,11 +864,13 @@ def build_windows(
                 {"command": "opencli", "args": ["--version"]},
                 {"command": "yt-dlp", "args": ["--version"]},
                 {"command": "ffmpeg", "args": ["-version"]},
+                {"command": "aria2c", "args": ["--version"]},
             ],
             capabilities=[
                 "capture.web.authenticated",
                 "capture.video.captions",
                 "media.extract-audio",
+                "media.parallel-download",
                 "document.to-markdown",
             ],
             manual_actions=[{
@@ -854,6 +963,7 @@ def toolchain_client_probes() -> list[dict]:
         *python_client_probe(),
         {"command": "node-runtime", "args": ["--version"]},
         {"command": "ffmpeg", "args": ["-version"]},
+        {"command": "aria2c", "args": ["--version"]},
     ]
 
 

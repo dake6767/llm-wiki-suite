@@ -54,7 +54,10 @@ custom Providers only through the same resolver and output checks.
    `python3 "$CORE_SKILL/scripts/preflight.py" --profile capture.video` and
    inspect `capabilities.capture.video`.
    Use captions first; when captions are absent, require audio download,
-   `ffmpeg`, and a language-appropriate local ASR backend. If the official
+   `ffmpeg`, and a language-appropriate local ASR backend. `aria2c` is the
+   recommended retry downloader for transport failures and AAC corruption
+   (`yt-dlp --downloader aria2c`); it is never required to start a capture.
+   If the official
    ASR Provider is absent, ask before downloading the large fallback pack:
    `my-llm-wiki ensure-pack asr-zh` or `asr-other`. A configured custom
    Provider remains an equally valid choice when it passes the same checks.

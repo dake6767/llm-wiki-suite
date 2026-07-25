@@ -120,7 +120,7 @@ installed Skills Pack the remaining hosts still read.
 The internal immutable packs are:
 
 ```text
-toolchain-base  # FFmpeg, yt-dlp, Node/OpenCLI, document conversion
+toolchain-base  # FFmpeg, yt-dlp, aria2c, Node/OpenCLI, document conversion
 asr-zh          # SenseVoice/FunASR runtime; installed on first need
 asr-other       # faster-whisper runtime; installed on first need
 ```

@@ -33,7 +33,7 @@ RISKY_SHELL_RULES = (
     (
         "remote-pipe-interpreter",
         re.compile(
-            r"\b(?:curl|wget|yt-dlp|opencli|agent-reach|tvly)\b"
+            r"\b(?:curl|wget|aria2c|yt-dlp|opencli|agent-reach|tvly)\b"
             r"[^\n|]*(?:\\\s*\n[^\n|]*)*\|\s*(?:\\\s*\n\s*)?"
             r"(?:[/\w.-]*/)?(?:python[23]?|node|ruby|perl|ba?sh|zsh)\b",
             re.IGNORECASE,
@@ -48,7 +48,7 @@ RISKY_SHELL_RULES = (
     (
         "remote-command-substitution",
         re.compile(
-            r"(?:\$\(|`)[^)\n`]*\b(?:curl|wget|yt-dlp|opencli|agent-reach|tvly)\b",
+            r"(?:\$\(|`)[^)\n`]*\b(?:curl|wget|aria2c|yt-dlp|opencli|agent-reach|tvly)\b",
             re.IGNORECASE,
         ),
         "stage retrieval output in a data file instead of shell substitution",

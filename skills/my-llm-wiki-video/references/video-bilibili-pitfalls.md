@@ -27,7 +27,11 @@ are in `references/video-asr.md`.
 - **m4a AAC corruption → download with `--downloader aria2c`.**
   yt-dlp's default HTTP downloader can produce m4a files whose AAC payload is
   damaged mid-stream (ffmpeg truncates; macOS `afconvert` errors `'bada'`).
-  aria2c downloads are clean. Corruption can also be *transient* — one fresh
+  aria2c downloads are clean. The official `toolchain-base` Provider ships
+  aria2c next to yt-dlp, and its yt-dlp runner puts that private binary on the
+  child PATH, so `--downloader aria2c` resolves without a global install;
+  system or custom Providers must expose both commands in the same execution
+  environment. Corruption can also be *transient* — one fresh
   re-download is worth trying before switching formats. A damaged m4a
   truncates **everything downstream** at the damage point — ffmpeg
   conversion, funasr's internal loader, a VAD pass (one 67-min capture

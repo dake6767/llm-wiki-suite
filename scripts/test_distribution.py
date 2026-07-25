@@ -111,6 +111,7 @@ class DistributionBuilderTests(unittest.TestCase):
                 {"command": "python-runtime", "args": ["--version"]},
                 {"command": "node-runtime", "args": ["--version"]},
                 {"command": "ffmpeg", "args": ["-version"]},
+                {"command": "aria2c", "args": ["--version"]},
             ],
         )
         self.assertEqual(

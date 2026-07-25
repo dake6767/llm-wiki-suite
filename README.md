@@ -77,12 +77,12 @@ Obsidian 或 CLI。分享授权当前以整个 Wiki 为边界，不是单页授�
 
 确认页可以修改 Wiki 的存放路径；默认仍为 `~/wikis/my-llm-wiki`，已有 Wiki 目录会直接复用。
 同一页还可以修改工具链与 Skills 的安装目录，默认仍为 `~/.my-llm-wiki`。工具链、语音模型和
-Skills 合计可能超过 5 GB，Windows 上默认全部落在系统盘并随重装丢失，因此可以改到数据盘：
+Skills 合计可能 3 GB 左右，Windows 上默认全部落在系统盘并随重装丢失，因此可以改到数据盘：
 此时 `~/.my-llm-wiki` 会变成指向该目录的链接（Windows 上是 junction），Skills、MCP 注册和
 `wikis.json` 的既有路径全部照常工作；重装系统后把新的 `~/.my-llm-wiki` 指回原目录即可复用，
 不必重新下载。
 首次界面不再要求用户组合 Documents、Web、Video、中文/非中文 ASR 或失败策略。
-`toolchain-base` 包含 FFmpeg、yt-dlp、Node/OpenCLI 和文档转换。完成页会立即开放 Wiki，
+`toolchain-base` 包含 FFmpeg、yt-dlp、aria2c、Node/OpenCLI 和文档转换。完成页会立即开放 Wiki，
 并提供独立的“安装并预热”按钮：Browser 可在后台准备中文 ASR runtime、fsmn-vad 与
 SenseVoiceSmall，用户无需等待即可先抓取网页。所有 pack 都由 CI 预构建和验证，用户机器
 只下载、校验 SHA-256、解压和激活，不调用全局 pip/npm、Homebrew、apt 或 winget。
