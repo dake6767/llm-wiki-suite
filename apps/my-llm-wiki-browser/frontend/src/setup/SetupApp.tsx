@@ -90,6 +90,17 @@ interface UpdateResult {
   current_version: string;
   latest_version: string;
   restart_required: boolean;
+  skills: SkillsUpdate;
+}
+
+// The Skills Pack ships on its own cadence, so a Browser that is up to date can
+// still have skills waiting.
+interface SkillsUpdate {
+  state: "up-to-date" | "available" | "updated" | "blocked-by-app" | "unknown";
+  installed_version: string;
+  latest_version?: string;
+  notes?: string;
+  backups: string[];
 }
 
 interface BrowserUpdateStatus {
@@ -411,6 +422,12 @@ export default function SetupApp() {
   useEffect(() => {
     if (previewMode || view !== "manage") return;
     invoke<SetupInspection>("setup_inspect").then(setInspection).catch(() => undefined);
+    // Show what the daily background check already found rather than making
+    // the user press 检查更新 to learn there is a newer Skills Pack. Cached
+    // only — opening this page must not start a network round trip.
+    invoke<UpdateResult | null>("setup_update_cached")
+      .then((cached) => cached && setUpdate((current) => current ?? cached))
+      .catch(() => undefined);
   }, [view]);
 
   const selected = useMemo(
@@ -1177,7 +1194,10 @@ function Management({ status, hosts, hostJob, onInstallHost, onRemoveHost, updat
   const announcingSuccess = useSuccessAnnouncement(repair?.state);
   const browserBusy = browserUpdate?.state === "checking" || browserUpdate?.state === "downloading";
   const browserRestart = browserUpdate?.state === "ready-to-restart";
-  const updateAvailable = update?.state === "available" || browserUpdate?.state === "available";
+  const updateAvailable =
+    update?.state === "available" ||
+    browserUpdate?.state === "available" ||
+    update?.skills.state === "available";
   return (
     <main className="manage-shell">
       <header className="manage-header">
@@ -1212,6 +1232,7 @@ function Management({ status, hosts, hostJob, onInstallHost, onRemoveHost, updat
         </StatusPanel>
         <StatusPanel index="04" title="联合更新" healthy={!updateAvailable && !browserRestart && browserUpdate?.state !== "error"}>
           <p>{browserUpdateText(browserUpdate, update, status?.distribution_version)}</p>
+          {update ? <SkillsUpdateLine skills={update.skills} /> : null}
           {browserUpdate?.state === "downloading" ? <UpdateProgress status={browserUpdate} /> : null}
           {browserUpdate?.state === "error" && browserUpdate.error ? <p className="setup-inline-error">{browserUpdate.error}</p> : null}
           <div className="panel-actions">
@@ -1519,6 +1540,33 @@ function browserUpdateText(browser: BrowserUpdateStatus | null, update: UpdateRe
   if (browser?.state === "error") return "Browser 更新检查失败";
   if (update) return updateText(update);
   return `Browser v${browser?.current_version ?? "—"} · distribution v${distributionVersion ?? "—"}`;
+}
+
+// Skills report on their own line because their version moves independently of
+// the Browser's. Backups get named rather than counted away: the whole point of
+// keeping a user's edits is that they can go find them.
+function SkillsUpdateLine({ skills }: { skills: SkillsUpdate }) {
+  return (
+    <>
+      <p>{skillsUpdateText(skills)}</p>
+      {skills.notes ? <p className="panel-note">{skills.notes}</p> : null}
+      {skills.backups.length ? (
+        <p className="panel-note">
+          {skills.backups.length} 个 skill 有本地改动，已备份到 {skills.backups[0]}
+          {skills.backups.length > 1 ? " 等目录" : ""}
+        </p>
+      ) : null}
+    </>
+  );
+}
+
+function skillsUpdateText(skills: SkillsUpdate) {
+  const installed = `Skills Pack v${skills.installed_version}`;
+  if (skills.state === "available") return `${installed} · v${skills.latest_version} 可用`;
+  if (skills.state === "updated") return `${installed} 已更新`;
+  if (skills.state === "blocked-by-app") return `${installed} · v${skills.latest_version} 需要更新 Browser 后安装`;
+  if (skills.state === "unknown") return `${installed} · 暂时无法检查更新`;
+  return `${installed} 已是最新`;
 }
 
 function UpdateProgress({ status }: { status: BrowserUpdateStatus }) {

@@ -253,7 +253,9 @@ Use the best available adapter, always writing into a fresh temp directory. A
 valid adapter produces Markdown plus local media in one of the shapes defined by
 `references/adapter-contract.md`. Check the adapter's own status; never normalize
 a failed fetch. When a recommended tool is missing, explain the capture-specific
-benefit and provide its install command plus project URL. Use `cn-mirrors` when
+benefit and provide its install command plus project URL. A Provider reported as
+`unverified` is installed and resolved — only its health check ran out of time,
+so use it and never offer to reinstall the pack it already comes from. Use `cn-mirrors` when
 the network requires domestic install routes.
 
 ## Normalize into RAW

@@ -11,6 +11,7 @@ on:
       - 'apps/my-llm-wiki-browser/crates/llm-wiki-setup/**'
       - '.github/workflows/distribution-ci.yml'
       - '.github/workflows/release.yml'
+      - '.github/workflows/skills-release.yml'
   push:
     branches: [main]
     paths:
@@ -20,6 +21,7 @@ on:
       - 'apps/my-llm-wiki-browser/crates/llm-wiki-setup/**'
       - '.github/workflows/distribution-ci.yml'
       - '.github/workflows/release.yml'
+      - '.github/workflows/skills-release.yml'
 
 permissions:
   contents: read
@@ -62,15 +64,19 @@ jobs:
           python -m json.tool registry/pack-build-posix.lock.json
           python -m json.tool registry/pack-build-windows.lock.json
           python -m json.tool registry/pack-release.json
+          python -m json.tool registry/skills-release.json
           python -m json.tool registry/opencli/package-lock.json
           python -m json.tool skills/my-llm-wiki/references/toolchain.json
           python -m scripts.pack_release metadata
+          python -m scripts.skills_release
           python -m scripts.check_pack_release_version --base "${{ github.event.pull_request.base.sha || github.event.before }}"
+          python -m scripts.check_skills_release_version --base "${{ github.event.pull_request.base.sha || github.event.before }}"
           python -m scripts.build_distribution --help
       - name: Compile and test Provider/pack code
         run: |
           python -m compileall -q scripts skills
           python -m unittest scripts.test_distribution
+          python -m unittest scripts.test_skills_release
           python -m unittest discover -s skills/my-llm-wiki/scripts -p "test_*.py"
           python -m unittest discover -s skills/my-llm-wiki-video/scripts -p "test_*.py"
       - name: Check approval-clean examples

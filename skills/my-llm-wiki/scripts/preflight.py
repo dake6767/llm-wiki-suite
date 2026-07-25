@@ -30,6 +30,11 @@ PROFILE_ALIASES = {
     "video": "capture.video",
 }
 PRIORITY_ORDER = {"optional": 0, "recommended": 1, "required": 2}
+# A postcheck only proves the already-resolved Provider runs. Command probes are
+# `--version`-shaped and answer immediately; a python-profile probe imports the
+# pack's whole dependency tree (torch, for both ASR backends), which takes tens
+# of seconds on a cold page cache and must not be read as an absent pack.
+POSTCHECK_TIMEOUT = {"command": 8, "python-profile": 30}
 
 
 def load_catalog(path: Path | str | None = None) -> dict:
@@ -92,29 +97,45 @@ def probe(catalog: dict, profiles: list[str]) -> dict[str, dict]:
         try:
             if spec["kind"] == "python-profile":
                 resolved = resolve_python_provider(spec["profile"])
-                argv = [*resolved.argv, *spec.get("postcheck", [])]
             else:
                 resolved = resolve_command(name)
-                argv = [*resolved.argv, *spec.get("postcheck", [])]
+        except (ToolRuntimeError, OSError) as exc:
+            return name, {"status": "missing", "error": str(exc)}
+        identity = {
+            "provider": resolved.provider,
+            "source": resolved.source,
+            "argv": resolved.argv,
+        }
+        timeout = POSTCHECK_TIMEOUT[spec["kind"]]
+        try:
             completed = subprocess.run(
-                argv,
+                [*resolved.argv, *spec.get("postcheck", [])],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                timeout=8,
+                timeout=timeout,
                 check=False,
                 env={**os.environ, **resolved.environment},
             )
-            if completed.returncode:
-                raise ToolRuntimeError(f"postcheck exited with {completed.returncode}")
+        except subprocess.TimeoutExpired:
+            # Resolution already proved the Provider is installed and that its
+            # executable lives inside the pack; only the health check ran out of
+            # time. Say so instead of reporting it as absent, which would send
+            # the caller off to re-download a pack that is already here.
             return name, {
-                "status": "ok",
-                "provider": resolved.provider,
-                "source": resolved.source,
-                "argv": resolved.argv,
+                "status": "unverified",
+                "error": f"postcheck timed out after {timeout}s",
+                **identity,
             }
-        except (ToolRuntimeError, OSError, subprocess.SubprocessError) as exc:
-            return name, {"status": "missing", "error": str(exc)}
+        except (OSError, subprocess.SubprocessError) as exc:
+            return name, {"status": "missing", "error": str(exc), **identity}
+        if completed.returncode:
+            return name, {
+                "status": "missing",
+                "error": f"postcheck exited with {completed.returncode}",
+                **identity,
+            }
+        return name, {"status": "ok", **identity}
 
     with ThreadPoolExecutor(max_workers=max(1, min(8, len(names)))) as executor:
         return dict(executor.map(inspect, names))
@@ -122,7 +143,11 @@ def probe(catalog: dict, profiles: list[str]) -> dict[str, dict]:
 
 def _available(value: object) -> bool:
     if isinstance(value, dict):
-        return value.get("status") == "ok"
+        # `unverified` means resolved but not health-checked in time. Treat it as
+        # usable: the capture can run and will fail loudly with a real error if
+        # the Provider is genuinely broken, which beats blocking on a probe that
+        # was merely slow.
+        return value.get("status") in {"ok", "unverified"}
     return bool(value)
 
 
@@ -264,10 +289,14 @@ def emit_human(report: dict) -> None:
         print(f"  - {profile}")
     print("providers:")
     for name, info in report["tools"].items():
+        identity = f"{info.get('provider', 'available')} ({info.get('source', '')})"
         if info["status"] == "ok":
-            print(f"  {name}: {info.get('provider', 'available')} ({info.get('source', '')})")
+            print(f"  {name}: {identity}")
+        elif info["status"] == "unverified":
+            print(f"  {name}: {identity} — unverified: {info.get('error', '')}")
         else:
-            print(f"  {name}: missing")
+            detail = info.get("error")
+            print(f"  {name}: missing{f' — {detail}' if detail else ''}")
     print("capabilities:")
     for profile, info in report["capabilities"].items():
         print(f"  {profile}: {json.dumps(info, ensure_ascii=False)}")

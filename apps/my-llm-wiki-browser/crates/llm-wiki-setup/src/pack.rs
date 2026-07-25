@@ -208,7 +208,7 @@ pub(crate) fn install_pack_with_progress(
         return Ok(owned_pack(destination, artifact));
     }
 
-    let archive = download_archive(suite_home, artifact, cancel, &progress)?;
+    let archive = download_archive(suite_home, &artifact.into(), cancel, &progress)?;
     if cancel() {
         return Err(SetupError::Cancelled);
     }
@@ -503,27 +503,52 @@ fn expand(root: &Path, value: &str) -> String {
     value.replace("{pack}", &root.to_string_lossy())
 }
 
-fn download_archive(
+/// What the downloader needs to fetch and verify one archive.
+///
+/// Runtime packs and the Skills Pack are versioned and published on separate
+/// cadences, but they arrive the same way: a zip pinned by SHA-256, mirrored on
+/// the project CDN and GitHub. Everything below this line treats them alike.
+pub(crate) struct ArchiveSpec<'a> {
+    pub label: &'a str,
+    pub urls: &'a [String],
+    pub sha256: &'a str,
+    pub size: u64,
+    pub installed_size: u64,
+}
+
+impl<'a> From<&'a PackArtifact> for ArchiveSpec<'a> {
+    fn from(artifact: &'a PackArtifact) -> Self {
+        Self {
+            label: &artifact.id,
+            urls: &artifact.urls,
+            sha256: &artifact.sha256,
+            size: artifact.size,
+            installed_size: artifact.installed_size,
+        }
+    }
+}
+
+pub(crate) fn download_archive(
     suite_home: &Path,
-    artifact: &PackArtifact,
+    spec: &ArchiveSpec<'_>,
     cancel: Cancel<'_>,
     progress: &impl Fn(PackProgress),
 ) -> Result<PathBuf> {
     let downloads = suite_home.join("downloads");
     fs::create_dir_all(&downloads).map_err(|err| SetupError::io(&downloads, err))?;
-    let destination = downloads.join(format!("{}.zip", artifact.sha256.to_ascii_lowercase()));
+    let destination = downloads.join(format!("{}.zip", spec.sha256.to_ascii_lowercase()));
     if destination.is_file() {
         progress(PackProgress::VerifyingArchive);
-        if verify_sha256(&destination, &artifact.sha256).is_ok() {
+        if verify_sha256(&destination, spec.sha256).is_ok() {
             return Ok(destination);
         }
         fs::remove_file(&destination).map_err(|err| SetupError::io(&destination, err))?;
     }
-    let temporary = downloads.join(format!(".{}.part", artifact.sha256));
+    let temporary = downloads.join(format!(".{}.part", spec.sha256));
     let partial_size = match temporary.metadata() {
-        Ok(metadata) if metadata.len() == artifact.size => {
+        Ok(metadata) if metadata.len() == spec.size => {
             progress(PackProgress::VerifyingArchive);
-            if verify_sha256(&temporary, &artifact.sha256).is_ok() {
+            if verify_sha256(&temporary, spec.sha256).is_ok() {
                 fs::rename(&temporary, &destination)
                     .map_err(|err| SetupError::io(&temporary, err))?;
                 return Ok(destination);
@@ -531,7 +556,7 @@ fn download_archive(
             fs::remove_file(&temporary).map_err(|err| SetupError::io(&temporary, err))?;
             0
         }
-        Ok(metadata) if metadata.len() < artifact.size => metadata.len(),
+        Ok(metadata) if metadata.len() < spec.size => metadata.len(),
         Ok(_) => {
             fs::remove_file(&temporary).map_err(|err| SetupError::io(&temporary, err))?;
             0
@@ -539,24 +564,24 @@ fn download_archive(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
         Err(error) => return Err(SetupError::io(&temporary, error)),
     };
-    let remaining_download = artifact.size.saturating_sub(partial_size);
+    let remaining_download = spec.size.saturating_sub(partial_size);
     let required = remaining_download
-        .checked_add(artifact.installed_size)
-        .ok_or_else(|| SetupError::InvalidManifest("pack size overflows u64".into()))?;
+        .checked_add(spec.installed_size)
+        .ok_or_else(|| SetupError::InvalidManifest("archive size overflows u64".into()))?;
     let available =
         fs2::available_space(&downloads).map_err(|error| SetupError::io(&downloads, error))?;
     if available < required {
         return Err(SetupError::Download {
-            label: artifact.id.clone(),
+            label: spec.label.to_owned(),
             detail: format!("not enough free space: need {required} bytes, have {available} bytes"),
         });
     }
     download_from_sources(
-        &artifact.id,
-        &artifact.urls,
+        spec.label,
+        spec.urls,
         &temporary,
-        artifact.size,
-        &artifact.sha256,
+        spec.size,
+        spec.sha256,
         cancel,
         progress,
     )?;
@@ -786,7 +811,7 @@ fn valid_content_range(value: &str, offset: u64, total: u64) -> bool {
         && declared_total.parse::<u64>().ok() == Some(total)
 }
 
-fn fetch_from_sources(label: &str, sources: &[String], max_bytes: u64) -> Result<Vec<u8>> {
+pub(crate) fn fetch_from_sources(label: &str, sources: &[String], max_bytes: u64) -> Result<Vec<u8>> {
     let client = download_client(label, METADATA_STALL_TIMEOUT)?;
     let mut errors = Vec::new();
     for source in sources {
@@ -881,7 +906,7 @@ impl Write for HashWriter<'_> {
     }
 }
 
-fn extract_zip(
+pub(crate) fn extract_zip(
     archive: &Path,
     destination: &Path,
     expected_size: u64,

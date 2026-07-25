@@ -269,6 +269,40 @@ pub struct UpdateResult {
     pub current_version: String,
     pub latest_version: String,
     pub restart_required: bool,
+    /// The Skills Pack moves on its own cadence, so it reports separately: a
+    /// Browser that is up to date can still have skills to install.
+    #[serde(default)]
+    pub skills: SkillsUpdate,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillsUpdate {
+    pub state: SkillsUpdateState,
+    pub installed_version: String,
+    #[serde(default)]
+    pub latest_version: Option<String>,
+    /// Display-only text from the release, already reduced to plain text.
+    #[serde(default)]
+    pub notes: Option<String>,
+    /// Skills that carried local edits and were moved aside before the official
+    /// copy went in. Surfaced so the edits are recoverable rather than lost.
+    #[serde(default)]
+    pub backups: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SkillsUpdateState {
+    #[default]
+    UpToDate,
+    Available,
+    Updated,
+    /// A newer pack exists but declares a Browser floor this build is below.
+    /// The Browser updates first; the pack follows on the next check.
+    BlockedByApp,
+    /// No usable signal: offline, or every source answered with something that
+    /// failed validation.
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
