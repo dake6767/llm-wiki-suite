@@ -132,6 +132,12 @@ interface RepairJob {
   error?: string;
 }
 
+/** Which host row is mid-operation, so only that row shows a busy state. */
+interface HostJob {
+  id: string;
+  action: "install" | "remove";
+}
+
 /** No progress for this long means the run is stuck, not merely slow. */
 const REPAIR_STALL_MS = 25_000;
 
@@ -161,13 +167,33 @@ export default function SetupApp() {
     distribution_version: "preview",
     state_path: "",
     cli_path: null,
-    hosts: [{
-      id: previewHost.id,
-      label: previewHost.label,
-      detected: true,
-      skills_dir: previewHost.skills_dir,
-      destinations: [],
-    }],
+    hosts: [
+      {
+        id: previewHost.id,
+        label: previewHost.label,
+        detected: true,
+        skills_dir: previewHost.skills_dir,
+        destinations: [],
+      },
+      // The management ledger only says something once some hosts are still
+      // missing and one of them holds a foreign skill, so the preview carries
+      // that case rather than a single installed row.
+      ...(preview === "repair" || previewRepairDone || previewComplete ? [
+        { id: "claude", label: "Claude", detected: true, skills_dir: "~/.claude/skills", destinations: [] },
+        {
+          id: "workbuddy",
+          label: "WorkBuddy",
+          detected: true,
+          skills_dir: "~/.workbuddy/skills",
+          destinations: [{
+            slug: "my-llm-wiki",
+            path: "~/.workbuddy/skills/my-llm-wiki",
+            state: "foreign" as DestinationState,
+          }],
+        },
+        { id: "hermes", label: "Hermes", detected: false, skills_dir: "~/.hermes/skills", destinations: [] },
+      ] : []),
+    ],
     wiki: { path: "~/wikis/my-llm-wiki", collection_root: "~/wikis", registry_path: "", ready: false },
     official_toolchain: { id: "toolchain-base", version: null, installed: false, healthy: false },
     install_root: "~/.my-llm-wiki",
@@ -182,6 +208,11 @@ export default function SetupApp() {
     hosts: {
       codex: {
         skills_dir: "~/.codex/skills",
+        installed: ["my-llm-wiki", "my-llm-wiki-search", "my-llm-wiki-video", "my-llm-wiki-x"],
+        healthy: true,
+      },
+      claude: {
+        skills_dir: "~/.claude/skills",
         installed: ["my-llm-wiki", "my-llm-wiki-search", "my-llm-wiki-video", "my-llm-wiki-x"],
         healthy: true,
       },
@@ -246,6 +277,7 @@ export default function SetupApp() {
   const [pickingWikiPath, setPickingWikiPath] = useState(false);
   const [pickingInstallRoot, setPickingInstallRoot] = useState(false);
   const [asrInstall, setAsrInstall] = useState<PackInstallJob | null>(null);
+  const [hostJob, setHostJob] = useState<HostJob | null>(null);
   const [repairJob, setRepairJob] = useState<RepairJob | null>(previewRepairDone ? {
     state: "done",
     phase: "pack",
@@ -373,6 +405,14 @@ export default function SetupApp() {
     invoke<SetupResult>("setup_status").then(setStatus).catch(() => undefined);
   }, [repairJob?.state]);
 
+  // The management ledger reads destinations from inspect, and a run in
+  // between — the install that just finished on the way here — is exactly what
+  // changes them. Re-read on arrival so the rows describe disk, not history.
+  useEffect(() => {
+    if (previewMode || view !== "manage") return;
+    invoke<SetupInspection>("setup_inspect").then(setInspection).catch(() => undefined);
+  }, [view]);
+
   const selected = useMemo(
     () => inspection?.hosts.filter((host) => selectedHosts.has(host.id)) ?? [],
     [inspection, selectedHosts],
@@ -452,6 +492,34 @@ export default function SetupApp() {
     } finally {
       setPickingWikiPath(false);
     }
+  }
+
+  // Adding or removing a host changes what inspect would now say about every
+  // destination it touched — a foreign conflict becomes ours, a removed host
+  // goes back to absent — so the ledger is rebuilt from both sources rather
+  // than patched from the result alone.
+  async function runHostJob(job: HostJob, action: () => Promise<SetupResult>) {
+    if (previewMode || hostJob) return;
+    setError(null);
+    setHostJob(job);
+    try {
+      setStatus(await action());
+      setInspection(await invoke<SetupInspection>("setup_inspect"));
+    } catch (reason) {
+      setError(messageOf(reason));
+    } finally {
+      setHostJob(null);
+    }
+  }
+
+  async function installHost(id: string, replace: string[]) {
+    await runHostJob({ id, action: "install" }, () =>
+      invoke<SetupResult>("setup_install_hosts", { hosts: [id], replace }));
+  }
+
+  async function removeHost(id: string) {
+    await runHostJob({ id, action: "remove" }, () =>
+      invoke<SetupResult>("setup_remove_host", { host: id }));
   }
 
   async function repair() {
@@ -539,6 +607,10 @@ export default function SetupApp() {
     return (
       <Management
         status={status}
+        hosts={inspection?.hosts ?? []}
+        hostJob={hostJob}
+        onInstallHost={(id, replace) => void installHost(id, replace)}
+        onRemoveHost={(id) => void removeHost(id)}
         update={update}
         browserUpdate={browserUpdate}
         busy={busy}
@@ -1082,8 +1154,12 @@ function AsrInstallCard({ pack, modelCache, job, onInstall, compact = false }: {
   );
 }
 
-function Management({ status, update, browserUpdate, busy, error, repair, onRepair, onStopRepair, onCheck, onUpdate, onRestart, asrInstall, onInstallAsr }: {
+function Management({ status, hosts, hostJob, onInstallHost, onRemoveHost, update, browserUpdate, busy, error, repair, onRepair, onStopRepair, onCheck, onUpdate, onRestart, asrInstall, onInstallAsr }: {
   status: SetupResult | null;
+  hosts: HostInspection[];
+  hostJob: HostJob | null;
+  onInstallHost: (id: string, replace: string[]) => void;
+  onRemoveHost: (id: string) => void;
   update: UpdateResult | null;
   browserUpdate: BrowserUpdateStatus | null;
   busy: boolean;
@@ -1110,8 +1186,19 @@ function Management({ status, update, browserUpdate, busy, error, repair, onRepa
       </header>
       {error ? <ErrorBanner message={error} /> : null}
       <section className="manage-grid">
-        <StatusPanel index="01" title="Skills Pack" healthy={Object.values(status?.hosts ?? {}).every((host) => host.healthy)}>
-          {Object.entries(status?.hosts ?? {}).map(([id, host]) => <div className="host-status" key={id}><b>{id}</b><span>{host.installed.length} skills</span><small>{host.skills_dir}</small></div>)}
+        <StatusPanel
+          index="01"
+          title="Skills Pack"
+          healthy={Object.values(status?.hosts ?? {}).length > 0
+            && Object.values(status?.hosts ?? {}).every((host) => host.healthy)}
+        >
+          <HostLedger
+            hosts={hosts}
+            installed={status?.hosts ?? {}}
+            job={hostJob}
+            onInstall={onInstallHost}
+            onRemove={onRemoveHost}
+          />
           {status?.cli_path ? <p className="panel-path">CLI · {status.cli_path}</p> : null}
         </StatusPanel>
         <StatusPanel index="02" title="官方工具链" healthy={status?.official_toolchain.healthy ?? false}>
@@ -1140,6 +1227,122 @@ function Management({ status, update, browserUpdate, busy, error, repair, onRepa
       ) : null}
     </main>
   );
+}
+
+// Every host the suite knows about, whether or not it holds the pack: the ones
+// that do can be detached, the ones that do not can join later. Installing here
+// only links the Skills Pack that is already on disk — no download, no second
+// decision about install root, Wiki, or toolchain — so it stays a per-row
+// action rather than another trip through the setup flow.
+function HostLedger({ hosts, installed, job, onInstall, onRemove }: {
+  hosts: HostInspection[];
+  installed: Record<string, HostResult>;
+  job: HostJob | null;
+  onInstall: (id: string, replace: string[]) => void;
+  onRemove: (id: string) => void;
+}) {
+  const [pending, setPending] = useState<HostJob | null>(null);
+  const [approved, setApproved] = useState<Set<string>>(new Set());
+  // Removing the last host would leave an installation nothing reads, which
+  // then reports as needing repair. Removing everything is a different
+  // decision and stays with uninstall --all.
+  const removable = Object.keys(installed).length > 1;
+
+  function begin(next: HostJob, conflicts: SkillDestination[]) {
+    if (next.action === "install" && !conflicts.length) {
+      onInstall(next.id, []);
+      return;
+    }
+    setApproved(new Set());
+    setPending(next);
+  }
+
+  function confirm(next: HostJob, conflicts: SkillDestination[]) {
+    setPending(null);
+    if (next.action === "remove") onRemove(next.id);
+    else onInstall(next.id, conflicts.map((item) => item.path));
+  }
+
+  if (!hosts.length) return <p>没有可读取的 Agent 宿主信息。</p>;
+
+  return (
+    <div className="manage-hosts">
+      {hosts.map((host) => {
+        const owned = installed[host.id];
+        const conflicts = host.destinations.filter((item) => item.state === "foreign");
+        const busy = job?.id === host.id;
+        const open = pending?.id === host.id ? pending : null;
+        const locked = Boolean(owned) && !removable;
+        return (
+          <div className={`manage-host${owned ? " is-installed" : ""}`} key={host.id}>
+            <div className="manage-host-row">
+              <div className="manage-host-name">
+                <b>{host.label}</b>
+                <small>{host.skills_dir}</small>
+              </div>
+              <span className={hostMarkClass(owned, host.detected)}>{hostMark(owned, host.detected)}</span>
+              <button
+                type="button"
+                className="manage-host-action"
+                disabled={Boolean(job) || locked}
+                title={locked ? "这是最后一个宿主，整体卸载请使用 CLI 的 uninstall --all" : undefined}
+                onClick={() => open
+                  ? setPending(null)
+                  : begin({ id: host.id, action: owned ? "remove" : "install" }, conflicts)}
+              >
+                {busy
+                  ? (job?.action === "remove" ? "正在移除…" : "正在安装…")
+                  : open ? "取消" : owned ? "移除" : "安装"}
+              </button>
+            </div>
+            {open ? (
+              <div className="manage-host-confirm conflict-box">
+                {open.action === "remove" ? (
+                  <p>
+                    移除后 {host.label} 不再有 Skills Pack。安装目录里的这份 Skills、能力包与 Wiki
+                    都会保留，之后可以随时装回来。
+                  </p>
+                ) : (
+                  <>
+                    <p>{host.label} 已有同名的外来 Skill。Setup 不会静默覆盖，逐项授权后原目录先移入备份。</p>
+                    {conflicts.map((item) => (
+                      <label key={item.path}>
+                        <input
+                          type="checkbox"
+                          checked={approved.has(item.path)}
+                          onChange={() => setApproved((current) => toggled(current, item.path))}
+                        />
+                        <span><b>备份并替换 {item.slug}</b><small>{item.path}</small></span>
+                      </label>
+                    ))}
+                  </>
+                )}
+                <PrimaryButton
+                  disabled={open.action === "install" && !conflicts.every((item) => approved.has(item.path))}
+                  onClick={() => confirm(open, conflicts)}
+                >
+                  {open.action === "remove" ? "确认移除" : "确认安装"}
+                </PrimaryButton>
+              </div>
+            ) : null}
+          </div>
+        );
+      })}
+      {!removable ? (
+        <small className="manage-hosts-note">至少保留一个宿主；要整体卸载请使用 CLI 的 uninstall --all。</small>
+      ) : null}
+    </div>
+  );
+}
+
+function hostMark(owned: HostResult | undefined, detected: boolean) {
+  if (!owned) return detected ? "已检测" : "未检测";
+  return owned.healthy ? `${owned.installed.length} skills` : "需修复";
+}
+
+function hostMarkClass(owned: HostResult | undefined, detected: boolean) {
+  if (!owned) return detected ? "detected" : "not-detected";
+  return owned.healthy ? "manage-host-mark" : "manage-host-mark is-warn";
 }
 
 // A repair that works flips every panel to OK and hides the repair bar, which

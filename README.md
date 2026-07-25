@@ -94,6 +94,11 @@ Browser 设置…       # Wiki、端口、自启、分享与 relay
 Skills 与工具链…    # 安装、Provider、update、repair 与人工动作
 ```
 
+之后新装了别的 Agent，不必重跑安装：「Skills 与工具链」的 Skills Pack 面板列出全部已知宿主，
+可以逐个把已经装好的那份 Skills Pack 装给它，或者把某个宿主摘掉。新增只建链接，不联网、
+不重新下载工具链；遇到同名外来 Skill 仍然逐项授权后才备份替换。移除只摘该宿主的链接，
+安装目录里的 Skills Pack、能力包与 Wiki 都保留。
+
 无界面 Agent 可以下载 Release 中的独立 CLI；Browser 也会把它安装到：
 
 ```text
@@ -106,6 +111,8 @@ CLI 与 GUI 调用同一个 Rust Setup Core：
 my-llm-wiki inspect --json
 my-llm-wiki setup --host codex --wiki-path ~/wikis/my-llm-wiki --json
 my-llm-wiki setup --host codex --install-root D:\my-llm-wiki --json
+my-llm-wiki add-host --host claude --json
+my-llm-wiki uninstall --host claude --json
 my-llm-wiki status --json
 my-llm-wiki update --check --json
 my-llm-wiki update --json

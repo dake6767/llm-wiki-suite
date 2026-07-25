@@ -125,6 +125,7 @@ Setup Core 应位于 Browser 的 Rust workspace 中，作为独立 library/CLI �
 
 ```bash
 my-llm-wiki setup --host codex [--wiki-path /absolute/wiki/path] --json
+my-llm-wiki add-host --host claude --json
 my-llm-wiki status --json
 my-llm-wiki update --check --json
 my-llm-wiki update --json
@@ -132,9 +133,14 @@ my-llm-wiki repair --json
 my-llm-wiki uninstall --host codex --json
 ```
 
+`setup` 是首次安装的一次性决定（安装位置、Wiki、官方工具链），需要发布清单；
+`add-host` 只把已经装好的那份 Skills Pack 链接给另一个已知宿主，不联网、不下载，
+也不改动 packs、Wiki 和其它宿主。移除仍走 `uninstall --host`。
+
 Setup Core 只负责：
 
 - 检测已知 Agent 宿主并安装完整 Skills Pack；
+- 在安装完成后按宿主粒度增删 Skills Pack；
 - 确保官方基础工具链可用；
 - 按需确保 ASR 等大型能力包可用；
 - 按一个经过联合验证的发布组合更新 Browser、Skills 和已安装的官方工具链；
@@ -268,6 +274,7 @@ Release，并原子更新到更高版本。
 toolchain-base
 ├── FFmpeg
 ├── yt-dlp
+├── aria2c
 ├── private Node + OpenCLI
 └── document conversion runtime
 
@@ -331,6 +338,7 @@ capture.assets.localize
 capture.video.metadata
 capture.video.captions
 media.extract-audio
+media.parallel-download
 transcribe.audio.timestamped
 document.to-markdown
 ```
@@ -590,6 +598,19 @@ v2 采用硬切换，不读取、导入或双写旧安装回执，也不保留�
 8. Linux 继续发布 AppImage/deb，开放 Skills 路径不依赖 Browser 安装格式；
 9. Setup 使用独立隐藏窗口，完成后同进程启动本地服务并切换主 Browser；
 10. 当前长操作以 pack/host 原子边界保证可重入，GUI 关闭不作为取消信号；主动取消后续单独设计。
+11. 安装位置在确认页一次选定（CLI 为 `setup --install-root`），默认 `~/.my-llm-wiki`。
+    选了别处时 `~/.my-llm-wiki` 变成指向它的目录链接（Windows 用 junction，不需要提权），
+    真实根路径写进 state。这样 Skills 进程、已注册的 MCP server 和 `wikis.json` 全部沿用
+    `~/.my-llm-wiki/...` 解析，不需要为「安装在哪」新增第二套发现机制；重装系统后把新
+    `~/.my-llm-wiki` 指回原目录即可复用既有 packs 与模型。目标目录必须为空或已是一份安装，
+    Setup Core 不合并无关目录，也不为了满足新选择而移动或删除既有安装。
+12. Skills Pack 在安装根下只展开一份（`<root>/skills/<slug>`），各宿主的
+    `<host>/skills/<slug>` 是指向它的链接；无法建链接的目标回退为独立拷贝并在 state 里记
+    `mode: "copy"`。卸载只摘链接，绝不跟随链接递归删除。
+13. 宿主是安装后可改的：「Skills 与工具链」管理页按宿主粒度增删 Skills Pack，新增等价本地
+    `add-host`（不联网、不改动 packs 与 Wiki），移除等价 `uninstall --host`（只摘链接）；
+    外来 skill 一律逐项精确授权。最后一个宿主不在 GUI 里移除——那是整体卸载，仍只有 CLI
+    的 `uninstall --all`。
 
 核心边界保持不变：一键路径由 Browser/Setup Core 和官方工具链保证，开放路径由 Skills 与
 Provider 契约保证；两条路径共享 SOP 和数据契约，但不共享一个强制运行时。

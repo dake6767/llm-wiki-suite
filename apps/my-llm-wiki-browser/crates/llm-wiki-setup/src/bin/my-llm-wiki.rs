@@ -20,6 +20,7 @@ struct Cli {
 enum Command {
     Inspect(OutputArgs),
     Setup(SetupArgs),
+    AddHost(AddHostArgs),
     Status(OutputArgs),
     Repair(OutputArgs),
     EnsurePack(EnsurePackArgs),
@@ -48,6 +49,18 @@ struct SetupArgs {
     install_root: Option<PathBuf>,
     #[arg(long)]
     without_toolchain: bool,
+    #[arg(long)]
+    json: bool,
+}
+
+/// Give another agent host the Skills Pack an existing installation already
+/// holds. Install root, Wiki, and packs stay exactly as they are.
+#[derive(Args)]
+struct AddHostArgs {
+    #[arg(long = "host", required = true)]
+    hosts: Vec<String>,
+    #[arg(long = "replace", value_name = "EXACT_PATH")]
+    replace: Vec<PathBuf>,
     #[arg(long)]
     json: bool,
 }
@@ -107,6 +120,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 wiki_path: args.wiki_path,
                 install_root: args.install_root,
             })?,
+            args.json,
+        )?,
+        Command::AddHost(args) => print(
+            &core.install_hosts(
+                &args.hosts.into_iter().collect(),
+                &args.replace.into_iter().collect(),
+            )?,
             args.json,
         )?,
         Command::Status(args) => print(&core.status()?, args.json)?,
