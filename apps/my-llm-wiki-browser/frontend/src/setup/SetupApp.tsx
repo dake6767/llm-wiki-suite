@@ -107,6 +107,23 @@ interface PackInstallJob {
   error?: string;
 }
 
+interface RepairJob {
+  state: "idle" | "running" | "stopping" | "done" | "error" | "cancelled";
+  phase: string;
+  message: string;
+  current: number;
+  total: number;
+  detail_percent?: number;
+  /** Epoch ms, same clock as Date.now(): both come from this machine. */
+  started_at: number;
+  /** Epoch ms of the last real step — the basis for the stall warning. */
+  updated_at: number;
+  error?: string;
+}
+
+/** No progress for this long means the run is stuck, not merely slow. */
+const REPAIR_STALL_MS = 25_000;
+
 type View = "loading" | "welcome" | "hosts" | "review" | "progress" | "complete" | "manage";
 
 const STEP_LABELS = ["欢迎", "选择宿主", "确认", "安装", "完成"];
@@ -119,7 +136,13 @@ export default function SetupApp() {
   const previewToolchain = preview === "progress-toolchain";
   const previewProgress = preview === "progress" || previewToolchain;
   const previewComplete = preview === "complete";
-  const previewMode = previewReview || previewProgress || previewComplete;
+  // A stuck repair is the state hardest to reach on purpose: it needs a broken
+  // install plus a network that neither works nor fails. Reachable here as
+  // ?preview=repair, ?preview=repair-stalled and ?preview=repair-done.
+  const previewStalled = preview === "repair-stalled";
+  const previewRepairDone = preview === "repair-done";
+  const previewRepair = preview === "repair" || previewStalled || previewRepairDone;
+  const previewMode = previewReview || previewProgress || previewComplete || previewRepair;
   const previewHost = previewProgress
     ? { id: "workbuddy", label: "WorkBuddy", skills_dir: "~/.workbuddy/skills" }
     : { id: "codex", label: "Codex", skills_dir: "~/.codex/skills" };
@@ -137,8 +160,9 @@ export default function SetupApp() {
     wiki: { path: "~/wikis/my-llm-wiki", collection_root: "~/wikis", registry_path: "", ready: false },
     official_toolchain: { id: "toolchain-base", version: null, installed: false, healthy: false },
   } : null;
-  const previewStatus: SetupResult | null = previewComplete ? {
-    state: "ready",
+  const previewBroken = previewRepair && !previewRepairDone;
+  const previewStatus: SetupResult | null = previewComplete || previewRepair ? {
+    state: previewBroken ? "needs-repair" : "ready",
     distribution_version: "preview",
     cli_path: "~/.my-llm-wiki/bin/my-llm-wiki",
     hosts: {
@@ -154,9 +178,9 @@ export default function SetupApp() {
       registry_path: "~/.my-llm-wiki/wikis.json",
       ready: true,
     },
-    official_toolchain: { id: "toolchain-base", version: "preview", installed: true, healthy: true },
+    official_toolchain: { id: "toolchain-base", version: "preview", installed: !previewBroken, healthy: !previewBroken },
     packs: {
-      "toolchain-base": { id: "toolchain-base", version: "preview", installed: true, healthy: true },
+      "toolchain-base": { id: "toolchain-base", version: "preview", installed: !previewBroken, healthy: !previewBroken },
     },
     model_caches: {
       "asr-zh": { id: "asr-zh", path: "~/.my-llm-wiki/models/asr-zh", ready: false },
@@ -169,7 +193,11 @@ export default function SetupApp() {
     }],
   } : null;
   const [view, setView] = useState<View>(
-    previewComplete ? "complete" : previewProgress ? "progress" : previewReview ? "review" : "loading",
+    previewRepair ? "manage"
+      : previewComplete ? "complete"
+      : previewProgress ? "progress"
+      : previewReview ? "review"
+      : "loading",
   );
   const [inspection, setInspection] = useState<SetupInspection | null>(previewInspection);
   const [status, setStatus] = useState<SetupResult | null>(previewStatus);
@@ -201,6 +229,24 @@ export default function SetupApp() {
   const [browserUpdate, setBrowserUpdate] = useState<BrowserUpdateStatus | null>(null);
   const [pickingWikiPath, setPickingWikiPath] = useState(false);
   const [asrInstall, setAsrInstall] = useState<PackInstallJob | null>(null);
+  const [repairJob, setRepairJob] = useState<RepairJob | null>(previewRepairDone ? {
+    state: "done",
+    phase: "pack",
+    message: "修复完成，所有组件已通过校验",
+    current: 4,
+    total: 4,
+    started_at: Date.now() - 260_000,
+    updated_at: Date.now(),
+  } : previewRepair ? {
+    state: "running",
+    phase: "pack",
+    message: "正在下载 toolchain-base 能力包",
+    current: 2,
+    total: 4,
+    detail_percent: 37,
+    started_at: Date.now() - 194_000,
+    updated_at: Date.now() - (previewStalled ? 96_000 : 1_000),
+  } : null);
 
   useEffect(() => {
     if (previewMode) return;
@@ -218,13 +264,18 @@ export default function SetupApp() {
       invoke<SetupResult>("setup_status"),
       invoke<BrowserUpdateStatus>("setup_browser_update_status"),
       invoke<PackInstallJob>("setup_pack_install_status", { id: "asr-zh" }),
+      // A repair started earlier keeps running in the app process, so reopening
+      // or reloading this window must rejoin it rather than offer a fresh
+      // button that would only fail on the setup lock.
+      invoke<RepairJob>("setup_repair_status"),
     ])
-      .then(([nextInspection, nextStatus, nextBrowserUpdate, nextAsrInstall]) => {
+      .then(([nextInspection, nextStatus, nextBrowserUpdate, nextAsrInstall, nextRepair]) => {
         if (!mounted) return;
         setInspection(nextInspection);
         setStatus(nextStatus);
         setBrowserUpdate(nextBrowserUpdate);
         setAsrInstall(nextAsrInstall);
+        setRepairJob(nextRepair);
         setSelectedHosts(new Set());
         setWikiPath(nextInspection.wiki.collection_root);
         setView(nextStatus.state === "not-configured" ? "welcome" : "manage");
@@ -267,6 +318,20 @@ export default function SetupApp() {
     if (previewMode || asrInstall?.state !== "installed" || status?.packs["asr-zh"]?.healthy) return;
     invoke<SetupResult>("setup_status").then(setStatus).catch(() => undefined);
   }, [asrInstall?.state, status]);
+
+  const repairRunning = repairJob?.state === "running" || repairJob?.state === "stopping";
+  useEffect(() => {
+    if (previewMode || !repairRunning) return;
+    const timer = window.setTimeout(() => {
+      invoke<RepairJob>("setup_repair_status").then(setRepairJob).catch(() => undefined);
+    }, 700);
+    return () => window.clearTimeout(timer);
+  }, [repairRunning, repairJob]);
+
+  useEffect(() => {
+    if (previewMode || !repairJob || repairRunning || repairJob.state === "idle") return;
+    invoke<SetupResult>("setup_status").then(setStatus).catch(() => undefined);
+  }, [repairJob?.state]);
 
   const selected = useMemo(
     () => inspection?.hosts.filter((host) => selectedHosts.has(host.id)) ?? [],
@@ -333,15 +398,20 @@ export default function SetupApp() {
   }
 
   async function repair() {
-    setBusy(true);
     setError(null);
     try {
-      const result = await invoke<SetupResult>("setup_repair");
-      setStatus(result);
+      setRepairJob(await invoke<RepairJob>("setup_start_repair"));
     } catch (reason) {
       setError(messageOf(reason));
-    } finally {
-      setBusy(false);
+    }
+  }
+
+  async function stopRepair() {
+    setError(null);
+    try {
+      setRepairJob(await invoke<RepairJob>("setup_stop_repair"));
+    } catch (reason) {
+      setError(messageOf(reason));
     }
   }
 
@@ -416,6 +486,8 @@ export default function SetupApp() {
         browserUpdate={browserUpdate}
         busy={busy}
         error={error}
+        repair={repairJob}
+        onStopRepair={() => void stopRepair()}
         onRepair={() => void repair()}
         onCheck={() => void checkUpdate(false)}
         onUpdate={() => void checkUpdate(true)}
@@ -737,6 +809,12 @@ function formatElapsed(seconds: number) {
   return `已用时 ${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
 }
 
+function formatDuration(milliseconds: number) {
+  const seconds = Math.max(0, Math.round(milliseconds / 1000));
+  if (seconds < 60) return `${seconds} 秒`;
+  return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
+}
+
 function Complete({ status, asrInstall, onInstallAsr, onManage, onOpenWiki, onOpenWikiDirectory }: {
   status: SetupResult | null;
   asrInstall: PackInstallJob | null;
@@ -873,13 +951,15 @@ function AsrInstallCard({ pack, modelCache, job, onInstall, compact = false }: {
   );
 }
 
-function Management({ status, update, browserUpdate, busy, error, onRepair, onCheck, onUpdate, onRestart, asrInstall, onInstallAsr }: {
+function Management({ status, update, browserUpdate, busy, error, repair, onRepair, onStopRepair, onCheck, onUpdate, onRestart, asrInstall, onInstallAsr }: {
   status: SetupResult | null;
   update: UpdateResult | null;
   browserUpdate: BrowserUpdateStatus | null;
   busy: boolean;
   error: string | null;
+  repair: RepairJob | null;
   onRepair: () => void;
+  onStopRepair: () => void;
   onCheck: () => void;
   onUpdate: () => void;
   onRestart: () => void;
@@ -887,6 +967,7 @@ function Management({ status, update, browserUpdate, busy, error, onRepair, onCh
   onInstallAsr: () => void;
 }) {
   const ready = status?.state === "ready";
+  const announcingSuccess = useSuccessAnnouncement(repair?.state);
   const browserBusy = browserUpdate?.state === "checking" || browserUpdate?.state === "downloading";
   const browserRestart = browserUpdate?.state === "ready-to-restart";
   const updateAvailable = update?.state === "available" || browserUpdate?.state === "available";
@@ -923,9 +1004,135 @@ function Management({ status, update, browserUpdate, busy, error, onRepair, onCh
         </StatusPanel>
       </section>
       {status?.actions.length ? <ManualActions actions={status.actions} label="Manual actions" /> : null}
-      {!ready ? <footer className="repair-bar"><div><b>状态不完整或文件已损坏</b><span>Repair 只恢复当前版本，不会升级或触碰 Wiki。</span></div><PrimaryButton disabled={busy} onClick={onRepair}>{busy ? "处理中…" : "修复当前版本"}</PrimaryButton></footer> : null}
+      {!ready || repairRunning(repair) || announcingSuccess ? (
+        <RepairBar job={repair} ready={ready} busy={busy} onStart={onRepair} onStop={onStopRepair} />
+      ) : null}
     </main>
   );
+}
+
+// A repair that works flips every panel to OK and hides the repair bar, which
+// reads as the button having done nothing. Hold the finished bar briefly so
+// the run gets an ending as visible as its start.
+function useSuccessAnnouncement(state: string | undefined) {
+  const [announcing, setAnnouncing] = useState(false);
+  useEffect(() => {
+    if (state !== "done") return;
+    setAnnouncing(true);
+    const timer = window.setTimeout(() => setAnnouncing(false), 6000);
+    return () => window.clearTimeout(timer);
+  }, [state]);
+  return announcing;
+}
+
+function repairRunning(job: RepairJob | null) {
+  return job?.state === "running" || job?.state === "stopping";
+}
+
+// Repair can spend minutes inside a single download. Everything below exists so
+// that wait is legible: what step it is on, when it last moved, and how to get
+// out — a bare "处理中…" leaves a stalled network indistinguishable from a hang.
+function RepairBar({ job, ready, busy, onStart, onStop }: {
+  job: RepairJob | null;
+  ready: boolean;
+  busy: boolean;
+  onStart: () => void;
+  onStop: () => void;
+}) {
+  const running = repairRunning(job);
+  const now = useTicker(running);
+  const stopping = job?.state === "stopping";
+  const succeeded = job?.state === "done" && ready;
+  const percent = job && job.total > 0 ? Math.round((job.current / job.total) * 100) : 0;
+  const sinceProgress = job && running ? now - job.updated_at : 0;
+  const stalled = running && !stopping && sinceProgress > REPAIR_STALL_MS;
+
+  return (
+    <footer className={`repair-bar${succeeded ? " is-done" : ""}`}>
+      <div className="repair-bar-copy">
+        <b>{repairTitle(job)}</b>
+        <span>{repairDetail(job, ready)}</span>
+        {running ? (
+          <>
+            <div
+              className={`repair-track${job && job.total > 0 ? "" : " is-indeterminate"}`}
+              role="progressbar"
+              aria-label="修复进度"
+              aria-valuemin={0}
+              aria-valuemax={job?.total ?? 0}
+              aria-valuenow={job && job.total > 0 ? job.current : undefined}
+            >
+              <i style={job && job.total > 0 ? { width: `${percent}%` } : undefined} />
+            </div>
+            <small className="repair-bar-meta">
+              {job && job.total > 0 ? `第 ${Math.min(job.current + 1, job.total)} / ${job.total} 步` : "正在统计需要修复的项目"}
+              {job?.detail_percent !== undefined ? ` · 当前项 ${job.detail_percent}%` : ""}
+              {job?.started_at ? ` · 已用时 ${formatDuration(now - job.started_at)}` : ""}
+            </small>
+          </>
+        ) : null}
+        {stalled ? (
+          <small className="repair-bar-stall" role="status">
+            已有 {formatDuration(sinceProgress)}没有新进展，通常是网络不通或下载源被拦截。
+            可以继续等待，也可以停止后换网络重试——已下载的部分会保留并续传。
+          </small>
+        ) : null}
+        {job?.state === "error" && job.error ? <small className="repair-bar-detail">{job.error}</small> : null}
+      </div>
+      {running ? (
+        <SecondaryButton disabled={stopping} onClick={onStop}>
+          {stopping ? "正在停止…" : "停止修复"}
+        </SecondaryButton>
+      ) : succeeded ? null : (
+        <PrimaryButton disabled={busy} onClick={onStart}>
+          {job && job.state !== "idle" ? "重试修复" : "修复当前版本"}
+        </PrimaryButton>
+      )}
+    </footer>
+  );
+}
+
+function repairTitle(job: RepairJob | null) {
+  if (job?.state === "stopping") return "正在停止修复";
+  if (job?.state === "running") return job.message;
+  if (job?.state === "error") return "修复未完成";
+  if (job?.state === "cancelled") return "修复已停止";
+  if (job?.state === "done") return "修复完成";
+  return "状态不完整或文件已损坏";
+}
+
+// `ready` arrives one status refresh after the job reports `done`, so the title
+// above never depends on it — only this line sharpens once the refresh lands.
+function repairDetail(job: RepairJob | null, ready: boolean) {
+  if (job?.state === "stopping") return "会在当前分片结束后停止，已下载的内容会保留。";
+  if (job?.state === "running") return `${repairPhaseLabel(job.phase)} · 修复只恢复当前版本，不会升级或触碰 Wiki`;
+  if (job?.state === "error" || job?.state === "cancelled") return job.message;
+  if (job?.state === "done") {
+    return ready ? job.message : `${job.message}；上方仍有标记为 ! 的项目，可以再修复一次。`;
+  }
+  return "Repair 只恢复当前版本，不会升级或触碰 Wiki。";
+}
+
+function repairPhaseLabel(phase: string) {
+  return ({
+    preparing: "检查当前安装",
+    skills: "Skills Pack",
+    wiki: "Wiki 与 RAW 目录",
+    pack: "能力包",
+    toolchain: "推荐工具链",
+  } as Record<string, string>)[phase] ?? "修复中";
+}
+
+/** A wall clock that only ticks while something is actually being waited on. */
+function useTicker(active: boolean) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [active]);
+  return now;
 }
 
 function StatusPanel({ index, title, healthy, children }: { index: string; title: string; healthy: boolean; children: React.ReactNode }) {

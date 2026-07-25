@@ -20,13 +20,24 @@ const MANIFEST_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const ARCHIVE_OVERHEAD_BYTES: u64 = 1;
 const PACK_IO_BUFFER_BYTES: usize = 1024 * 1024;
 const PACK_MARKER: &str = ".my-llm-wiki-pack.json";
-const PACK_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(6 * 60 * 60);
-const METADATA_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+// `reqwest::blocking` applies its client timeout to the header phase and then
+// again to every single `Read::read` call, so this is a stall budget, not a
+// total transfer budget. A slow but live link keeps downloading indefinitely
+// while a dead socket fails within one budget instead of hanging for hours.
+// Never raise it into "whole download" territory: a stalled read blocks the
+// worker thread and no progress event, health check, or stop request can be
+// observed until it returns.
+const NETWORK_STALL_TIMEOUT: Duration = Duration::from_secs(90);
+const METADATA_STALL_TIMEOUT: Duration = Duration::from_secs(45);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PackProgress {
     CheckingExisting,
     Downloading(u8),
+    /// One download source failed; `remaining` alternates are still untried.
+    SwitchingSource {
+        remaining: usize,
+    },
     VerifyingArchive,
     Extracting(u8),
     HealthChecking,
@@ -35,6 +46,15 @@ pub(crate) enum PackProgress {
         current: u32,
         total: u32,
     },
+}
+
+/// Returns true once the caller has asked the running operation to stop. Long
+/// loops poll it between chunks so a stop request lands without waiting for the
+/// whole pack.
+pub(crate) type Cancel<'a> = &'a dyn Fn() -> bool;
+
+pub(crate) fn never_cancelled() -> impl Fn() -> bool {
+    || false
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -172,12 +192,13 @@ pub(crate) fn select_artifact<'a>(
 }
 
 pub(crate) fn install_pack(suite_home: &Path, artifact: &PackArtifact) -> Result<OwnedPack> {
-    install_pack_with_progress(suite_home, artifact, |_| {})
+    install_pack_with_progress(suite_home, artifact, &never_cancelled(), |_| {})
 }
 
 pub(crate) fn install_pack_with_progress(
     suite_home: &Path,
     artifact: &PackArtifact,
+    cancel: Cancel<'_>,
     progress: impl Fn(PackProgress),
 ) -> Result<OwnedPack> {
     let versions = suite_home.join("packs").join(&artifact.id).join("versions");
@@ -187,7 +208,10 @@ pub(crate) fn install_pack_with_progress(
         return Ok(owned_pack(destination, artifact));
     }
 
-    let archive = download_archive(suite_home, artifact, &progress)?;
+    let archive = download_archive(suite_home, artifact, cancel, &progress)?;
+    if cancel() {
+        return Err(SetupError::Cancelled);
+    }
     fs::create_dir_all(&versions).map_err(|err| SetupError::io(&versions, err))?;
     let available =
         fs2::available_space(&versions).map_err(|error| SetupError::io(&versions, error))?;
@@ -481,6 +505,7 @@ fn expand(root: &Path, value: &str) -> String {
 fn download_archive(
     suite_home: &Path,
     artifact: &PackArtifact,
+    cancel: Cancel<'_>,
     progress: &impl Fn(PackProgress),
 ) -> Result<PathBuf> {
     let downloads = suite_home.join("downloads");
@@ -531,6 +556,7 @@ fn download_archive(
         &temporary,
         artifact.size,
         &artifact.sha256,
+        cancel,
         progress,
     )?;
     fs::rename(&temporary, &destination).map_err(|err| SetupError::io(&temporary, err))?;
@@ -543,11 +569,15 @@ fn download_from_sources(
     destination: &Path,
     exact_bytes: u64,
     expected_sha256: &str,
+    cancel: Cancel<'_>,
     progress: &impl Fn(PackProgress),
 ) -> Result<()> {
-    let client = download_client(label, PACK_DOWNLOAD_TIMEOUT)?;
+    let client = download_client(label, NETWORK_STALL_TIMEOUT)?;
     let mut errors = Vec::new();
-    for source in sources {
+    for (index, source) in sources.iter().enumerate() {
+        if cancel() {
+            return Err(SetupError::Cancelled);
+        }
         let partial = destination.metadata().map(|item| item.len()).unwrap_or(0);
         progress(PackProgress::Downloading(percent(partial, exact_bytes)));
         let mut result = stream_source(
@@ -556,12 +586,14 @@ fn download_from_sources(
             destination,
             exact_bytes,
             expected_sha256,
+            cancel,
             progress,
         );
         // A complete-size .part with a bad digest cannot be resumed. Discard
         // only that corrupt file and retry this source once from byte zero.
         // Short partials survive network errors and process restarts.
         if result.is_err()
+            && !cancel()
             && destination
                 .metadata()
                 .is_ok_and(|metadata| metadata.len() == exact_bytes)
@@ -574,13 +606,24 @@ fn download_from_sources(
                 destination,
                 exact_bytes,
                 expected_sha256,
+                cancel,
                 progress,
             );
         }
         match result {
             Ok(()) => return Ok(()),
             Err(error) => {
+                if cancel() {
+                    return Err(SetupError::Cancelled);
+                }
                 errors.push(format!("{source}: {error}"));
+                // Falling back is invisible from the outside: the byte counter
+                // stops and the stalled source has already eaten a stall
+                // budget. Say so, so the wait reads as work rather than a hang.
+                let remaining = sources.len() - index - 1;
+                if remaining > 0 {
+                    progress(PackProgress::SwitchingSource { remaining });
+                }
             }
         }
     }
@@ -596,6 +639,7 @@ fn stream_source(
     destination: &Path,
     exact_bytes: u64,
     expected_sha256: &str,
+    cancel: Cancel<'_>,
     progress: &impl Fn(PackProgress),
 ) -> std::result::Result<(), String> {
     let mut offset = destination.metadata().map(|item| item.len()).unwrap_or(0);
@@ -673,6 +717,11 @@ fn stream_source(
     // desktop platforms. Keep the large transfer buffer on the heap.
     let mut buffer = vec![0u8; PACK_IO_BUFFER_BYTES];
     loop {
+        if cancel() {
+            // The .part file and its byte count survive, so the next attempt
+            // resumes here rather than starting the pack over.
+            return Err("stopped on request".to_owned());
+        }
         let read = reader
             .read(&mut buffer)
             .map_err(|error| error.to_string())?;
@@ -737,7 +786,7 @@ fn valid_content_range(value: &str, offset: u64, total: u64) -> bool {
 }
 
 fn fetch_from_sources(label: &str, sources: &[String], max_bytes: u64) -> Result<Vec<u8>> {
-    let client = download_client(label, METADATA_DOWNLOAD_TIMEOUT)?;
+    let client = download_client(label, METADATA_STALL_TIMEOUT)?;
     let mut errors = Vec::new();
     for source in sources {
         match read_source(&client, source, max_bytes) {
@@ -929,7 +978,7 @@ pub(crate) fn target() -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::net::TcpListener;
     use std::thread;
 
@@ -1051,6 +1100,71 @@ mod tests {
     }
 
     #[test]
+    fn stops_a_download_between_chunks_and_keeps_the_partial() {
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("source.zip");
+        let destination = temporary.path().join("download.part");
+        let payload = vec![7u8; PACK_IO_BUFFER_BYTES * 3];
+        fs::write(&source, &payload).unwrap();
+        let digest = format!("{:x}", Sha256::digest(&payload));
+        // Stop only once bytes are already on disk, which is the case that
+        // matters: stopping must not throw away what has been downloaded.
+        let polls = Cell::new(0u32);
+        let cancel = || {
+            polls.set(polls.get() + 1);
+            polls.get() > 2
+        };
+
+        let error = download_from_sources(
+            "test-pack",
+            &[source.to_string_lossy().into_owned()],
+            &destination,
+            payload.len() as u64,
+            &digest,
+            &cancel,
+            &|_| {},
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, SetupError::Cancelled));
+        let partial = fs::metadata(&destination).unwrap().len();
+        assert!(partial > 0 && partial < payload.len() as u64);
+    }
+
+    #[test]
+    fn reports_the_switch_to_a_backup_download_source() {
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("source.zip");
+        let destination = temporary.path().join("download.part");
+        let payload = b"payload served by the backup source";
+        fs::write(&source, payload).unwrap();
+        let digest = format!("{:x}", Sha256::digest(payload));
+        let reported = RefCell::new(Vec::new());
+
+        download_from_sources(
+            "test-pack",
+            &[
+                // Refused immediately, standing in for an unreachable CDN.
+                "http://127.0.0.1:1/pack.zip".to_owned(),
+                source.to_string_lossy().into_owned(),
+            ],
+            &destination,
+            payload.len() as u64,
+            &digest,
+            &never_cancelled(),
+            &|event| reported.borrow_mut().push(event),
+        )
+        .unwrap();
+
+        assert!(
+            reported
+                .borrow()
+                .contains(&PackProgress::SwitchingSource { remaining: 1 })
+        );
+        assert_eq!(fs::read(destination).unwrap(), payload);
+    }
+
+    #[test]
     fn resumes_a_partial_pack_from_a_local_source() {
         let temporary = tempfile::tempdir().unwrap();
         let source = temporary.path().join("source.zip");
@@ -1067,6 +1181,7 @@ mod tests {
             &destination,
             payload.len() as u64,
             &digest,
+            &never_cancelled(),
             &|event| {
                 if let PackProgress::Downloading(percent) = event {
                     reported.borrow_mut().push(percent);
@@ -1101,6 +1216,7 @@ mod tests {
             &destination,
             payload.len() as u64,
             &digest,
+            &never_cancelled(),
             &|_| {},
         )
         .unwrap();
@@ -1155,6 +1271,7 @@ mod tests {
             &destination,
             payload.len() as u64,
             &digest,
+            &never_cancelled(),
             &|_| {},
         )
         .unwrap();

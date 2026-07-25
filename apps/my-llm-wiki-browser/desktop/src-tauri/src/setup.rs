@@ -1,11 +1,13 @@
 use llm_wiki_setup::{
-    ProviderConfig, SetupCore, SetupInspection, SetupProgress, SetupRequest, SetupResult,
-    UpdateResult,
+    ProviderConfig, SetupCore, SetupError, SetupInspection, SetupProgress, SetupRequest,
+    SetupResult, UpdateResult,
 };
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter as _, Manager as _, State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt as _;
 use tauri_plugin_notification::NotificationExt as _;
@@ -185,6 +187,216 @@ impl PackInstallManager {
     }
 }
 
+/// What Repair is doing right now. `updated_at` is the wall clock of the last
+/// real progress step: the Setup page compares it against its own clock to tell
+/// "still working" from "stalled", which is the difference a plain spinner
+/// cannot express.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct RepairJob {
+    state: String,
+    phase: String,
+    message: String,
+    current: u32,
+    total: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail_percent: Option<u8>,
+    started_at: u64,
+    updated_at: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+impl RepairJob {
+    fn idle() -> Self {
+        Self {
+            state: "idle".into(),
+            phase: "idle".into(),
+            message: "尚未开始".into(),
+            current: 0,
+            total: 0,
+            detail_percent: None,
+            started_at: 0,
+            updated_at: 0,
+            error: None,
+        }
+    }
+
+    fn running(started_at: u64) -> Self {
+        Self {
+            state: "running".into(),
+            phase: "preparing".into(),
+            message: "正在准备修复".into(),
+            current: 0,
+            total: 0,
+            detail_percent: None,
+            started_at,
+            updated_at: started_at,
+            error: None,
+        }
+    }
+}
+
+/// Repair reinstalls whatever is missing, which on a slow or blocked network
+/// means minutes inside one download. Owning it here rather than inside a
+/// single `invoke` keeps the work — and the ability to report or stop it —
+/// alive across a reloaded or hidden Setup window.
+#[derive(Clone)]
+pub(crate) struct RepairManager {
+    job: Arc<Mutex<RepairJob>>,
+    cancel: Arc<AtomicBool>,
+}
+
+impl Default for RepairManager {
+    fn default() -> Self {
+        Self {
+            job: Arc::new(Mutex::new(RepairJob::idle())),
+            cancel: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+impl RepairManager {
+    fn snapshot(&self) -> RepairJob {
+        self.job
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    fn replace(&self, job: RepairJob) {
+        *self
+            .job
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = job;
+    }
+
+    fn report(&self, progress: SetupProgress) {
+        let mut job = self
+            .job
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if job.state != "running" && job.state != "stopping" {
+            return;
+        }
+        job.phase = progress.phase;
+        job.message = progress.message;
+        job.current = progress.current;
+        job.total = progress.total;
+        job.detail_percent = progress.detail_percent;
+        job.updated_at = now_ms();
+    }
+
+    fn stop(&self) -> RepairJob {
+        self.cancel.store(true, Ordering::Relaxed);
+        let mut job = self
+            .job
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if job.state == "running" {
+            // The worker only notices between steps or download chunks, so the
+            // page needs its own state for "asked to stop, still winding down".
+            job.state = "stopping".into();
+            job.message = "正在停止修复".into();
+            job.detail_percent = None;
+            job.updated_at = now_ms();
+        }
+        job.clone()
+    }
+
+    fn finish(&self, state: &str, message: String, error: Option<String>) {
+        let mut job = self
+            .job
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        job.state = state.to_owned();
+        job.message = message;
+        job.error = error;
+        job.detail_percent = None;
+        job.updated_at = now_ms();
+        if state == "done" {
+            job.current = job.total;
+        }
+    }
+
+    fn start(&self, app: AppHandle, source: Option<PathBuf>) -> RepairJob {
+        {
+            let job = self
+                .job
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if job.state == "running" || job.state == "stopping" {
+                return job.clone();
+            }
+        }
+        self.cancel.store(false, Ordering::Relaxed);
+        let starting = RepairJob::running(now_ms());
+        self.replace(starting.clone());
+
+        let manager = self.clone();
+        let cancel = Arc::clone(&self.cancel);
+        tauri::async_runtime::spawn(async move {
+            let worker = manager.clone();
+            let outcome = tauri::async_runtime::spawn_blocking(move || {
+                SetupCore::from_environment()?
+                    .with_cli_source(source)
+                    .with_cancel(cancel)
+                    .repair_with_progress(|event| worker.report(event))
+            })
+            .await;
+
+            match outcome {
+                Ok(Ok(_)) => {
+                    manager.finish("done", "修复完成，所有组件已通过校验".into(), None);
+                    if let Err(error) = crate::start_browser(&app) {
+                        tracing::warn!(?error, "cannot start browser after repair");
+                    }
+                }
+                Ok(Err(SetupError::Cancelled)) => manager.finish(
+                    "cancelled",
+                    "修复已停止；已下载的部分会保留，下次从断点继续".into(),
+                    None,
+                ),
+                Ok(Err(error)) => {
+                    let detail = error.to_string();
+                    tracing::warn!(error = %detail, "repair failed");
+                    manager.finish("error", repair_failure_message(&error), Some(detail));
+                }
+                Err(error) => {
+                    let detail = format!("修复任务意外停止: {error}");
+                    tracing::warn!(error = %detail, "repair task stopped");
+                    manager.finish("error", "修复任务意外停止".into(), Some(detail));
+                }
+            }
+        });
+        starting
+    }
+}
+
+/// Turn the failure into the sentence a stuck user actually needs: what went
+/// wrong and what to do next. The raw error still travels in `error`.
+fn repair_failure_message(error: &SetupError) -> String {
+    match error {
+        SetupError::Locked => {
+            "另一个安装任务正在进行（例如中文视频转写组件），等它结束后再修复".into()
+        }
+        SetupError::Download { .. } => {
+            "下载没有完成，通常是网络不通或被代理拦截；恢复网络后可重试，已下载的部分会续传".into()
+        }
+        SetupError::Probe { pack, .. } => format!("{pack} 安装后未通过健康检查，可重试修复"),
+        SetupError::OwnershipLost(path) => {
+            format!("{} 已被其他程序替换，请在设置中重新安装该宿主", path.display())
+        }
+        other => other.to_string(),
+    }
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_millis() as u64)
+        .unwrap_or_default()
+}
+
 #[tauri::command]
 pub(crate) async fn setup_inspect(
     app: AppHandle,
@@ -246,21 +458,32 @@ pub(crate) async fn setup_apply(
 }
 
 #[tauri::command]
-pub(crate) async fn setup_repair(
+pub(crate) fn setup_start_repair(
     app: AppHandle,
     window: WebviewWindow,
-) -> Result<SetupResult, String> {
+    manager: State<'_, RepairManager>,
+) -> Result<RepairJob, String> {
     require_setup_window(&window)?;
-    let progress_app = app.clone();
     let source = sidecar_cli_source(&app);
-    let result = run(move || {
-        SetupCore::from_environment()?
-            .with_cli_source(source)
-            .repair_with_progress(|event| emit(&progress_app, event))
-    })
-    .await?;
-    crate::start_browser(&app).map_err(|error| error.to_string())?;
-    Ok(result)
+    Ok(manager.start(app, source))
+}
+
+#[tauri::command]
+pub(crate) fn setup_repair_status(
+    window: WebviewWindow,
+    manager: State<'_, RepairManager>,
+) -> Result<RepairJob, String> {
+    require_setup_window(&window)?;
+    Ok(manager.snapshot())
+}
+
+#[tauri::command]
+pub(crate) fn setup_stop_repair(
+    window: WebviewWindow,
+    manager: State<'_, RepairManager>,
+) -> Result<RepairJob, String> {
+    require_setup_window(&window)?;
+    Ok(manager.stop())
 }
 
 #[tauri::command]
