@@ -2469,7 +2469,7 @@ checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 
 [[package]]
 name = "llm-wiki-connector"
-version = "2.0.9"
+version = "2.0.10"
 dependencies = [
  "base64 0.22.1",
  "dirs 6.0.0",
@@ -2489,7 +2489,7 @@ dependencies = [
 
 [[package]]
 name = "llm-wiki-core"
-version = "2.0.9"
+version = "2.0.10"
 dependencies = [
  "regex",
  "rusqlite",
@@ -2503,7 +2503,7 @@ dependencies = [
 
 [[package]]
 name = "llm-wiki-desktop"
-version = "2.0.9"
+version = "2.0.10"
 dependencies = [
  "anyhow",
  "arboard",
@@ -2523,6 +2523,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-notification",
  "tauri-plugin-updater",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-appender",
@@ -2532,7 +2533,7 @@ dependencies = [
 
 [[package]]
 name = "llm-wiki-mcp"
-version = "2.0.9"
+version = "2.0.10"
 dependencies = [
  "llm-wiki-core",
  "serde",
@@ -2541,7 +2542,7 @@ dependencies = [
 
 [[package]]
 name = "llm-wiki-server"
-version = "2.0.9"
+version = "2.0.10"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -2565,7 +2566,7 @@ dependencies = [
 
 [[package]]
 name = "llm-wiki-setup"
-version = "2.0.9"
+version = "2.0.10"
 dependencies = [
  "clap",
  "dirs 6.0.0",
