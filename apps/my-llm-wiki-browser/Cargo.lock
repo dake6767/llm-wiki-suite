@@ -2469,7 +2469,7 @@ checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 
 [[package]]
 name = "llm-wiki-connector"
-version = "2.0.10"
+version = "2.0.11"
 dependencies = [
  "base64 0.22.1",
  "dirs 6.0.0",
@@ -2489,7 +2489,7 @@ dependencies = [
 
 [[package]]
 name = "llm-wiki-core"
-version = "2.0.10"
+version = "2.0.11"
 dependencies = [
  "regex",
  "rusqlite",
@@ -2503,7 +2503,7 @@ dependencies = [
 
 [[package]]
 name = "llm-wiki-desktop"
-version = "2.0.10"
+version = "2.0.11"
 dependencies = [
  "anyhow",
  "arboard",
@@ -2533,7 +2533,7 @@ dependencies = [
 
 [[package]]
 name = "llm-wiki-mcp"
-version = "2.0.10"
+version = "2.0.11"
 dependencies = [
  "llm-wiki-core",
  "serde",
@@ -2542,7 +2542,7 @@ dependencies = [
 
 [[package]]
 name = "llm-wiki-server"
-version = "2.0.10"
+version = "2.0.11"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -2566,7 +2566,7 @@ dependencies = [
 
 [[package]]
 name = "llm-wiki-setup"
-version = "2.0.10"
+version = "2.0.11"
 dependencies = [
  "clap",
  "dirs 6.0.0",
