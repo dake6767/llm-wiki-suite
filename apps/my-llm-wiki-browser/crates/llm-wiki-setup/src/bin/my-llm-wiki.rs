@@ -42,6 +42,10 @@ struct SetupArgs {
     replace: Vec<PathBuf>,
     #[arg(long, value_name = "PATH")]
     wiki_path: Option<PathBuf>,
+    /// Where packs, models, and the Skills Pack are installed. Defaults to
+    /// ~/.my-llm-wiki; any other location is reached through that path.
+    #[arg(long, value_name = "PATH")]
+    install_root: Option<PathBuf>,
     #[arg(long)]
     without_toolchain: bool,
     #[arg(long)]
@@ -101,6 +105,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 replace: args.replace.into_iter().collect(),
                 install_official_toolchain: !args.without_toolchain,
                 wiki_path: args.wiki_path,
+                install_root: args.install_root,
             })?,
             args.json,
         )?,

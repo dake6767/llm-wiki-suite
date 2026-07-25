@@ -1,6 +1,6 @@
 use llm_wiki_setup::{
-    ProviderConfig, SetupCore, SetupError, SetupInspection, SetupProgress, SetupRequest,
-    SetupResult, UpdateResult,
+    InstallRootProbe, ProviderConfig, SetupCore, SetupError, SetupInspection, SetupProgress,
+    SetupRequest, SetupResult, UpdateResult,
 };
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -384,7 +384,10 @@ fn repair_failure_message(error: &SetupError) -> String {
         }
         SetupError::Probe { pack, .. } => format!("{pack} 安装后未通过健康检查，可重试修复"),
         SetupError::OwnershipLost(path) => {
-            format!("{} 已被其他程序替换，请在设置中重新安装该宿主", path.display())
+            format!(
+                "{} 已被其他程序替换，请在设置中重新安装该宿主",
+                path.display()
+            )
         }
         other => other.to_string(),
     }
@@ -437,6 +440,39 @@ pub(crate) async fn setup_pick_wiki_directory(
         .blocking_pick_folder()
         .map(|path| path.into_path().map_err(|error| error.to_string()))
         .transpose()
+}
+
+#[tauri::command]
+pub(crate) async fn setup_pick_install_directory(
+    app: AppHandle,
+    window: WebviewWindow,
+    current: Option<PathBuf>,
+) -> Result<Option<PathBuf>, String> {
+    require_setup_window(&window)?;
+    let mut picker = app
+        .dialog()
+        .file()
+        .set_parent(&window)
+        .set_title("选择工具链与 Skills 安装文件夹");
+    if let Some(directory) = picker_start_dir(current) {
+        picker = picker.set_directory(directory);
+    }
+    picker
+        .blocking_pick_folder()
+        .map(|path| path.into_path().map_err(|error| error.to_string()))
+        .transpose()
+}
+
+/// Report whether a candidate install location is usable and how much room it
+/// has, so the Setup page can warn before a multi-gigabyte download starts
+/// rather than after it runs out of space.
+#[tauri::command]
+pub(crate) async fn setup_probe_install_root(
+    window: WebviewWindow,
+    path: PathBuf,
+) -> Result<InstallRootProbe, String> {
+    require_setup_window(&window)?;
+    run(move || SetupCore::from_environment()?.probe_install_root(&path)).await
 }
 
 #[tauri::command]

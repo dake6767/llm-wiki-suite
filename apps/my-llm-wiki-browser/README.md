@@ -71,9 +71,26 @@ Product-owned state lives under `~/.my-llm-wiki/`:
 - `providers.json` records user capability-provider choices;
 - `packs/` contains immutable official capability packs;
 - `models/asr-zh/` contains explicitly prewarmed Chinese ASR model snapshots;
+- `skills/` holds the one installed copy of the Skills Pack;
 - `bin/my-llm-wiki` is the shared CLI;
 - `connector/` contains Browser port, token, and optional relay state;
 - `wikis.json` is the Wiki registry.
+
+Setup can install all of that on another volume — the common case on Windows,
+where packs and ASR models add several gigabytes to the system drive and are
+lost with the profile on a reinstall. `~/.my-llm-wiki` then becomes a directory
+link (a junction on Windows) to the chosen location, so Skills running under a
+third-party agent host keep resolving that fixed path without knowing anything
+about the choice, and an MCP server already registered against
+`%USERPROFILE%\.my-llm-wiki\bin\my-llm-wiki.exe` keeps working. State records
+the real location, so pointing a rebuilt `~/.my-llm-wiki` at an intact volume
+re-adopts the installation instead of downloading it again.
+
+Each selected agent host receives `<host>/skills/<slug>` as a link to
+`skills/<slug>` under the install root, so one Skills Pack serves every host.
+A destination that cannot hold a link falls back to a private copy, recorded as
+`mode: "copy"` in `setup-state.json`. Uninstall detaches links and never
+follows them.
 
 Wiki and RAW content live outside product state, normally at
 `~/wikis/my-llm-wiki`, and are preserved by repair and uninstall.

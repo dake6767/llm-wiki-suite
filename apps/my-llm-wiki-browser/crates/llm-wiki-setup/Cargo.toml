@@ -20,6 +20,7 @@ wait-timeout.workspace = true
 zip.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+junction = "2.0"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
