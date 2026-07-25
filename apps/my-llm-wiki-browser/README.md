@@ -99,8 +99,10 @@ Wiki and RAW content live outside product state, normally at
 
 Remote access uses the optional hosted relay and is disabled by default. Browser
 logs are written under `~/.my-llm-wiki/logs/`, rotate daily, and retain the seven
-most recent files. Connector keys, bearer tokens, URL credentials, and token
-query values must never be logged.
+most recent files. Before first-time Setup activates the install root, logs use
+the platform-local application-data directory so the Browser does not
+pre-create the fixed `~/.my-llm-wiki` anchor. Connector keys, bearer tokens, URL
+credentials, and token query values must never be logged.
 
 Release builds currently use updater artifact signing but do not yet use Apple
 Developer ID notarization or Windows Authenticode signing. First launch can

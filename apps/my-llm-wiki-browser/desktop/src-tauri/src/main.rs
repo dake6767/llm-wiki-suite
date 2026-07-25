@@ -118,13 +118,9 @@ fn main() {
             let update_manager = UpdateManager::new(app.handle().clone());
             let online_urls = Arc::new(Mutex::new(OnlineUrls::default()));
             let tray = build_tray(app.handle(), local_url.clone(), online_urls.clone())?;
-            let connector_config = connector_config();
-            // 托盘建好后再提示，确保用户按提示去点时图标已经在了。
-            maybe_notify_first_launch(app.handle());
             #[cfg(target_os = "macos")]
             app.set_activation_policy(ActivationPolicy::Accessory);
-            let relay_runtime =
-                RelayRuntime::new(connector_config, tray.clone(), online_urls.clone());
+            let relay_runtime = RelayRuntime::new(tray.clone(), online_urls.clone());
             let browser_runtime = BrowserRuntime {
                 started: Arc::new(AtomicBool::new(false)),
                 online_urls,
@@ -169,7 +165,7 @@ fn main() {
 
 fn init_logging() {
     let filter = relay_log_filter();
-    let Some(log_dir) = llm_wiki_core::paths::suite_home().map(|home| home.join("logs")) else {
+    let Some(log_dir) = browser_log_dir() else {
         tracing_subscriber::fmt()
             .with_env_filter(filter)
             .with_ansi(false)
@@ -213,6 +209,29 @@ fn init_logging() {
         retained_files = 7,
         "persistent browser logging initialized"
     );
+}
+
+/// Do not create the fixed suite anchor before Setup has chosen its real root.
+///
+/// A relocated Windows install must replace `%USERPROFILE%\.my-llm-wiki` with
+/// a junction. Opening a log below that path first makes the directory both
+/// non-empty and in use, so junction creation cannot succeed. Once Setup has
+/// written state (including through an existing junction), logs return to the
+/// normal suite location.
+fn browser_log_dir() -> Option<PathBuf> {
+    let suite_home = llm_wiki_core::paths::suite_home()?;
+    browser_log_dir_for(&suite_home, dirs::data_local_dir())
+}
+
+fn browser_log_dir_for(
+    suite_home: &std::path::Path,
+    local_data: Option<PathBuf>,
+) -> Option<PathBuf> {
+    if suite_home.join("setup-state.json").is_file() {
+        Some(suite_home.join("logs"))
+    } else {
+        local_data.map(|dir| dir.join("to.htmlgo.llm-wiki").join("setup-logs"))
+    }
 }
 
 fn relay_log_filter() -> EnvFilter {
@@ -288,11 +307,17 @@ pub(crate) fn start_browser(app: &tauri::AppHandle) -> Result<()> {
             runtime.started.store(false, Ordering::SeqCst);
             return Err(error);
         }
-        if load_relay_enabled()
-            && !secondary_instance
-            && let Some(relay) = app.try_state::<RelayRuntime>()
-        {
-            relay.start();
+        if !secondary_instance {
+            // These operations create files below the suite anchor. They must
+            // happen only after Setup has created the default directory or
+            // activated the relocated Windows junction.
+            maybe_notify_first_launch(app);
+            if let Some(relay) = app.try_state::<RelayRuntime>() {
+                relay.enable_browser_controls();
+                if load_relay_enabled() {
+                    relay.start();
+                }
+            }
         }
     }
     Ok(())
@@ -320,6 +345,7 @@ struct OnlineUrls {
 #[derive(Clone)]
 struct TrayState {
     relay_status: MenuItem<tauri::Wry>,
+    open_local_wiki: MenuItem<tauri::Wry>,
     open_online_wiki: MenuItem<tauri::Wry>,
     copy_online_wiki: MenuItem<tauri::Wry>,
     relay_toggle: MenuItem<tauri::Wry>,
@@ -327,8 +353,6 @@ struct TrayState {
 
 #[derive(Clone)]
 struct RelayRuntime {
-    config: ConnectorConfig,
-    worker_ws: String,
     tray: TrayState,
     online_urls: Arc<Mutex<OnlineUrls>>,
     handle: Arc<Mutex<Option<tauri::async_runtime::JoinHandle<()>>>>,
@@ -338,15 +362,18 @@ struct RelayRuntime {
 }
 
 impl RelayRuntime {
-    fn new(config: ConnectorConfig, tray: TrayState, online_urls: Arc<Mutex<OnlineUrls>>) -> Self {
+    fn new(tray: TrayState, online_urls: Arc<Mutex<OnlineUrls>>) -> Self {
         Self {
-            worker_ws: config.worker_ws.clone(),
-            config,
             tray,
             online_urls,
             handle: Arc::new(Mutex::new(None)),
             generation: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    fn enable_browser_controls(&self) {
+        let _ = self.tray.open_local_wiki.set_enabled(true);
+        let _ = self.tray.relay_toggle.set_enabled(true);
     }
 
     fn start(&self) {
@@ -357,8 +384,10 @@ impl RelayRuntime {
             return;
         }
 
-        let config = self.config.clone();
-        let worker_ws = self.worker_ws.clone();
+        // connector_config() creates the persistent auth token, so resolve it
+        // lazily only after Setup has activated the suite anchor.
+        let config = connector_config();
+        let worker_ws = config.worker_ws.clone();
         let tray = self.tray.clone();
         let online_urls = self.online_urls.clone();
         let _ = self.tray.relay_toggle.set_text("断开中继服务");
@@ -709,7 +738,7 @@ fn build_tray(
     let show_window = MenuItem::with_id(app, "show_window", "Browser 设置…", true, None::<&str>)?;
     let show_setup = MenuItem::with_id(app, "show_setup", "Skills 与工具链…", true, None::<&str>)?;
     let open_local_wiki =
-        MenuItem::with_id(app, "open_local_wiki", "打开本地 WIKI", true, None::<&str>)?;
+        MenuItem::with_id(app, "open_local_wiki", "打开本地 WIKI", false, None::<&str>)?;
     // 本人线上入口含 master token；「复制」明确标记为自用，不可作为分享链接。
     // 对外分享仍须走 web UI 确认面板，生成独立、可撤销的访客凭证。
     let open_online_wiki = MenuItem::with_id(
@@ -726,7 +755,7 @@ fn build_tray(
         false,
         None::<&str>,
     )?;
-    let relay_toggle = MenuItem::with_id(app, "relay_toggle", "连接中继服务", true, None::<&str>)?;
+    let relay_toggle = MenuItem::with_id(app, "relay_toggle", "连接中继服务", false, None::<&str>)?;
     let check_update = MenuItem::with_id(app, "check_update", "检查更新…", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
@@ -797,6 +826,7 @@ fn build_tray(
 
     Ok(TrayState {
         relay_status,
+        open_local_wiki,
         open_online_wiki,
         copy_online_wiki,
         relay_toggle,
@@ -959,6 +989,33 @@ mod tests {
         let filter = relay_log_filter().to_string();
         assert!(filter.contains("llm_wiki_connector=info"));
         assert!(filter.contains("llm_wiki_desktop=info"));
+    }
+
+    #[test]
+    fn first_run_logs_do_not_create_the_suite_anchor() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let suite_home = temp.path().join(".my-llm-wiki");
+        let local_data = temp.path().join("local-data");
+
+        let selected = browser_log_dir_for(&suite_home, Some(local_data.clone()));
+
+        assert_eq!(
+            selected,
+            Some(local_data.join("to.htmlgo.llm-wiki/setup-logs"))
+        );
+        assert!(!suite_home.exists());
+    }
+
+    #[test]
+    fn configured_install_logs_through_the_suite_anchor() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let suite_home = temp.path().join(".my-llm-wiki");
+        std::fs::create_dir_all(&suite_home).expect("suite home");
+        std::fs::write(suite_home.join("setup-state.json"), b"{}").expect("setup state");
+
+        let selected = browser_log_dir_for(&suite_home, Some(temp.path().join("local-data")));
+
+        assert_eq!(selected, Some(suite_home.join("logs")));
     }
 
     #[test]
