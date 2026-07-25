@@ -780,7 +780,7 @@ function InstallLocation({ path, probe, picking, onChange, onPick }: {
           </button>
         </div>
         <small>
-          工具链、语音模型和 Skills 都会装在这里，合计可能超过 5 GB。放到非系统盘可以省下系统盘空间，重装系统后数据也还在。
+          工具链、语音模型和 Skills 都会装在这里，合计可能 3 GB 左右。放到非系统盘可以省下系统盘空间，重装系统后数据也还在。
           {probe?.existing_install
             ? " 该目录已有一份安装，将直接复用。"
             : blocked
