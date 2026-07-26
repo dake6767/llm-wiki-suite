@@ -233,6 +233,28 @@ def state_path(root: Path, rel: str) -> Path:
     return agent_state_path(root, rel)
 
 
+# Mirrors `my-llm-wiki/scripts/init_wiki.py`'s NEXT_STEPS. Two init paths exist
+# (that skill's, for capture-side scaffolding, and this one) and a wiki created
+# by either needs the same nudges — the first version of this guidance went
+# into only one of them, so wikis scaffolded here got nothing and waited for
+# `health` to notice at 12 sources. Keep the two texts saying the same thing.
+#
+# What it deliberately does not ask for is a tag vocabulary: someone creating a
+# "政治" wiki knows the subject in a sentence and cannot enumerate its tags on
+# day one. Tags grow from real content (`wiki_ops.py tags`) instead.
+INIT_NEXT_STEPS = """
+next steps (purpose.md and schema.md are the only per-wiki files every ingest reads):
+  1. fill in purpose.md — Key Questions, In/Out of scope, Thesis. One line each is
+     plenty; it is what lets ingest judge "worth its own page" vs "a mention".
+  2. leave schema.md's domain table empty for now. Areas are easier to name after
+     a dozen-odd sources than on day one.
+  3. leave tags alone entirely — the vocabulary grows from what you capture.
+     `wiki_ops.py tags <root> --q "<topic>"` shows it; ingest reads it before tagging.
+  4. run `wiki_ops.py health <root>` occasionally — it tells you when this wiki has
+     enough content to be worth filling the domain table and refreshing overview.md.
+"""
+
+
 def init_project(args: argparse.Namespace) -> None:
     root = Path(args.project_root).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -304,6 +326,7 @@ def init_project(args: argparse.Namespace) -> None:
         if not path.exists() or args.force:
             write_text(path, json.dumps(default, indent=2, ensure_ascii=False) + "\n")
     print(root)
+    print(INIT_NEXT_STEPS, end="")
 
 
 # A YAML frontmatter key at line start (`type:`, `title:`, `related:` …).
@@ -469,6 +492,23 @@ def raw_tag_leaks(content: str) -> tuple[list[str], list[str]]:
     genuine = [t for t, low in lowered if low != RAW_INBOX_TAG and low not in RAW_SOURCE_TYPE_TAGS]
     bare_source_type_hits = source_type_hits if (source_type_hits and not genuine) else []
     return inbox_hits, bare_source_type_hits
+
+
+def missing_tags(content: str) -> bool:
+    """A content page whose `tags:` is `[]`, blank, or absent altogether.
+
+    This is `raw_tag_leaks`' blind spot. That check exists to catch the "no
+    real tags were ever generated" failure mode, but it can only fire on tags
+    that are *present* and RAW vocabulary — an empty set trips neither branch,
+    so `tags: []` sails straight through the very rule written to catch it.
+    Seen in practice: an ingest pass emitted the FILE-block template's literal
+    `tags: []` placeholder while filling `related:` with real values, and both
+    lint and apply-blocks reported clean.
+
+    Callers exempt `index.md` / `log.md` / `overview.md` — overview's
+    frontmatter is deliberately four fields with no `tags` key at all.
+    """
+    return not extract_frontmatter_list(content, "tags")
 
 
 def strip_frontmatter(text: str) -> tuple[str, str]:
@@ -1525,6 +1565,16 @@ def cmd_apply_blocks(args: argparse.Namespace) -> None:
             warnings.append(f"Existing page backed up before overwrite: {rel}")
         if rel not in {"wiki/index.md", "wiki/log.md"}:
             content = normalize_related(content)
+            # Catch the unfilled `tags: []` placeholder at write time, not just
+            # in lint. Ingest always calls apply-blocks, whereas lint is a
+            # separate pass a session can skip (and has: a batch computed
+            # lint-scope, then finished without running the checks). Warn
+            # rather than reject — the page body is still worth persisting.
+            if missing_tags(content):
+                warnings.append(
+                    f"{rel} has empty tags — the template's `tags: []` placeholder was "
+                    "never filled. Add real topical tags per schema.md's Tag & Domain Policy."
+                )
         write_text(target, content)
         written.append(rel)
     reviews = parse_review_blocks(text, root, args.source, warnings)
@@ -1772,6 +1822,549 @@ def lint_page(root: Path, path: Path) -> str:
     return rel_to_root(root / "wiki", path)
 
 
+# ── Schema versioning + upgrade ─────────────────────────────────────────────
+# `init_wiki.py` copies the bundled schema template into a new wiki once and
+# never touches it again (`keep_existing=True`), so every wiki's conventions are
+# frozen at whatever the template said on its creation day. That froze a real
+# defect into six live wikis: a Tag & Domain Policy fix shipped to the template
+# and no existing wiki ever saw it, because nothing compares the two.
+#
+# Version marker over content hash, because a wiki's schema.md is *meant* to be
+# edited — the domain table is filled in per wiki — so any hash comparison would
+# read every healthy wiki as "modified" and tell us nothing.
+
+SCHEMA_VERSION_RE = re.compile(r"<!--\s*llm-wiki-schema-version:\s*(\d+)\s*-->")
+# Every class here is `[ \t]`, never `\s`: `\s` matches newlines, so a greedy
+# separator class spanning `[-\s|]` happily ate the separator row *and* the
+# blank `|        |        |` data row beneath it, leaving the rows group empty
+# and silently relocating a carried-over table outside the markdown table.
+DOMAIN_TABLE_RE = re.compile(
+    r"^\|[ \t]*domain[ \t]*\|[ \t]*covers[ \t]*\|[ \t]*\n"   # header row
+    r"\|[-:| \t]+\|[ \t]*\n"                                  # separator row
+    r"((?:\|[^\n]*\|[ \t]*\n)*)",                             # data rows
+    re.MULTILINE)
+
+
+def bundled_schema_path() -> Path:
+    return SKILL_DIR / "assets" / "templates" / "schema.md"
+
+
+def schema_version(text: str) -> int:
+    """Version marker, or 1 for a pre-versioning schema (no marker)."""
+    m = SCHEMA_VERSION_RE.search(text)
+    return int(m.group(1)) if m else 1
+
+
+def domain_table_rows(text: str) -> str:
+    """The per-wiki rows of the `| domain | covers |` table, header excluded."""
+    m = DOMAIN_TABLE_RE.search(text)
+    return m.group(1) if m else ""
+
+
+def domain_table_is_empty(text: str) -> bool:
+    rows = domain_table_rows(text)
+    return not any(c.strip() for c in rows.replace("|", " ").split())
+
+
+def cmd_schema_upgrade(args: argparse.Namespace) -> None:
+    root = resolve_root(Path(args.project_root))
+    target = root / "schema.md"
+    bundled = bundled_schema_path()
+    if not bundled.exists():
+        print(json.dumps({"status": "error",
+                          "detail": f"bundled template missing at {bundled}"},
+                         indent=2, ensure_ascii=False))
+        sys.exit(1)
+    current = read_text(target) if target.exists() else ""
+    new_text = read_text(bundled)
+    have, want = schema_version(current), schema_version(new_text)
+
+    # Never write backwards. A wiki ahead of the bundled template means either a
+    # hand-extended schema or an older skill install talking to a newer wiki;
+    # overwriting either silently discards rules the wiki actively relies on.
+    # The backup is not a defense — "upgraded" in the report is what makes it
+    # dangerous, because nobody goes looking for a backup of a success.
+    if have > want:
+        print(json.dumps({
+            "status": "refused",
+            "wiki": str(root),
+            "currentVersion": have,
+            "bundledVersion": want,
+            "detail": (f"this wiki's schema.md is v{have}, ahead of the bundled v{want}. "
+                       "Refusing to overwrite it — that would be a downgrade, not an upgrade. "
+                       "Update the skill install, or reconcile the two by hand."),
+        }, indent=2, ensure_ascii=False))
+        sys.exit(1)
+
+    # Carry the one section that is genuinely per-wiki across the upgrade.
+    # Verify the result rather than trusting the substitution: losing a
+    # hand-built domain taxonomy to a silent regex miss is the worst outcome
+    # this command has, and reporting it as carried would hide the loss.
+    rows = domain_table_rows(current)
+    carried = False
+    if rows.strip() and not domain_table_is_empty(current):
+        candidate = DOMAIN_TABLE_RE.sub(
+            lambda m: m.group(0)[: m.start(1) - m.start(0)] + rows, new_text, count=1)
+        carried = domain_table_rows(candidate).strip() == rows.strip()
+        if carried:
+            new_text = candidate
+        else:
+            report_warn = ("domain table could NOT be carried over — the bundled template's "
+                           "table did not match; your rows are preserved in the backup only")
+            print(json.dumps({"status": "aborted", "wiki": str(root), "detail": report_warn,
+                              "rows": rows.strip().splitlines()}, indent=2, ensure_ascii=False))
+            sys.exit(1)
+
+    diff = list(difflib.unified_diff(
+        current.splitlines(keepends=True), new_text.splitlines(keepends=True),
+        fromfile=f"schema.md (v{have}, current)", tofile=f"schema.md (v{want}, bundled)"))
+    report: dict[str, Any] = {
+        "status": "up-to-date" if have >= want and not diff else ("behind" if have < want else "drifted"),
+        "wiki": str(root),
+        "currentVersion": have,
+        "bundledVersion": want,
+        "domainTableCarried": carried,
+        "diffLines": len(diff),
+    }
+    if not args.apply:
+        report["hint"] = ("re-run with --apply to write it (a backup is kept under "
+                          ".llm-wiki/agent/page-history/)")
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+        if diff and args.diff:
+            sys.stdout.write("".join(diff))
+        return
+    if not diff:
+        report["status"] = "up-to-date"
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+        return
+    if target.exists():
+        backup = agent_state_path(
+            root, f"page-history/schema.md-v{have}-{dt.datetime.now().strftime('%Y%m%d%H%M%S')}.md")
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(target, backup)
+        report["backup"] = str(backup)
+    write_text(target, new_text)
+    report["status"] = "upgraded"
+    print(json.dumps(report, indent=2, ensure_ascii=False))
+
+
+# ── Tag vocabulary (the self-growing retrieval facet) ───────────────────────
+# schema.md asks that every tag be "reusable across ≥2 pages", but an ingest
+# agent generating tags for a new page has no way to honor that blind: it can't
+# see what the corpus already uses, so each session coins fresh words and
+# near-synonyms pile up (one wiki accumulated `大模型`, `LLM` and `大语言模型`
+# from three separate ingests of the same subject). The vocabulary
+# has to be readable *back* into ingest, not merely written out — that feedback
+# loop is what makes the facet converge instead of sprawl, and it's why the
+# vocabulary is derived from the corpus on every call rather than stored in a
+# file that would drift from the pages it describes.
+#
+# Deliberately not a controlled vocabulary: `domain` already plays that role
+# (closed, ≤2 values, defined by hand in schema.md's table). Tags stay free —
+# the user who says "this wiki is for 政治" genuinely does not know the tag set
+# on day one, and shouldn't have to. It emerges, then gets consolidated.
+
+TAG_ESTABLISHED_MIN = 2  # schema.md's "reusable across ≥2 pages" threshold
+
+
+def _tag_near_duplicate(a: str, b: str) -> str | None:
+    """Cheap, deterministic near-synonym test for two tags.
+
+    Returns a short reason string, or None. Tuned for a mixed CJK/ASCII corpus:
+
+    - Case-folded equality catches `YouTube` / `youtube`.
+    - CJK pairs need *two* tests, because Chinese near-synonyms fail in two
+      different shapes. An expansion like `大模型` vs `大语言模型` is not a
+      substring relation at all — the shared characters are not contiguous — so
+      character-set Jaccard catches it at 0.60, while a merely adjacent pair
+      like `大模型`/`模型压缩` stays at 0.40 and is left alone. Specialization
+      (`检索` vs `检索增强`) *is* nesting, but Jaccard penalizes the length gap
+      down to 0.50 and would miss it, so containment covers that half. Either
+      test firing is enough.
+    - ASCII pairs use containment with a length floor, so `SEO` doesn't swallow
+      every tag that happens to contain those letters.
+
+    A hint for a human or LLM to adjudicate — never an automatic merge.
+    """
+    la, lb = a.strip().lower(), b.strip().lower()
+    if not la or not lb:
+        return None
+    if la == lb:
+        return "case-variant"
+    if cjk_ratio(la) > 0.5 and cjk_ratio(lb) > 0.5:
+        if min(len(la), len(lb)) >= 2 and (la in lb or lb in la):
+            return "containment"
+        sa, sb = set(la), set(lb)
+        overlap = len(sa & sb) / len(sa | sb)
+        return f"char-overlap {overlap:.2f}" if overlap >= 0.6 else None
+    if min(len(la), len(lb)) >= 3 and (la in lb or lb in la):
+        return "containment"
+    return None
+
+
+# Word-ish runs, ASCII and CJK scored separately. Splitting on whitespace alone
+# was actively harmful: a query written the way the docs show it —
+# `"检索增强 / 向量数据库"` — made `/` its own term, and `/` occurs in every body
+# wikilink (`[[entities/…]]`), so it matched the entire corpus. A nonsense query
+# containing a slash returned 40 confidently "relevant" tags. The mirror-image
+# failure was CJK punctuation: `检索增强，向量数据库` has no whitespace, so the whole
+# string became one term and matched nothing. Both directions are worse than a
+# crude match — one fabricates relevance, the other silently reports new ground.
+TAG_QUERY_TOKEN_RE = re.compile(
+    r"[0-9A-Za-z][0-9A-Za-z_+#.\-]*"                       # latin/alnum runs, hyphens kept
+    r"|[一-鿿぀-ヿ가-힯]+")        # CJK runs
+
+
+def tag_query_terms(query: str) -> list[str]:
+    """Search terms from a free-text query, punctuation and noise removed.
+
+    Hyphens and dots stay *inside* tokens (`agent-skills`, `claude-code` and
+    `v2.1` are real tags); everything else that isn't alphanumeric or CJK is a
+    separator. Single characters are dropped — a lone `党` or `a` matches
+    almost everything and only blurs the ranking.
+
+    Trailing `+` and `#` are **kept**, unlike `.`/`-`/`_` which are usually
+    sentence punctuation. Stripping them turned `C++` and `C#` into a bare `c`,
+    which then failed the length filter, so two ordinary subjects for a
+    technical wiki were rejected outright as "no usable search terms".
+    """
+    terms: list[str] = []
+    for raw in TAG_QUERY_TOKEN_RE.findall(query or ""):
+        token = raw.rstrip("-._").lower()  # regex already guarantees an alnum start
+        if len(token) >= 2:
+            terms.append(token)
+    return list(dict.fromkeys(terms))
+
+
+def _tag_query_scope(root: Path, query: str, top: int) -> set[str]:
+    """Pages most relevant to a free-text query — the same bounded keyword
+    scoring the local retrieval tier uses, reduced to just page paths."""
+    terms = tag_query_terms(query)
+    if not terms:
+        return set()
+    scored: list[tuple[float, str]] = []
+    for path in wiki_files(root):
+        if path.name in {"index.md", "log.md", "overview.md"}:
+            continue
+        try:
+            text = read_text(path)[:6000]
+        except OSError:
+            continue
+        title = (frontmatter_value(text, "title") or path.stem).lower()
+        _, body = strip_frontmatter(text)
+        body_lower = body.lower()
+        score = 0.0
+        for term in terms:
+            if term in title:
+                score += 5.0
+            score += float(min(body_lower.count(term), 5))
+        if score > 0:
+            scored.append((score, lint_page(root, path)))
+    scored.sort(key=lambda s: (-s[0], s[1]))
+    return {rel for _, rel in scored[:top]}
+
+
+def tag_vocabulary(root: Path, *, query: str | None = None, scope_top: int = 12,
+                   scope_paths: list[str] | None = None,
+                   with_duplicates: bool = True) -> dict[str, Any]:
+    """Derive the live tag vocabulary from the wiki layer.
+
+    Returns established tags (used on ≥2 pages), singletons (used once — either
+    a tag that hasn't caught on yet or a near-synonym of an established one),
+    untagged pages, and consolidation hints. Index/log/overview are excluded:
+    overview carries no `tags` key by contract, the other two aren't content.
+
+    `query` scopes the result to tags appearing on the pages most relevant to
+    it, which is how ingest should read this. Counts stay corpus-wide so the
+    caller still sees how established each tag really is; only the *selection*
+    narrows. This is also what keeps new tags reachable — see `relevant` below.
+
+    `with_duplicates=False` skips the O(tags²) pair scan. On a 1500-tag wiki
+    that scan is 1.1M comparisons and ~2s, pure waste for callers that only
+    want the backbone.
+    """
+    counts: dict[str, int] = {}
+    pages_for: dict[str, list[str]] = {}
+    untagged: list[str] = []
+    total = 0
+    for path in wiki_files(root):
+        if path.name in {"index.md", "log.md", "overview.md"}:
+            continue
+        total += 1
+        rel = lint_page(root, path)
+        tags = [t.strip() for t in extract_frontmatter_list(read_text(path), "tags") if t.strip()]
+        if not tags:
+            untagged.append(rel)
+        for tag in dict.fromkeys(tags):  # a page counts once per tag
+            counts[tag] = counts.get(tag, 0) + 1
+            pages_for.setdefault(tag, []).append(rel)
+
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    established = [{"tag": t, "count": c} for t, c in ranked if c >= TAG_ESTABLISHED_MIN]
+    singletons = [t for t, c in ranked if c < TAG_ESTABLISHED_MIN]
+
+    # Tags on the pages nearest this source, singletons included and marked.
+    # Without this the facet cannot actually grow: a tag coined on one page is
+    # a singleton, the backbone view only lists established (≥2) tags, so the
+    # next ingest never sees the new word, never reuses it, and it can never
+    # reach 2. Every new tag would die at count 1 and the "self-growing"
+    # vocabulary would only ever recycle whatever was already popular.
+    relevant: list[dict[str, Any]] = []
+    if scope_paths is not None or query:
+        if scope_paths is not None:
+            # Exact pages from the caller — ingest already picked these in step
+            # 5, so reusing them beats re-deriving relevance from a text blob.
+            scope = {normalize_rel(p).removeprefix("wiki/") for p in scope_paths}
+        else:
+            scope = _tag_query_scope(root, query or "", scope_top)
+        in_scope = {t for t, pages in pages_for.items() if scope.intersection(pages)}
+        relevant = [{"tag": t, "count": counts[t], "new": counts[t] < TAG_ESTABLISHED_MIN}
+                    for t, _ in ranked if t in in_scope]
+
+    # Rank by how much merging the pair would actually buy, because on a large
+    # wiki this list runs to hundreds of entries and an unordered dump is one
+    # nobody reads. Case-variants lead: they need no judgement at all (`AI`/`ai`
+    # split 58 pages in one real wiki), so they are pure wins. Everything else
+    # follows by total pages affected.
+    hints: list[dict[str, Any]] = []
+    if with_duplicates:
+        all_tags = [t for t, _ in ranked]
+        for i, a in enumerate(all_tags):
+            for b in all_tags[i + 1:]:
+                reason = _tag_near_duplicate(a, b)
+                if reason:
+                    hints.append({"a": a, "b": b, "reason": reason,
+                                  "counts": f"{counts[a]}/{counts[b]}",
+                                  "pagesAffected": counts[a] + counts[b]})
+        hints.sort(key=lambda h: (h["reason"] != "case-variant", -h["pagesAffected"],
+                                  h["a"], h["b"]))
+    return {
+        "contentPages": total,
+        "taggedPages": total - len(untagged),
+        "distinctTags": len(counts),
+        "established": established,
+        "singletons": singletons,
+        "relevant": relevant,
+        "untaggedPages": untagged,
+        "nearDuplicates": hints,
+        "duplicatesComputed": with_duplicates,
+        "pagesFor": pages_for,
+    }
+
+
+TAG_SINGLETON_TAIL = 25  # unscoped promotion window — see cmd_tags
+
+
+def cmd_tags(args: argparse.Namespace) -> None:
+    root = resolve_root(Path(args.project_root))
+    # `or None` here silently turned an explicitly empty --paths-file into an
+    # unscoped call, which then printed the global singleton tail — an agent
+    # whose retrieval found nothing would read a list of unrelated tags as "the
+    # tags relevant to this source". Absent scope and empty scope are different
+    # questions and must not collapse into the same answer. Same reason missing
+    # pages are an error rather than "0 tags on 1 given pages": that phrasing
+    # reads as "new ground for the wiki", which is a claim about the corpus,
+    # not about a typo'd path.
+    scope_paths: list[str] | None = None
+    if args.paths or args.paths_file:
+        scope_paths = _read_pages_paths(args)
+        if not scope_paths:
+            die("--paths/--paths-file was given but resolved to zero paths. If the "
+                "retrieval working set is genuinely empty, omit the flag (or use --q) "
+                "rather than passing an empty scope.")
+        missing = [p for p in scope_paths
+                   if not (root / "wiki" / normalize_rel(p).removeprefix("wiki/")).is_file()]
+        if len(missing) == len(scope_paths):
+            die("none of the --paths/--paths-file entries exist under wiki/: "
+                + ", ".join(missing[:5]) + ("…" if len(missing) > 5 else ""))
+        if missing:
+            print(f"# warning: {len(missing)} of {len(scope_paths)} scope paths do not exist "
+                  f"under wiki/ and were ignored: " + ", ".join(missing[:5])
+                  + ("…" if len(missing) > 5 else ""), file=sys.stderr)
+            # Drop them, or the header would claim more pages than it read.
+            scope_paths = [p for p in scope_paths if p not in set(missing)]
+    elif args.q and not tag_query_terms(args.q):
+        die("--q has no usable search terms (only punctuation / single characters). "
+            "Pass topic words or entity names, e.g. --q \"检索增强 向量数据库 嵌入\".")
+    vocab = tag_vocabulary(root, query=args.q, scope_top=args.scope_top,
+                           scope_paths=scope_paths,
+                           with_duplicates=args.audit or bool(args.json))
+    scoped = scope_paths is not None or bool(args.q)
+    if args.json:
+        if not args.verbose:
+            vocab.pop("pagesFor", None)
+        print(json.dumps(vocab, indent=2, ensure_ascii=False))
+        return
+    # Two audiences, and conflating them was a real cost: ingest reads this
+    # before tagging *every* page, while singletons / duplicate pairs /
+    # untagged pages are cleanup material nobody needs mid-ingest. Emitting all
+    # of it by default put 16KB (~6.4k tokens) of governance data into the
+    # ingest path of a 911-page wiki — an O(wiki) load in a SOP whose first
+    # rule is "retrieval is O(top-k), never O(wiki)". Default is now the
+    # backbone only: bounded by --limit, so the cost is flat no matter how
+    # large the corpus grows. `--audit` (and `health`) serve the other reader.
+    est = vocab["established"]
+    shown = est if args.limit <= 0 else est[: args.limit]
+    print(f"# tag vocabulary — {vocab['taggedPages']}/{vocab['contentPages']} pages tagged, "
+          f"{vocab['distinctTags']} distinct")
+    if scoped:
+        rel = vocab["relevant"]
+        rel_shown = rel if args.limit <= 0 else rel[: args.limit]
+        where = (f"{len(scope_paths)} given pages" if scope_paths is not None
+                 else f"the {args.scope_top} nearest pages")
+        print(f"\n## relevant to this source ({len(rel)} tags on {where})")
+        print(", ".join(f"{r['tag']}({r['count']}){'*' if r['new'] else ''}" for r in rel_shown)
+              if rel_shown else "(no related pages yet — this is new ground for the wiki)")
+        if args.limit > 0 and len(rel) > args.limit:
+            print(f"… +{len(rel) - args.limit} more (--limit 0 for all)")
+        print("* = used on only one page so far; reusing it here is what promotes it")
+    print("\n## established (reuse these when they fit)")
+    print(", ".join(f"{e['tag']}({e['count']})" for e in shown) if shown
+          else "(none yet — this wiki is still building its vocabulary)")
+    if args.limit > 0 and len(est) > args.limit:
+        print(f"… +{len(est) - args.limit} more established tags (--limit 0 for all)")
+    # Unscoped callers still need a path by which a brand-new tag can be seen
+    # and reused, or nothing ever climbs from 1 to 2. Show the tail bounded —
+    # the whole list is 899 entries on a large wiki, which is what made the
+    # first version of this command expensive.
+    if not scoped and not args.audit and vocab["singletons"]:
+        tail = vocab["singletons"][:TAG_SINGLETON_TAIL]
+        print(f"\n## used once so far ({len(vocab['singletons'])} total, showing {len(tail)} — "
+              "reuse one instead of coining a near-synonym)")
+        print(", ".join(tail))
+        print("(`--q \"<source topic>\"` for the ones actually related to what you're tagging)")
+    if not args.audit:
+        print(f"\n({len(vocab['singletons'])} tags used once, {len(vocab['untaggedPages'])} untagged "
+              "pages — `--audit` or `wiki_ops.py health` for the full cleanup view)")
+        return
+    if vocab["singletons"]:
+        print("\n## singletons (used once — prefer reusing one over coining a near-synonym)")
+        print(", ".join(vocab["singletons"]))
+    dups = vocab["nearDuplicates"]
+    if dups:
+        shown_d = dups if args.limit <= 0 else dups[: args.limit]
+        print(f"\n## possible duplicates ({len(dups)}, highest-impact first — judge, don't auto-merge)")
+        for h in shown_d:
+            print(f"  {h['a']} ↔ {h['b']}  [{h['counts']}] {h['reason']}")
+        if args.limit > 0 and len(dups) > args.limit:
+            print(f"  … +{len(dups) - args.limit} more (--limit 0 for all)")
+    if vocab["untaggedPages"]:
+        print(f"\n## untagged pages ({len(vocab['untaggedPages'])})")
+        for p in vocab["untaggedPages"]:
+            print(f"  {p}")
+
+
+# ── Wiki health (project-level, where lint is page-level) ───────────────────
+# lint answers "is this page well-formed". Nothing answered "is this *wiki*
+# still configured for the corpus it has grown into" — so the setup work a wiki
+# needs once it has real content (fill the domain table, replace the purpose.md
+# stubs, refresh the placeholder overview, consolidate a sprawling tag facet)
+# had no trigger at all and simply never happened. One wiki ran a month and 22
+# pages with every init placeholder still in place.
+#
+# Everything here is a nudge with a threshold, not an error: a three-page wiki
+# genuinely should not have a domain taxonomy yet.
+
+HEALTH_SOURCE_THRESHOLD = 12  # schema.md's own "often after a dozen-plus sources"
+# Two init paths write two different placeholder wordings — `my-llm-wiki`'s
+# `init_wiki.py` inline templates and this skill's `assets/templates/`. Matching
+# only the first meant a wiki scaffolded by the maintainer's own Initialize flow
+# reported a clean bill of health with every placeholder still in place. Any new
+# init template has to add its markers here too.
+PURPOSE_STUB_MARKERS = (
+    "<!-- List the primary questions", "<!-- What is in scope?",
+    "> TBD", "<!-- Your current working hypothesis",          # init_wiki.py
+    "Describe what this wiki is trying to understand",        # assets/templates
+    "## Working Thesis\n\nTBD.",
+)
+OVERVIEW_STUB_MARKERS = (
+    "<!-- Provide a high-level summary",                      # init_wiki.py
+    "<!-- `refresh overview` regenerates this",               # assets/templates
+)
+
+
+def cmd_health(args: argparse.Namespace) -> None:
+    root = resolve_root(Path(args.project_root))
+    findings: list[dict[str, str]] = []
+
+    def note(area: str, severity: str, detail: str, fix: str) -> None:
+        findings.append({"area": area, "severity": severity, "detail": detail, "fix": fix})
+
+    raw_dir = root / "raw" / "sources"
+    source_count = len(list(raw_dir.rglob("*.md"))) if raw_dir.exists() else 0
+    mature = source_count >= HEALTH_SOURCE_THRESHOLD
+
+    schema_text = read_text(root / "schema.md") if (root / "schema.md").exists() else ""
+    bundled = bundled_schema_path()
+    if schema_text and bundled.exists():
+        have, want = schema_version(schema_text), schema_version(read_text(bundled))
+        if have < want:
+            note("schema", "warning",
+                 f"schema.md is v{have}; the bundled template is v{want}. This wiki never "
+                 "received template fixes made after it was created.",
+                 "wiki_ops.py schema-upgrade <root> --diff, then --apply")
+    if schema_text and domain_table_is_empty(schema_text) and mature:
+        note("domain", "info",
+             f"the domain table in schema.md is still empty at {source_count} sources; "
+             "schema.md says to fill it once a few natural areas are clear.",
+             "edit the `| domain | covers |` table in schema.md, then apply going forward")
+
+    purpose = read_text(root / "purpose.md") if (root / "purpose.md").exists() else ""
+    stubs = [m for m in PURPOSE_STUB_MARKERS if m in purpose]
+    if purpose and stubs and mature:
+        note("purpose", "info",
+             f"purpose.md still has {len(stubs)} init placeholder(s) at {source_count} sources "
+             "(Key Questions / Scope / Thesis). Ingest reads this file on every run, so blank "
+             "sections cost relevance judgement on every page it writes.",
+             "fill in the sections — this is one of only two per-wiki files ingest always reads")
+
+    overview = root / "wiki" / "overview.md"
+    if (overview.exists() and source_count > 0
+            and any(m in read_text(overview) for m in OVERVIEW_STUB_MARKERS)):
+        note("overview", "info",
+             "wiki/overview.md is still the init placeholder.",
+             "refresh it per the Refresh Overview flow (manual, never during ingest)")
+
+    vocab = tag_vocabulary(root)
+    if vocab["untaggedPages"]:
+        note("tags", "warning",
+             f"{len(vocab['untaggedPages'])} content page(s) have no tags at all.",
+             "wiki_ops.py lint <root> lists them as missing-tags")
+    singles, distinct = len(vocab["singletons"]), vocab["distinctTags"]
+    if distinct >= 10 and singles > distinct / 2:
+        note("tags", "info",
+             f"{singles} of {distinct} tags are used on exactly one page — the facet is "
+             "sprawling rather than converging.",
+             "wiki_ops.py tags <root> and fold singletons into established tags")
+    if vocab["nearDuplicates"]:
+        pairs = ", ".join(f"{h['a']}↔{h['b']}" for h in vocab["nearDuplicates"][:5])
+        note("tags", "info",
+             f"{len(vocab['nearDuplicates'])} possible duplicate tag pair(s): {pairs}"
+             + ("…" if len(vocab["nearDuplicates"]) > 5 else ""),
+             "wiki_ops.py tags <root> shows all pairs; merge by editing the pages")
+
+    result = {
+        "wiki": str(root),
+        "sources": source_count,
+        "contentPages": vocab["contentPages"],
+        "mature": mature,
+        "findings": findings,
+    }
+    if args.json:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return
+    print(f"# wiki health — {root}")
+    print(f"{source_count} raw sources, {vocab['contentPages']} content pages"
+          + ("" if mature else f" (below the {HEALTH_SOURCE_THRESHOLD}-source maturity "
+                               "threshold — setup nudges stay quiet)"))
+    if not findings:
+        print("\nno findings.")
+        return
+    for f in findings:
+        print(f"\n[{f['severity']}] {f['area']}: {f['detail']}")
+        print(f"  → {f['fix']}")
+
+
 REVIEW_STARVATION_THRESHOLD = 5
 
 
@@ -1818,6 +2411,13 @@ def cmd_lint(args: argparse.Namespace) -> None:
             if defect:
                 issue("semantic", "warning", rel, defect)
         if path.name not in {"index.md", "log.md", "overview.md"}:
+            if missing_tags(content):
+                issue("missing-tags", "warning", rel,
+                      "tags is empty — this page never got topical tags at all. The "
+                      "FILE-block template ships `tags: []` as a placeholder to fill, "
+                      "not a value to keep; an empty set is the same defect as tagging "
+                      "a page 'video' and nothing else. Add real subject words per "
+                      "schema.md's Tag & Domain Policy.")
             inbox_leak, bare_source_type_leak = raw_tag_leaks(content)
             if inbox_leak:
                 issue("raw-tag-leak", "warning", rel,
@@ -2798,6 +3398,44 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--fail-on", choices=["info", "warning", "error"], default="warning",
                    help="minimum severity that counts as failing under --exit-code (default: warning)")
     p.set_defaults(func=cmd_lint)
+
+    p = sub.add_parser(
+        "tags",
+        help="the wiki's live tag vocabulary — read this BEFORE generating tags for a new page")
+    p.add_argument("project_root")
+    p.add_argument("--q", help="scope to tags on the pages nearest this text — what ingest should "
+                               "pass (the source's topic/entities, space-separated). Surfaces "
+                               "relevant new tags that the global backbone view hides.")
+    p.add_argument("--paths", help="comma-separated wiki page paths to scope to, instead of --q "
+                                   "(most precise: pass the working set step 5 already selected)")
+    p.add_argument("--paths-file", help="JSON array or one-per-line file of wiki page paths to scope to")
+    p.add_argument("--scope-top", type=int, default=12,
+                   help="pages the --q scope considers (default 12)")
+    p.add_argument("--limit", type=int, default=40,
+                   help="max established tags in text output (0 = all; default 40)")
+    p.add_argument("--audit", action="store_true",
+                   help="also list singletons, duplicate pairs and untagged pages (cleanup view — "
+                        "not needed when tagging a page)")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--verbose", action="store_true",
+                   help="with --json, also emit pagesFor (tag → pages using it)")
+    p.set_defaults(func=cmd_tags)
+
+    p = sub.add_parser(
+        "health",
+        help="project-level setup drift: schema version, empty domain table, purpose.md stubs, tag sprawl")
+    p.add_argument("project_root")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_health)
+
+    p = sub.add_parser(
+        "schema-upgrade",
+        help="compare this wiki's schema.md against the bundled template; --apply to update it")
+    p.add_argument("project_root")
+    p.add_argument("--diff", action="store_true", help="print the unified diff")
+    p.add_argument("--apply", action="store_true",
+                   help="write the new template (backs up the old, carries the domain table over)")
+    p.set_defaults(func=cmd_schema_upgrade)
 
     p = sub.add_parser("sweep-reviews")
     p.add_argument("project_root")

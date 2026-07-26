@@ -13,7 +13,7 @@ type: concept
 title: Example
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
-tags: []
+tags: [topical-word, another-topical-word]
 related: [related-slug, another-slug]
 sources: ["raw/sources/example.md"]
 ---
@@ -35,6 +35,17 @@ plus the Markdown body).
 > straight into `type: …` produces a *headless* frontmatter the app and Obsidian
 > can't parse. (`apply-blocks` now self-heals this and warns, but emit it
 > correctly.)
+
+> **`tags` is a field to fill, never a placeholder to keep.** Emitting `tags: []`
+> is a defect, not a neutral default — it means the page went into the wiki with
+> no retrieval facet at all. Generate real topical words from the source's actual
+> subject matter (`[清朝, 雍正朝, 官员, 正直讲史]`), ≤5 per page, per `schema.md`'s
+> Tag & Domain Policy. Do not echo the RAW capture frontmatter you just read:
+> `inbox` is never acceptable, and a bare format word like `video`/`bilibili` is
+> fine *alongside* real tags but never as the entire set. `apply-blocks` and
+> `lint` both warn on an empty set, but emit it correctly rather than relying on
+> the warning. (The one exception is `wiki/overview.md`, whose frontmatter is
+> exactly four fields with no `tags` key — and ingest never writes it anyway.)
 
 > **Quote frontmatter values safely.** A title/scalar that contains `"`, `:`,
 > `#`, or leading/trailing spaces must be YAML-safe. The common trap is a title

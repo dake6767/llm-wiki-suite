@@ -60,13 +60,19 @@ Content pages must include YAML frontmatter:
 ---
 type: entity | concept | source | query | comparison | synthesis | overview
 title: Human-readable title
-tags: []
+tags: [topical-word, another-topical-word]
 related: []
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
 sources: []
 ---
 ```
+
+`tags` must carry real topical words drawn from the page's subject matter (≤5,
+each reusable across ≥2 pages) — see `schema.md`'s Tag & Domain Policy. An
+empty `tags: []` on a content page is a defect that `apply-blocks` and `lint`
+both warn about; `wiki/overview.md` is the sole exception, carrying exactly
+`type`/`title`/`created`/`updated` and no `tags` key.
 
 ## Link Convention
 

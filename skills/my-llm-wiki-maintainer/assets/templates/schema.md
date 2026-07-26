@@ -1,3 +1,4 @@
+<!-- llm-wiki-schema-version: 2 -->
 # Wiki Schema
 
 ## Page Types
@@ -30,7 +31,7 @@ type: entity | concept | source | query | comparison | synthesis | overview
 title: Human-readable title
 domain: []                   # controlled facet — see Tag & Domain Policy
                              # (omit until you've defined values; never on entity/concept)
-tags: []
+tags: [topical-word, another-topical-word]   # REQUIRED — real subject words, never []
 related: []
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
@@ -86,6 +87,15 @@ Rules:
 Descriptive labels for retrieval and clustering, ≤5 per page, each reusable
 across ≥2 pages:
 
+- **Required on every content page — `tags: []` is a defect, not a safe
+  default.** The rules below are all *constraints on which* tags to write; none
+  of them is a reason to write none. A page that lands with an empty tag set has
+  no retrieval facet at all, which is strictly worse than an imperfect tag.
+  Every `entity`/`concept`/`source`/`query`/`comparison`/`synthesis` page gets
+  real topical words drawn from its own subject matter. The sole exception is
+  `wiki/overview.md`, whose frontmatter is exactly `type`/`title`/`created`/
+  `updated` with no `tags` key. `apply-blocks` warns at write time and `lint`
+  flags it as `missing-tags`, but fill it when generating the page.
 - **One language per concept.** Keep an established foreign technical term as-is
   (e.g. `RAG`, `MCP`), but never *also* emit its translated duplicate. Default to
   the wiki's primary language otherwise.
@@ -95,8 +105,22 @@ across ≥2 pages:
   page in `related:` / link it `[[...]]` in the body instead. Wikilinks are the
   fine-grained graph; `tags` is only the coarse facet for labels that have *no*
   page of their own.
-- **No singletons.** A label that would appear on just one page belongs in the
-  body or as a link, not in `tags`.
+- **No singletons — read the vocabulary before you write.** A label that would
+  appear on just one page belongs in the body or as a link, not in `tags`. This
+  rule is only satisfiable if you first look at what the corpus already uses:
+
+  ```bash
+  python3 <maintainer-skill>/scripts/wiki_ops.py tags <root> --q "<this page's topic>"
+  ```
+
+  Prefer an established tag that fits; prefer a `*`-marked one (used once so far)
+  over a fresh near-synonym of it; coin a new word only when nothing listed covers
+  the page. Pass `--q` — the unscoped view lists only tags already on ≥2 pages, so
+  a word coined by the previous ingest would be invisible and could never reach 2.
+  The vocabulary is derived from the pages themselves, so each ingest both reads
+  it and extends it — that loop is what makes the facet converge. Skipping the
+  read is how one wiki ended up with `大模型`, `LLM` and `大语言模型` as three
+  separate tags for one subject.
 - **No type/domain semantics.** Don't put `concept`/`entity` or domain words in
   `tags` — those live in `type` and `domain`.
 - **Never carry RAW capture frontmatter into wiki tags as a substitute for real

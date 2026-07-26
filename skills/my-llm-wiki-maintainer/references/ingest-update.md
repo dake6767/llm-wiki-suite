@@ -62,7 +62,19 @@ Goal: compile one raw source into durable wiki pages while preserving traceabili
       A `compact-index --no-desc` load is acceptable only for a small wiki
       (listing under ~10k chars); large wikis get their global pass in review
       batches instead (see `review-research.md` → Link Densification).
-   6. Record the retrieval trace so before/after comparisons stay possible on
+   6. **Read the tag vocabulary**, scoped to what this source is about — pass
+      the same candidate names from substep 1:
+
+      ```bash
+      python3 scripts/wiki_ops.py tags <root> --q "<candidate names / topic>"
+      ```
+
+      Part of the working set on purpose, not a step-7 detail: it must land
+      **before the size gate below**, or the large-source path (which replaces
+      steps 6–7 and rejoins at step 8) would skip tagging guidance entirely.
+      Bounded like the rest of this step — ~590 tokens on a 900-page wiki, the
+      same on a small one. What you do with it is in step 7.
+   7. Record the retrieval trace so before/after comparisons stay possible on
       any host:
 
       ```bash
@@ -95,6 +107,43 @@ Goal: compile one raw source into durable wiki pages while preserving traceabili
    - `wiki/log.md` as an append-only entry.
    - No `wiki/overview.md` block.
    - Links must follow the Link Convention in `project-protocol.md`: body uses `[[folder/slug]]`, `related:` uses bare basename slugs. `apply-blocks` normalizes `related:` anyway, but emit it correctly.
+   - **Real `tags` on every page you emit — filling the template's `tags: []` is
+     part of generating the block, not a later cleanup.** Draw ≤5 topical words
+     from the page's actual subject matter per `schema.md`'s Tag & Domain Policy.
+     Two traps, both observed in real ingests: leaving the placeholder empty (the
+     page lands with no retrieval facet at all — `related:` full, `tags: []`), and
+     echoing the RAW capture frontmatter you just read (`inbox` is never
+     acceptable; a format word like `video`/`bilibili` is fine alongside real tags
+     but never as the whole set). `apply-blocks` and `lint` both warn on an empty
+     set, but the warning arrives after the page is written — get it right here.
+   - **Use the tag vocabulary you read in step 5.6** (re-run it there if this is
+     the large-source or video path rejoining here):
+
+     ```bash
+     python3 scripts/wiki_ops.py tags <root> --q "<candidate names / topic>"
+     ```
+
+     Prefer an established tag that fits over coining a new one; coin a new tag
+     only when nothing in the list covers the page. This is what makes the
+     schema's "reusable across ≥2 pages" rule satisfiable at all — without
+     reading the vocabulary you are guessing blind, and every session's guesses
+     fragment the facet (`大模型` / `LLM` / `大语言模型` all arrived this way,
+     from three separate ingests of one subject). Your new tags become the
+     next ingest's vocabulary — that feedback loop is the whole mechanism, so a
+     sloppy tag here costs more than this page.
+
+     **Pass `--q`.** Tags marked `*` are used on exactly one page so far, and
+     they only appear in the scoped view — the unscoped backbone lists
+     established (≥2 page) tags, so without `--q` a tag coined by the previous
+     ingest is invisible, never gets reused, and can never reach 2. The scoped
+     view is what lets the vocabulary actually grow rather than just recycle
+     whatever was already popular.
+
+     Bounded either way (~590 tokens on a 900-page wiki, the same on a 20-page
+     one), so this does not violate the step-5 budget. **Never pass `--audit`
+     during ingest** — it adds every singleton, duplicate pair and untagged
+     page, which is 16KB of cleanup material on a large wiki and useless for
+     tagging one page.
    - **REVIEW blocks are part of the deliverable, not an optional extra.** For every
      source, explicitly decide 0–3 `suggestion` items — the research gaps this source
      opens: claims worth verifying, adjacent topics the wiki lacks, tensions with

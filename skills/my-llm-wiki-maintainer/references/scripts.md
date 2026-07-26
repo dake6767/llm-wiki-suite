@@ -145,6 +145,88 @@ mcp|browser|local`, `--candidates`, `--pages-read`, `--context-chars`,
 `--prompt-tokens`, `--cache-read-tokens`) are the runtime-agnostic counters used
 for cross-host before/after comparison (see `project-protocol.md` → Token Policy).
 
+## Tag Vocabulary (read before tagging)
+
+```bash
+wiki_ops.py tags <root> --q "检索增强 向量数据库 嵌入"   # INGEST VIEW — always scope it
+wiki_ops.py tags <root> --paths-file cands.json   # ...or scope to exact pages (most precise)
+wiki_ops.py tags <root>                           # unscoped backbone + bounded singleton tail
+wiki_ops.py tags <root> --limit 0                 # all established tags
+wiki_ops.py tags <root> --audit                   # cleanup view: + singletons, dups, untagged
+wiki_ops.py tags <root> --json --verbose          # machine-readable, plus tag → pages
+```
+
+`--q` takes topic words / entity names; punctuation (ASCII or CJK) is treated as
+a separator and single characters are dropped, so `检索增强，向量库` and `检索增强 向量库`
+behave identically and a query of pure punctuation is rejected rather than
+matching everything. Hyphens and dots stay inside tokens — `agent-skills` and
+`claude-code` are real tags. `--paths` / `--paths-file` skip term matching
+entirely and are the better call when the caller already has a working set.
+
+Derived from the pages on every call — there is no stored vocabulary file to
+maintain or to drift out of sync. A hand-kept registry was considered and
+rejected: every other derived artifact here (`index.md`, `ingest-cache.json`,
+`lint.json`) is regenerable from the pages, and a tag registry would be the
+first to hold truth the pages don't, which is exactly what turns it into a
+maintenance burden. Where a registry looked uniquely useful — knowing that `ai`
+should be spelled `AI` — the canonical form is just the more-used spelling, a
+rule rather than data, so it needs no storage.
+
+**Ingest reads the scoped view before generating tags** (`ingest-update.md`
+step 5.6, placed before the size gate so the large-source and video paths get it
+too): prefer an established tag, then a `*`-marked one, and coin a new word only
+when nothing fits. That read-then-extend loop is what makes schema.md's
+"reusable across ≥2 pages" rule satisfiable at all.
+
+**Scope it, or the loop is open.** A tag coined by one ingest sits at count 1.
+The unscoped view leads with established (≥2 page) tags, so that new word is
+invisible to the next ingest, never reused, and can never reach 2 — the facet
+would only ever recycle what was already popular. The scoped view lists
+one-page tags too, marked `*`. Unscoped calls keep a bounded 25-tag tail as a
+fallback, but `--q` / `--paths-file` is the intended ingest path.
+
+**Keep the two views apart.** Both scoped and unscoped are bounded, so cost is
+flat in corpus size (~590 tokens on a 900-page wiki, ~440 on a 20-page one) —
+that matters because ingest pays it on every source, and the SOP's first
+retrieval rule is O(top-k), never O(wiki). `--audit` adds the full singleton
+list, every duplicate pair and every untagged page (16KB on a 911-page wiki);
+that is cleanup material, useless mid-ingest, and belongs to `health` or an
+explicit tag-consolidation pass. `--audit`/`--json` are also the only modes that
+pay the O(tags²) duplicate scan. `nearDuplicates` pairs are ranked highest-impact first
+and are a hint to judge, never an automatic merge — the test is lexical
+(case-folding, CJK character-set overlap, containment), so it finds
+`检索`/`检索增强` but not semantic pairs like `大模型`/`LLM`.
+
+## Wiki Health (project-level drift)
+
+```bash
+wiki_ops.py health /path/to/wiki
+wiki_ops.py health /path/to/wiki --json
+```
+
+`lint` asks "is this page well-formed"; `health` asks "is this wiki still
+configured for the corpus it grew into" — schema version gap, empty domain
+table, `purpose.md` still holding init placeholders, `overview.md` never
+refreshed, tag sprawl. Setup nudges stay quiet under `HEALTH_SOURCE_THRESHOLD`
+(12) sources: a young wiki should *not* have a taxonomy yet. Everything it
+reports is advisory.
+
+## Schema Upgrade (reach already-initialized wikis)
+
+```bash
+wiki_ops.py schema-upgrade /path/to/wiki           # report the version gap
+wiki_ops.py schema-upgrade /path/to/wiki --diff    # ...and show the unified diff
+wiki_ops.py schema-upgrade /path/to/wiki --apply   # take it (backs up first)
+```
+
+`init_wiki.py` copies the schema template into a wiki once and never overwrites
+it, so a wiki's conventions freeze on its creation day and later template fixes
+never arrive. The `<!-- llm-wiki-schema-version: N -->` marker makes that gap
+visible; a marker-less schema reads as v1. `--apply` backs the old file up to
+`.llm-wiki/agent/page-history/` and carries the hand-filled `| domain | covers |`
+table across, **verifying the carry-over and aborting if it can't be preserved**
+rather than reporting success over a lost taxonomy.
+
 ## Lint Scope (incremental semantic lint)
 
 ```bash

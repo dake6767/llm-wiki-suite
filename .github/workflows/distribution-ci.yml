@@ -71,13 +71,16 @@ jobs:
           python -m scripts.skills_release
           python -m scripts.check_pack_release_version --base "${{ github.event.pull_request.base.sha || github.event.before }}"
           python -m scripts.check_skills_release_version --base "${{ github.event.pull_request.base.sha || github.event.before }}"
+          python -m scripts.check_schema_version_bump --base "${{ github.event.pull_request.base.sha || github.event.before }}"
           python -m scripts.build_distribution --help
       - name: Compile and test Provider/pack code
         run: |
           python -m compileall -q scripts skills
           python -m unittest scripts.test_distribution
           python -m unittest scripts.test_skills_release
+          python -m unittest scripts.test_schema_template_sync
           python -m unittest discover -s skills/my-llm-wiki/scripts -p "test_*.py"
           python -m unittest discover -s skills/my-llm-wiki-video/scripts -p "test_*.py"
+          python -m unittest discover -s skills/my-llm-wiki-maintainer/scripts -p "test_*.py"
       - name: Check approval-clean examples
         run: python scripts/check_approval_safety.py
