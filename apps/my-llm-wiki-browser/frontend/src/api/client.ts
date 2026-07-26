@@ -8,6 +8,22 @@ import {
 } from "../lib/shareSession";
 
 const TOKEN_KEY = "llm_wiki_token";
+let ownerApiEndpoint: { baseUrl: string; token: string } | null = null;
+
+// Tauri-local 设置中心复用 Browser 的配置组件，但不能把 Setup Core 暴露给
+// loopback HTTP。桌面壳只把当前进程的本机 API 地址与 Owner token 注入内存，
+// 所有 Skills / 工具链操作仍通过 Tauri command 直达 Setup Core。
+export function configureOwnerApiEndpoint(baseUrl: string, token: string) {
+  ownerApiEndpoint = {
+    baseUrl: baseUrl.replace(/\/+$/, ""),
+    token,
+  };
+}
+
+function requestUrl(path: string): string {
+  if (!ownerApiEndpoint) return withBase(path);
+  return `${ownerApiEndpoint.baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
+}
 
 // Owner（master token）槽——localStorage 全局唯一。仅 Owner 会话使用；访客凭证走
 // sessionStorage（shareSession.ts），二者物理隔离，Owner 自测访客链接不会互相覆盖。
@@ -24,6 +40,7 @@ export function clearToken() {
 // 发往 API 的实际凭证（凭证判定三段序，见 shareSession.credentialMode）：
 // - guest → share token；owner → master token；blocked → 不带凭证（应已被引导页拦下）。
 export function authToken(): string {
+  if (ownerApiEndpoint) return ownerApiEndpoint.token;
   const mode = credentialMode();
   if (mode === "guest") return getActiveShare() || "";
   if (mode === "blocked") return "";
@@ -52,7 +69,7 @@ async function api<T>(path: string): Promise<T> {
   const headers: Record<string, string> = {};
   const token = authToken();
   if (token) headers["Authorization"] = `Bearer ${token}`;
-  const url = withBase(path);
+  const url = requestUrl(path);
 
   let lastError: unknown = new Error("请求失败");
   for (let attempt = 0; attempt <= RELAY_RETRY_DELAYS_MS.length; attempt++) {
@@ -87,7 +104,7 @@ async function send<T>(
   const token = authToken();
   if (token) headers["Authorization"] = `Bearer ${token}`;
   if (body !== undefined) headers["Content-Type"] = "application/json";
-  const res = await fetch(withBase(path), {
+  const res = await fetch(requestUrl(path), {
     method,
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,

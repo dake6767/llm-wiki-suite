@@ -87,14 +87,18 @@ Skills 合计可能 3 GB 左右，Windows 上默认全部落在系统盘并随�
 SenseVoiceSmall，用户无需等待即可先抓取网页。所有 pack 都由 CI 预构建和验证，用户机器
 只下载、校验 SHA-256、解压和激活，不调用全局 pip/npm、Homebrew、apt 或 winget。
 
-Skills 与工具链安装完成后，托盘有两个清晰分开的入口：
+Skills 与工具链安装完成后，托盘只保留一个设置入口：
 
 ```text
-Browser 设置…       # Wiki、端口、自启、分享与 relay
-Skills 与工具链…    # 安装、Provider、update、repair 与人工动作
+设置…
+├── Browser          # Wiki、端口、自启、分享与 relay
+└── Agent            # Skills、工具链、update、repair 与人工动作
 ```
 
-之后新装了别的 Agent，不必重跑安装：「Skills 与工具链」的 Skills Pack 面板列出全部已知宿主，
+统一设置窗口仍保留安全分界：Browser 配置使用带 Owner 凭证的本机 API，Skills 与工具链直接
+调用 Tauri Setup Core，安装和修复能力不会进入 `127.0.0.1` 或 relay。
+
+之后新装了别的 Agent，不必重跑安装：「Skills 与工具链」页的 Skills Pack 面板列出全部已知宿主，
 可以逐个把已经装好的那份 Skills Pack 装给它，或者把某个宿主摘掉。新增只建链接，不联网、
 不重新下载工具链；遇到同名外来 Skill 仍然逐项授权后才备份替换。移除只摘该宿主的链接，
 安装目录里的 Skills Pack、能力包与 Wiki 都保留。

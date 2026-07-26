@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
+import { configureOwnerApiEndpoint } from "../api/client";
 import { copyToClipboard } from "../lib/reviewPrompt";
+import {
+  BrowserSettingsSection,
+  browserSettingsTabs,
+  type BrowserSettingsTab,
+} from "../pages/DesktopConfig";
 
 type DestinationState = "absent" | "owned" | "foreign";
 type SetupHealth = "ready" | "not-configured" | "needs-repair" | "action-required";
@@ -58,6 +64,11 @@ interface InstallRootProbe {
   writable: boolean;
   free_bytes: number | null;
   existing_install: boolean;
+}
+
+interface BrowserSettingsSession {
+  base_url: string;
+  token: string;
 }
 
 interface HostResult {
@@ -307,6 +318,12 @@ export default function SetupApp() {
     started_at: Date.now() - 194_000,
     updated_at: Date.now() - (previewStalled ? 96_000 : 1_000),
   } : null);
+  const [browserSettingsState, setBrowserSettingsState] = useState<
+    "loading" | "ready" | "error"
+  >(previewMode ? "error" : "loading");
+  const [browserSettingsError, setBrowserSettingsError] = useState<string | null>(
+    previewMode ? "预览模式未启动本机 Browser 服务。" : null,
+  );
 
   useEffect(() => {
     if (previewMode) return;
@@ -429,6 +446,27 @@ export default function SetupApp() {
       .then((cached) => cached && setUpdate((current) => current ?? cached))
       .catch(() => undefined);
   }, [view]);
+
+  useEffect(() => {
+    if (previewMode || view !== "manage") return;
+    let mounted = true;
+    setBrowserSettingsState("loading");
+    setBrowserSettingsError(null);
+    invoke<BrowserSettingsSession>("setup_browser_settings_session")
+      .then((session) => {
+        if (!mounted) return;
+        configureOwnerApiEndpoint(session.base_url, session.token);
+        setBrowserSettingsState("ready");
+      })
+      .catch((reason: unknown) => {
+        if (!mounted) return;
+        setBrowserSettingsState("error");
+        setBrowserSettingsError(messageOf(reason));
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [previewMode, view]);
 
   const selected = useMemo(
     () => inspection?.hosts.filter((host) => selectedHosts.has(host.id)) ?? [],
@@ -640,6 +678,9 @@ export default function SetupApp() {
         onRestart={() => void restartForUpdate()}
         asrInstall={asrInstall}
         onInstallAsr={() => void installAsr()}
+        browserSettingsState={browserSettingsState}
+        browserSettingsError={browserSettingsError}
+        preferSkills={previewMode}
       />
     );
   }
@@ -1171,7 +1212,10 @@ function AsrInstallCard({ pack, modelCache, job, onInstall, compact = false }: {
   );
 }
 
-function Management({ status, hosts, hostJob, onInstallHost, onRemoveHost, update, browserUpdate, busy, error, repair, onRepair, onStopRepair, onCheck, onUpdate, onRestart, asrInstall, onInstallAsr }: {
+type SettingsSection = BrowserSettingsTab | "skills";
+const SETTINGS_SECTION_KEY = "my-llm-wiki.settings-section";
+
+function Management({ status, hosts, hostJob, onInstallHost, onRemoveHost, update, browserUpdate, busy, error, repair, onRepair, onStopRepair, onCheck, onUpdate, onRestart, asrInstall, onInstallAsr, browserSettingsState, browserSettingsError, preferSkills }: {
   status: SetupResult | null;
   hosts: HostInspection[];
   hostJob: HostJob | null;
@@ -1189,6 +1233,9 @@ function Management({ status, hosts, hostJob, onInstallHost, onRemoveHost, updat
   onRestart: () => void;
   asrInstall: PackInstallJob | null;
   onInstallAsr: () => void;
+  browserSettingsState: "loading" | "ready" | "error";
+  browserSettingsError: string | null;
+  preferSkills: boolean;
 }) {
   const ready = status?.state === "ready";
   const announcingSuccess = useSuccessAnnouncement(repair?.state);
@@ -1198,54 +1245,136 @@ function Management({ status, hosts, hostJob, onInstallHost, onRemoveHost, updat
     update?.state === "available" ||
     browserUpdate?.state === "available" ||
     update?.skills.state === "available";
+  const [section, setSection] = useState<SettingsSection>(() => {
+    if (preferSkills) return "skills";
+    const saved = window.localStorage.getItem(SETTINGS_SECTION_KEY);
+    return saved === "skills" || browserSettingsTabs.some((tab) => tab.key === saved)
+      ? saved as SettingsSection
+      : "wikis";
+  });
+
+  useEffect(() => {
+    window.localStorage.setItem(SETTINGS_SECTION_KEY, section);
+  }, [section]);
+
+  useEffect(() => {
+    if (preferSkills) return;
+    const unlisten = listen<SettingsSection>("settings-navigate", (event) => {
+      if (event.payload === "skills" || browserSettingsTabs.some((tab) => tab.key === event.payload)) {
+        setSection(event.payload);
+      }
+    }).catch(() => () => undefined);
+    return () => {
+      void unlisten.then((dispose) => dispose());
+    };
+  }, [preferSkills]);
+
   return (
-    <main className="manage-shell">
-      <header className="manage-header">
-        <div><div className="setup-mark">文</div><div><p className="eyebrow">Local control plane</p><h1>Skills 与工具链</h1></div></div>
-        <span className={ready ? "status-ready" : "status-repair"}>{ready ? "运行正常" : "需要处理"}</span>
-      </header>
-      {error ? <ErrorBanner message={error} /> : null}
-      <section className="manage-grid">
-        <StatusPanel
-          index="01"
-          title="Skills Pack"
-          healthy={Object.values(status?.hosts ?? {}).length > 0
-            && Object.values(status?.hosts ?? {}).every((host) => host.healthy)}
-        >
-          <HostLedger
-            hosts={hosts}
-            installed={status?.hosts ?? {}}
-            job={hostJob}
-            onInstall={onInstallHost}
-            onRemove={onRemoveHost}
-          />
-          {status?.cli_path ? <p className="panel-path">CLI · {status.cli_path}</p> : null}
-        </StatusPanel>
-        <StatusPanel index="02" title="官方工具链" healthy={status?.official_toolchain.healthy ?? false}>
-          <p className="panel-version">{status?.official_toolchain.installed ? `v${status.official_toolchain.version}` : "未安装 · 开放路径"}</p>
-          <p>默认优先使用官方工具链，可被系统或任务级工具替换。</p>
-          {Object.entries(status?.packs ?? {}).filter(([id]) => id !== "toolchain-base").map(([id, pack]) => <div className="pack-status" key={id}><b>{id}</b><span>{pack.healthy ? `v${pack.version}` : "需要修复"}</span></div>)}
-          <AsrInstallCard pack={status?.packs["asr-zh"]} modelCache={status?.model_caches["asr-zh"]} job={asrInstall} onInstall={onInstallAsr} compact />
-        </StatusPanel>
-        <StatusPanel index="03" title="Wiki" healthy={status?.wiki.ready ?? false}>
-          <p className="panel-path">{status?.wiki.path}</p>
-        </StatusPanel>
-        <StatusPanel index="04" title="联合更新" healthy={!updateAvailable && !browserRestart && browserUpdate?.state !== "error"}>
-          <p>{browserUpdateText(browserUpdate, update, status?.distribution_version)}</p>
-          {update ? <SkillsUpdateLine skills={update.skills} /> : null}
-          {browserUpdate?.state === "downloading" ? <UpdateProgress status={browserUpdate} /> : null}
-          {browserUpdate?.state === "error" && browserUpdate.error ? <p className="setup-inline-error">{browserUpdate.error}</p> : null}
-          <div className="panel-actions">
-            {!browserRestart ? <SecondaryButton disabled={busy || browserBusy} onClick={onCheck}>{browserUpdate?.state === "checking" ? "检查中…" : "检查更新"}</SecondaryButton> : null}
-            {updateAvailable ? <PrimaryButton disabled={busy || browserBusy} onClick={onUpdate}>开始更新</PrimaryButton> : null}
-            {browserRestart ? <PrimaryButton disabled={busy} onClick={onRestart}>重启完成更新</PrimaryButton> : null}
+    <main className="settings-shell">
+      <aside className="settings-rail">
+        <header className="settings-brand">
+          <div className="setup-mark">文</div>
+          <div>
+            <p className="eyebrow">My LLM Wiki</p>
+            <h1>设置</h1>
           </div>
-        </StatusPanel>
+        </header>
+
+        <nav className="settings-nav" aria-label="设置分类">
+          <p>Browser</p>
+          {browserSettingsTabs.map((tab) => (
+            <button
+              type="button"
+              key={tab.key}
+              className={section === tab.key ? "is-active" : ""}
+              onClick={() => setSection(tab.key)}
+            >
+              <span>{tab.label}</span>
+              <small>{tab.eyebrow}</small>
+            </button>
+          ))}
+          <p>Agent</p>
+          <button
+            type="button"
+            className={section === "skills" ? "is-active" : ""}
+            onClick={() => setSection("skills")}
+          >
+            <span>Skills 与工具链</span>
+            <small>Agents &amp; toolchain</small>
+            <i className={!ready ? "is-warn" : updateAvailable ? "is-update" : ""}>
+              {!ready ? "处理" : updateAvailable ? "更新" : "正常"}
+            </i>
+          </button>
+        </nav>
+
+        <footer className="settings-rail-footer">
+          <span className={ready ? "is-ready" : "is-warn"} />
+          <p><b>{ready ? "本机环境运行正常" : "本机环境需要处理"}</b>Browser 与 Agent 设置集中在此管理。</p>
+        </footer>
+      </aside>
+
+      <section className="settings-content">
+        {section !== "skills" ? (
+          browserSettingsState === "ready" ? (
+            <BrowserSettingsSection active={section} />
+          ) : (
+            <div className="settings-api-message">
+              <p className="eyebrow">Browser control plane</p>
+              <h2>{browserSettingsState === "loading" ? "正在连接本机服务" : "暂时无法读取 Browser 设置"}</h2>
+              <p>{browserSettingsState === "loading" ? "正在建立仅限本机的设置会话…" : browserSettingsError}</p>
+            </div>
+          )
+        ) : (
+          <div className="manage-shell is-embedded">
+            <header className="manage-header">
+              <div><div className="setup-mark">文</div><div><p className="eyebrow">Agent control plane</p><h1>Skills 与工具链</h1></div></div>
+              <span className={ready ? "status-ready" : "status-repair"}>{ready ? "运行正常" : "需要处理"}</span>
+            </header>
+            {error ? <ErrorBanner message={error} /> : null}
+            <section className="manage-grid">
+              <StatusPanel
+                index="01"
+                title="Skills Pack"
+                healthy={Object.values(status?.hosts ?? {}).length > 0
+                  && Object.values(status?.hosts ?? {}).every((host) => host.healthy)}
+              >
+                <HostLedger
+                  hosts={hosts}
+                  installed={status?.hosts ?? {}}
+                  job={hostJob}
+                  onInstall={onInstallHost}
+                  onRemove={onRemoveHost}
+                />
+                {status?.cli_path ? <p className="panel-path">CLI · {status.cli_path}</p> : null}
+              </StatusPanel>
+              <StatusPanel index="02" title="官方工具链" healthy={status?.official_toolchain.healthy ?? false}>
+                <p className="panel-version">{status?.official_toolchain.installed ? `v${status.official_toolchain.version}` : "未安装 · 开放路径"}</p>
+                <p>默认优先使用官方工具链，可被系统或任务级工具替换。</p>
+                {Object.entries(status?.packs ?? {}).filter(([id]) => id !== "toolchain-base").map(([id, pack]) => <div className="pack-status" key={id}><b>{id}</b><span>{pack.healthy ? `v${pack.version}` : "需要修复"}</span></div>)}
+                <AsrInstallCard pack={status?.packs["asr-zh"]} modelCache={status?.model_caches["asr-zh"]} job={asrInstall} onInstall={onInstallAsr} compact />
+              </StatusPanel>
+              <StatusPanel index="03" title="Wiki" healthy={status?.wiki.ready ?? false}>
+                <p className="panel-path">{status?.wiki.path}</p>
+              </StatusPanel>
+              <StatusPanel index="04" title="联合更新" healthy={!updateAvailable && !browserRestart && browserUpdate?.state !== "error"}>
+                <p>{browserUpdateText(browserUpdate, update, status?.distribution_version)}</p>
+                {update ? <SkillsUpdateLine skills={update.skills} /> : null}
+                {browserUpdate?.state === "downloading" ? <UpdateProgress status={browserUpdate} /> : null}
+                {browserUpdate?.state === "error" && browserUpdate.error ? <p className="setup-inline-error">{browserUpdate.error}</p> : null}
+                <div className="panel-actions">
+                  {!browserRestart ? <SecondaryButton disabled={busy || browserBusy} onClick={onCheck}>{browserUpdate?.state === "checking" ? "检查中…" : "检查更新"}</SecondaryButton> : null}
+                  {updateAvailable ? <PrimaryButton disabled={busy || browserBusy} onClick={onUpdate}>开始更新</PrimaryButton> : null}
+                  {browserRestart ? <PrimaryButton disabled={busy} onClick={onRestart}>重启完成更新</PrimaryButton> : null}
+                </div>
+              </StatusPanel>
+            </section>
+            {status?.actions.length ? <ManualActions actions={status.actions} label="Manual actions" /> : null}
+            {!ready || repairRunning(repair) || announcingSuccess ? (
+              <RepairBar job={repair} ready={ready} busy={busy} onStart={onRepair} onStop={onStopRepair} />
+            ) : null}
+          </div>
+        )}
       </section>
-      {status?.actions.length ? <ManualActions actions={status.actions} label="Manual actions" /> : null}
-      {!ready || repairRunning(repair) || announcingSuccess ? (
-        <RepairBar job={repair} ready={ready} busy={busy} onStart={onRepair} onStop={onStopRepair} />
-      ) : null}
     </main>
   );
 }

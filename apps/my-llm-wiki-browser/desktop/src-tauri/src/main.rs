@@ -19,7 +19,7 @@ use llm_wiki_server::{AutostartControl, ServerConfig, ServerControl, serve};
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{Manager, Url, WindowEvent};
+use tauri::{Emitter as _, Manager, WindowEvent};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::writer::MakeWriterExt as _;
 // macOS 专属：控制 Dock 图标与激活策略（Accessory=托盘常驻不占 Dock）。
@@ -35,7 +35,6 @@ use skills_watch::SkillsWatch;
 use update::UpdateManager;
 
 const DEFAULT_PORT: u16 = 8800;
-const CONFIG_PATH: &str = "desktop/config";
 
 /// 本地服务端口，每进程解析一次：持久化配置 > `LLM_WIKI_PORT` > 默认 8800。
 fn server_port() -> u16 {
@@ -107,6 +106,7 @@ fn main() {
             setup::setup_stop_repair,
             setup::setup_open_wiki,
             setup::setup_open_wiki_directory,
+            setup::setup_browser_settings_session,
             setup::setup_update,
             setup::setup_browser_update_status,
             setup::setup_restart,
@@ -271,15 +271,9 @@ struct BrowserRuntime {
 pub(crate) fn activate_browser(app: &tauri::AppHandle) -> Result<()> {
     start_browser(app)?;
     if let Some(window) = app.get_webview_window("main") {
-        window
-            .navigate(Url::parse(&config_url()).context("invalid config URL")?)
-            .context("navigate main window to config page")?;
-        window.show().context("show Browser window")?;
-        window.set_focus().context("focus Browser window")?;
-    }
-    if let Some(window) = app.get_webview_window("setup") {
         let _ = window.hide();
     }
+    show_setup_window(app);
     Ok(())
 }
 
@@ -745,8 +739,7 @@ fn build_tray(
         false,
         None::<&str>,
     )?;
-    let show_window = MenuItem::with_id(app, "show_window", "Browser 设置…", true, None::<&str>)?;
-    let show_setup = MenuItem::with_id(app, "show_setup", "Skills 与工具链…", true, None::<&str>)?;
+    let show_setup = MenuItem::with_id(app, "show_setup", "设置…", true, None::<&str>)?;
     let open_local_wiki =
         MenuItem::with_id(app, "open_local_wiki", "打开本地 WIKI", false, None::<&str>)?;
     // 本人线上入口含 master token；「复制」明确标记为自用，不可作为分享链接。
@@ -778,7 +771,6 @@ fn build_tray(
             &open_online_wiki,
             &copy_online_wiki,
             &relay_toggle,
-            &show_window,
             &show_setup,
             &check_update,
             &separator,
@@ -795,7 +787,6 @@ fn build_tray(
         .menu(&menu)
         .show_menu_on_left_click(true)
         .on_menu_event(move |app, event| match event.id().as_ref() {
-            "show_window" => show_config_window(app),
             "show_setup" => show_setup_window(app),
             "open_local_wiki" => {
                 if let Some(state) = app.try_state::<DesktopState>() {
@@ -828,6 +819,7 @@ fn build_tray(
                     update_manager.check();
                 }
                 show_setup_window(app);
+                let _ = app.emit("settings-navigate", "skills");
             }
             "quit" => app.exit(0),
             _ => {}
@@ -873,25 +865,6 @@ fn copy_owner_url_to_clipboard(app: &tauri::AppHandle, owner_url: Option<String>
     }
 }
 
-fn show_config_window(app: &tauri::AppHandle) {
-    if app
-        .try_state::<BrowserRuntime>()
-        .is_none_or(|runtime| !runtime.started.load(Ordering::SeqCst))
-    {
-        show_setup_window(app);
-        return;
-    }
-    #[cfg(target_os = "macos")]
-    let _ = app.set_activation_policy(ActivationPolicy::Regular);
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
-        let _ = window.set_focus();
-        if let Ok(url) = Url::parse(&config_url()) {
-            let _ = window.navigate(url);
-        }
-    }
-}
-
 fn show_setup_window(app: &tauri::AppHandle) {
     #[cfg(target_os = "macos")]
     let _ = app.set_activation_policy(ActivationPolicy::Regular);
@@ -899,10 +872,6 @@ fn show_setup_window(app: &tauri::AppHandle) {
         let _ = window.show();
         let _ = window.set_focus();
     }
-}
-
-fn config_url() -> String {
-    local_url_with_token(&format!("{}{CONFIG_PATH}", local_base_url()), &auth_token())
 }
 
 fn update_tray_relay(

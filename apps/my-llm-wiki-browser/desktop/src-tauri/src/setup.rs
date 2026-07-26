@@ -15,6 +15,12 @@ use tauri_plugin_notification::NotificationExt as _;
 use crate::update::UpdateStatus;
 
 #[derive(Debug, Clone, Serialize)]
+pub(crate) struct BrowserSettingsSession {
+    base_url: String,
+    token: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct PackInstallJob {
     id: String,
     state: String,
@@ -567,6 +573,22 @@ pub(crate) fn setup_open_wiki_directory(window: WebviewWindow) -> Result<(), Str
         .status()
         .map_err(|error| error.to_string())?;
     open::that(&status.wiki.path).map_err(|error| format!("无法打开 Wiki 目录: {error}"))
+}
+
+/// Give the Tauri-local settings center access to the already-running Browser
+/// configuration API. This keeps Browser settings in the unified window
+/// without moving any Setup Core capability onto loopback HTTP.
+#[tauri::command]
+pub(crate) fn setup_browser_settings_session(
+    app: AppHandle,
+    window: WebviewWindow,
+) -> Result<BrowserSettingsSession, String> {
+    require_setup_window(&window)?;
+    crate::start_browser(&app).map_err(|error| error.to_string())?;
+    Ok(BrowserSettingsSession {
+        base_url: crate::local_base_url().trim_end_matches('/').to_owned(),
+        token: crate::auth_token(),
+    })
 }
 
 #[tauri::command]

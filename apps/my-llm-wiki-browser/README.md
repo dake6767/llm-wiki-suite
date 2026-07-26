@@ -7,7 +7,9 @@ Browser starts with an application-native Setup window. Setup installs the full
 embedded Skills Pack into selected agent hosts, optionally activates the
 project-verified toolchain, initializes the default Wiki, and installs the
 shared CLI. The local HTTP Wiki server starts only after Setup reaches a healthy
-state.
+state. After Setup, the same Tauri-local window becomes the single settings
+center: Browser configuration uses the authenticated loopback API, while Skills,
+toolchain, update, and repair actions continue to call Setup Core directly.
 
 ## Layout
 
