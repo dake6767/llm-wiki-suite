@@ -47,32 +47,48 @@ class SkillsReleaseMetadataTests(unittest.TestCase):
 
 
 class SkillsArchiveTests(unittest.TestCase):
-    def _tree(self, root: Path) -> None:
-        skill = root / "my-llm-wiki"
+    """The archive's contents are defined by the repository, not by the disk.
+
+    These build a real (tiny) git repo laid out like the actual one, because the
+    thing under test is precisely the git listing. A plain temp directory would
+    exercise a code path the release never takes.
+    """
+
+    def _repo(self, root: Path) -> Path:
+        """Repo root with a `skills/` tree plus the junk a real checkout carries."""
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        (root / ".gitignore").write_text(
+            "skills/my-llm-wiki/data/\n.DS_Store\n__pycache__/\n", encoding="utf-8")
+        skill = root / "skills" / "my-llm-wiki"
         (skill / "scripts" / "__pycache__").mkdir(parents=True)
+        (skill / "data").mkdir(parents=True)
         (skill / "SKILL.md").write_text("# skill\n", encoding="utf-8")
         (skill / "scripts" / "tool.py").write_text("print(1)\n", encoding="utf-8")
+        # None of the following may ever reach the archive.
         (skill / "scripts" / "__pycache__" / "tool.pyc").write_bytes(b"bytecode")
+        (skill / "data" / "personal-notes.md").write_text("private\n", encoding="utf-8")
+        (skill / ".DS_Store").write_bytes(b"\x00junk")
+        (skill / "scratch.md").write_text("untracked draft\n", encoding="utf-8")
+        subprocess.run(["git", "add", "skills/my-llm-wiki/SKILL.md",
+                        "skills/my-llm-wiki/scripts/tool.py"], cwd=root, check=True)
+        return root / "skills"
 
-    def test_archive_is_rooted_at_the_slug_and_skips_bytecode(self) -> None:
+    def test_archive_holds_tracked_files_only(self) -> None:
+        # The regression: a directory walk shipped gitignored `data/` notes and
+        # `.DS_Store` from whatever working tree happened to run the build.
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            source = root / "skills"
-            source.mkdir()
-            self._tree(source)
+            source = self._repo(root)
             destination = archiver.build(root / "skills-2.1.0.zip", source)
             with zipfile.ZipFile(destination) as archive:
                 names = sorted(archive.namelist())
             self.assertEqual(
-                names, ["my-llm-wiki/SKILL.md", "my-llm-wiki/scripts/tool.py"]
-            )
+                names, ["my-llm-wiki/SKILL.md", "my-llm-wiki/scripts/tool.py"])
 
     def test_archive_is_byte_deterministic(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            source = root / "skills"
-            source.mkdir()
-            self._tree(source)
+            source = self._repo(root)
             first = archiver.build(root / "first.zip", source).read_bytes()
             second = archiver.build(root / "second.zip", source).read_bytes()
             self.assertEqual(first, second)
@@ -80,8 +96,27 @@ class SkillsArchiveTests(unittest.TestCase):
     def test_empty_source_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
             source = root / "skills"
             source.mkdir()
+            with self.assertRaises(skills_release.SkillsReleaseError):
+                archiver.build(root / "out.zip", source)
+
+    def test_non_git_source_is_refused_rather_than_walked(self) -> None:
+        # Falling back to a walk here would quietly restore the leak.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "skills" / "my-llm-wiki"
+            source.mkdir(parents=True)
+            (source / "SKILL.md").write_text("# skill\n", encoding="utf-8")
+            with self.assertRaises(skills_release.SkillsReleaseError):
+                archiver.build(root / "out.zip", root / "skills")
+
+    def test_tracked_but_deleted_file_is_an_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = self._repo(root)
+            (source / "my-llm-wiki" / "SKILL.md").unlink()
             with self.assertRaises(skills_release.SkillsReleaseError):
                 archiver.build(root / "out.zip", source)
 
@@ -89,9 +124,12 @@ class SkillsArchiveTests(unittest.TestCase):
 class SkillsVersionSignalTests(unittest.TestCase):
     def _payload(self, temporary: str, **metadata: object) -> dict:
         root = Path(temporary)
+        # A real repo, because the archive builder lists tracked files.
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
         source = root / "skills"
         (source / "my-llm-wiki").mkdir(parents=True)
         (source / "my-llm-wiki" / "SKILL.md").write_text("# skill\n", encoding="utf-8")
+        subprocess.run(["git", "add", "skills/my-llm-wiki/SKILL.md"], cwd=root, check=True)
         archive = archiver.build(root / "skills.zip", source)
         path = root / "skills-release.json"
         path.write_text(
@@ -118,9 +156,11 @@ class SkillsVersionSignalTests(unittest.TestCase):
     def test_a_malformed_commit_is_dropped_rather_than_published(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
             source = root / "skills"
             (source / "my-llm-wiki").mkdir(parents=True)
             (source / "my-llm-wiki" / "SKILL.md").write_text("x\n", encoding="utf-8")
+            subprocess.run(["git", "add", "skills/my-llm-wiki/SKILL.md"], cwd=root, check=True)
             archive = archiver.build(root / "skills.zip", source)
             path = root / "skills-release.json"
             path.write_text(

@@ -13,29 +13,62 @@ silently diverge from what a release already pinned.
 from __future__ import annotations
 
 import argparse
+import subprocess
 import zipfile
 from pathlib import Path
 
 from .skills_release import SKILLS_DIR, SkillsReleaseError
 
 
-EXCLUDED_DIRS = {"__pycache__", ".git"}
 EXCLUDED_SUFFIXES = {".pyc", ".pyo"}
 # Zip's epoch. Any fixed value works; this one is the format's own floor.
 FIXED_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 
 
 def archive_members(root: Path) -> list[tuple[str, Path]]:
-    members = []
-    for path in root.rglob("*"):
-        if not path.is_file():
+    """Tracked files under `root`, as (archive name, source path).
+
+    The listing comes from `git ls-files`, not a directory walk, so the archive
+    contains exactly what the repository contains. A walk answers "what is on
+    this disk", which is a different question and the wrong one: it silently
+    swept up whatever a working tree happened to be carrying. On one maintainer
+    machine that was `.DS_Store` plus two gitignored `skills/*/data/`
+    directories of personal ASR-correction notes — content that would have
+    shipped to every user had the archive ever been built outside CI's clean
+    checkout, and which made a local build unable to reproduce the released
+    SHA-256 while debugging.
+
+    No fallback to walking. Being unable to ask git is a broken build
+    environment, and quietly answering the wrong question is precisely the
+    failure this replaces.
+    """
+    try:
+        listing = subprocess.run(
+            ["git", "ls-files", "-z"], cwd=root, check=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True).stdout
+    except FileNotFoundError as exc:  # no git binary
+        raise SkillsReleaseError(
+            f"git is required to list skill files under {root} (it defines what "
+            f"ships); install git or build from a checkout") from exc
+    except subprocess.CalledProcessError as exc:
+        raise SkillsReleaseError(
+            f"{root} is not inside a git work tree, so the archive contents "
+            f"cannot be determined: {exc.stderr.strip()}") from exc
+
+    members: list[tuple[str, Path]] = []
+    for name in listing.split("\0"):
+        if not name:
             continue
-        relative = path.relative_to(root)
-        if EXCLUDED_DIRS.intersection(relative.parts):
-            continue
+        path = root / name
+        # Defense in depth: `git ls-files` already omits ignored files, but a
+        # committed .pyc would still be wrong to ship.
         if path.suffix in EXCLUDED_SUFFIXES:
             continue
-        members.append((relative.as_posix(), path))
+        if not path.is_file():
+            raise SkillsReleaseError(
+                f"tracked file missing from the working tree: {name} — the "
+                f"checkout under {root} is incomplete")
+        members.append((Path(name).as_posix(), path))
     members.sort(key=lambda member: member[0])
     return members
 
