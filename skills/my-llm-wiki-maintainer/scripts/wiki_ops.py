@@ -2322,9 +2322,16 @@ HEALTH_SOURCE_THRESHOLD = 12  # schema.md's own "often after a dozen-plus source
 # init template has to add its markers here too.
 PURPOSE_STUB_MARKERS = (
     "<!-- List the primary questions", "<!-- What is in scope?",
-    "> TBD", "<!-- Your current working hypothesis",          # init_wiki.py
+    "<!-- Your current working hypothesis",                   # init_wiki.py
     "Describe what this wiki is trying to understand",        # assets/templates
-    "## Working Thesis\n\nTBD.",
+)
+# A thesis is the one section that can legitimately stay open for a long time,
+# so only the *untouched* form counts. A bare `> TBD` is the template nobody
+# edited; `> TBD —— 随研究推进更新` is a decision to defer, and nagging about a
+# decision teaches people to ignore the check.
+PURPOSE_STUB_PATTERNS = (
+    re.compile(r"^>\s*TBD\s*$", re.M),
+    re.compile(r"^TBD\.\s*$", re.M),
 )
 OVERVIEW_STUB_MARKERS = (
     "<!-- Provide a high-level summary",                      # init_wiki.py
@@ -2360,6 +2367,7 @@ def cmd_health(args: argparse.Namespace) -> None:
 
     purpose = read_text(root / "purpose.md") if (root / "purpose.md").exists() else ""
     stubs = [m for m in PURPOSE_STUB_MARKERS if m in purpose]
+    stubs += [p.pattern for p in PURPOSE_STUB_PATTERNS if p.search(purpose)]
     if purpose and stubs and mature:
         note("purpose", "info",
              f"purpose.md still has {len(stubs)} init placeholder(s) at {source_count} sources "
