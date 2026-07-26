@@ -126,7 +126,7 @@ fn main() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(ActivationPolicy::Accessory);
             let relay_runtime = RelayRuntime::new(tray.clone(), online_urls.clone());
-            let skills_watch = SkillsWatch::new(tray.show_setup.clone());
+            let skills_watch = SkillsWatch::new(app.handle().clone(), tray.show_setup.clone());
             let browser_runtime = BrowserRuntime {
                 started: Arc::new(AtomicBool::new(false)),
                 online_urls,
@@ -787,7 +787,10 @@ fn build_tray(
         .menu(&menu)
         .show_menu_on_left_click(true)
         .on_menu_event(move |app, event| match event.id().as_ref() {
-            "show_setup" => show_setup_window(app),
+            "show_setup" => {
+                check_updates_from_settings(app);
+                show_setup_window(app);
+            }
             "open_local_wiki" => {
                 if let Some(state) = app.try_state::<DesktopState>() {
                     let url = local_url_with_token(&state.local_url, &auth_token());
@@ -815,9 +818,7 @@ fn build_tray(
             }
             // 触发一次检查并打开设置页——结果在设置页的更新面板里呈现。
             "check_update" => {
-                if let Some(update_manager) = app.try_state::<UpdateManager>() {
-                    update_manager.check();
-                }
+                check_updates_from_settings(app);
                 show_setup_window(app);
                 let _ = app.emit("settings-navigate", "skills");
             }
@@ -834,6 +835,18 @@ fn build_tray(
         copy_online_wiki,
         relay_toggle,
     })
+}
+
+/// A settings visit is a natural, user-initiated opportunity to refresh both
+/// release channels. The checks stay asynchronous so opening the window never
+/// waits on the network; the frontend receives the start signal immediately
+/// and the Skills result when that check completes.
+fn check_updates_from_settings(app: &tauri::AppHandle) {
+    if let Some(runtime) = app.try_state::<BrowserRuntime>() {
+        runtime.update_manager.check();
+        runtime.skills_watch.check();
+    }
+    let _ = app.emit("settings-update-check-started", ());
 }
 
 fn copy_owner_url_to_clipboard(app: &tauri::AppHandle, owner_url: Option<String>) {
