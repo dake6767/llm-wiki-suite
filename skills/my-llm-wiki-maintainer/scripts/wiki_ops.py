@@ -2025,8 +2025,14 @@ def cmd_tags(args: argparse.Namespace) -> None:
             vocab.pop("pagesFor", None)
         print(json.dumps(vocab, indent=2, ensure_ascii=False))
         return
-    # Compact by default: this is read into an ingest prompt before tags are
-    # generated, so it must cost tens of tokens, not thousands.
+    # Two audiences, and conflating them was a real cost: ingest reads this
+    # before tagging *every* page, while singletons / duplicate pairs /
+    # untagged pages are cleanup material nobody needs mid-ingest. Emitting all
+    # of it by default put 16KB (~6.4k tokens) of governance data into the
+    # ingest path of a 911-page wiki — an O(wiki) load in a SOP whose first
+    # rule is "retrieval is O(top-k), never O(wiki)". Default is now the
+    # backbone only: bounded by --limit, so the cost is flat no matter how
+    # large the corpus grows. `--audit` (and `health`) serve the other reader.
     est = vocab["established"]
     shown = est if args.limit <= 0 else est[: args.limit]
     print(f"# tag vocabulary — {vocab['taggedPages']}/{vocab['contentPages']} pages tagged, "
@@ -2035,7 +2041,14 @@ def cmd_tags(args: argparse.Namespace) -> None:
     print(", ".join(f"{e['tag']}({e['count']})" for e in shown) if shown
           else "(none yet — this wiki is still building its vocabulary)")
     if args.limit > 0 and len(est) > args.limit:
-        print(f"… +{len(est) - args.limit} more (--limit 0 for all)")
+        print(f"… +{len(est) - args.limit} more established tags (--limit 0 for all)")
+    if not args.audit:
+        extras = len(vocab["singletons"]) + len(vocab["nearDuplicates"]) + len(vocab["untaggedPages"])
+        if extras:
+            print(f"\n({len(vocab['singletons'])} singletons, {len(vocab['nearDuplicates'])} possible "
+                  f"duplicate pairs, {len(vocab['untaggedPages'])} untagged pages — `--audit` or "
+                  "`wiki_ops.py health` to see them; not needed to tag a page)")
+        return
     if vocab["singletons"]:
         print("\n## singletons (used once — prefer reusing one over coining a near-synonym)")
         print(", ".join(vocab["singletons"]))
@@ -3191,6 +3204,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("project_root")
     p.add_argument("--limit", type=int, default=40,
                    help="max established tags in text output (0 = all; default 40)")
+    p.add_argument("--audit", action="store_true",
+                   help="also list singletons, duplicate pairs and untagged pages (cleanup view — "
+                        "not needed when tagging a page)")
     p.add_argument("--json", action="store_true")
     p.add_argument("--verbose", action="store_true",
                    help="with --json, also emit pagesFor (tag → pages using it)")

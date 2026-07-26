@@ -148,18 +148,35 @@ for cross-host before/after comparison (see `project-protocol.md` → Token Poli
 ## Tag Vocabulary (read before tagging)
 
 ```bash
-wiki_ops.py tags /path/to/wiki                  # compact: established / singletons / dup pairs
-wiki_ops.py tags /path/to/wiki --limit 0        # all established tags, not just the top 40
+wiki_ops.py tags /path/to/wiki                  # ingest view: top-40 established tags only
+wiki_ops.py tags /path/to/wiki --limit 0        # all established tags
+wiki_ops.py tags /path/to/wiki --audit          # cleanup view: + singletons, dup pairs, untagged
 wiki_ops.py tags /path/to/wiki --json --verbose # machine-readable, plus tag → pages
 ```
 
 Derived from the pages on every call — there is no stored vocabulary file to
-drift. **Ingest reads this before generating tags** (`ingest-update.md` step 7):
-prefer an established tag, then an existing singleton, and coin a new word only
-when nothing fits. That read-then-extend loop is what makes schema.md's
-"reusable across ≥2 pages" rule satisfiable at all; without it each session
-guesses blind and near-synonyms accumulate. `nearDuplicates` pairs are a hint
-for a human or LLM to judge, never an automatic merge — the test is lexical
+maintain or to drift out of sync. A hand-kept registry was considered and
+rejected: every other derived artifact here (`index.md`, `ingest-cache.json`,
+`lint.json`) is regenerable from the pages, and a tag registry would be the
+first to hold truth the pages don't, which is exactly what turns it into a
+maintenance burden. Where a registry looked uniquely useful — knowing that `ai`
+should be spelled `AI` — the canonical form is just the more-used spelling, a
+rule rather than data, so it needs no storage.
+
+**Ingest reads the default view before generating tags** (`ingest-update.md`
+step 7): prefer an established tag, coin a new word only when nothing fits.
+That read-then-extend loop is what makes schema.md's "reusable across ≥2 pages"
+rule satisfiable at all; without it each session guesses blind and near-synonyms
+accumulate.
+
+**Keep the two views apart.** The default is bounded by `--limit`, so it costs
+the same on a 900-page wiki as on a 20-page one (~340 tokens either way) — that
+matters because ingest pays it on every source, and the SOP's first retrieval
+rule is O(top-k), never O(wiki). `--audit` adds the full singleton list, every
+duplicate pair and every untagged page (16KB on a 911-page wiki); that is
+cleanup material, useless mid-ingest, and belongs to `health` or an explicit
+tag-consolidation pass. `nearDuplicates` pairs are ranked highest-impact first
+and are a hint to judge, never an automatic merge — the test is lexical
 (case-folding, CJK character-set overlap, containment), so it finds
 `中东`/`中东局势` but not semantic pairs like `洪门`/`致公堂`.
 

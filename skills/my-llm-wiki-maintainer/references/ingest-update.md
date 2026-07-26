@@ -111,16 +111,20 @@ Goal: compile one raw source into durable wiki pages while preserving traceabili
      python3 scripts/wiki_ops.py tags <root>
      ```
 
-     Prefer an established tag that fits over coining a new one, and prefer an
-     existing singleton over a fresh near-synonym of it; coin a new tag only when
-     nothing in the list covers the page. This is what makes the schema's
-     "reusable across ≥2 pages" rule satisfiable at all — without reading the
-     vocabulary you are guessing blind, and every session's guesses fragment the
-     facet (`近代中国` / `民国政治` / `中国近代史` all arrived this way, from three
-     separate ingests of one subject). The output is deliberately tiny; it is not
-     an `index.md`-style O(wiki) load and does not violate the step-5 budget.
-     Your new tags become the next ingest's vocabulary — that feedback loop is
-     the whole mechanism, so a sloppy tag here costs more than this page.
+     Prefer an established tag that fits over coining a new one; coin a new tag
+     only when nothing in the list covers the page. This is what makes the
+     schema's "reusable across ≥2 pages" rule satisfiable at all — without
+     reading the vocabulary you are guessing blind, and every session's guesses
+     fragment the facet (`近代中国` / `民国政治` / `中国近代史` all arrived this
+     way, from three separate ingests of one subject). Your new tags become the
+     next ingest's vocabulary — that feedback loop is the whole mechanism, so a
+     sloppy tag here costs more than this page.
+
+     The default output is bounded (top-40 established tags, ~340 tokens on a
+     900-page wiki and the same on a 20-page one), so this does not violate the
+     step-5 budget. **Do not pass `--audit` during ingest** — it adds the full
+     singleton list, every duplicate pair and every untagged page, which is
+     cleanup material worth 16KB on a large wiki and useless for tagging one page.
    - **REVIEW blocks are part of the deliverable, not an optional extra.** For every
      source, explicitly decide 0–3 `suggestion` items — the research gaps this source
      opens: claims worth verifying, adjacent topics the wiki lacks, tensions with
