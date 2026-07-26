@@ -12,22 +12,75 @@ import {
 import SharePanel from "../components/SharePanel";
 import { BrandLogo } from "../components/BrandLogo";
 
-type TabKey = "wikis" | "runtime" | "share";
+export type BrowserSettingsTab = "wikis" | "runtime" | "share";
 
-const tabs: Array<{ key: TabKey; label: string; eyebrow: string }> = [
+export const browserSettingsTabs: Array<{
+  key: BrowserSettingsTab;
+  label: string;
+  eyebrow: string;
+}> = [
   { key: "wikis", label: "Wiki 目录", eyebrow: "Library roots" },
   { key: "runtime", label: "运行入口", eyebrow: "Entrypoints" },
   { key: "share", label: "分享管理", eyebrow: "Sharing" },
 ];
 
-const TAB_TITLES: Record<TabKey, string> = {
+const TAB_TITLES: Record<BrowserSettingsTab, string> = {
   wikis: "Wiki 目录",
   runtime: "运行入口",
   share: "分享管理",
 };
 
 export default function DesktopConfig() {
-  const [active, setActive] = useState<TabKey>("wikis");
+  const [active, setActive] = useState<BrowserSettingsTab>("wikis");
+
+  return (
+    <main className="min-h-full bg-paper text-ink">
+      <div className="grid min-h-screen grid-cols-[230px_minmax(0,1fr)]">
+        <aside className="spine flex flex-col border-r border-[rgba(221,211,192,0.14)] bg-spine text-cream">
+          <div className="border-b border-[rgba(221,211,192,0.14)] px-6 py-6">
+            <BrandLogo className="mb-4 h-11 w-11" />
+            <p className="eyebrow text-cream-soft">LLM-Wiki Desktop</p>
+            <h1 className="font-display mt-2 text-2xl font-semibold">设置</h1>
+          </div>
+
+          <nav className="flex-1 p-3">
+            {browserSettingsTabs.map((tab) => {
+              const selected = active === tab.key;
+              return (
+                <button
+                  key={tab.key}
+                  type="button"
+                  onClick={() => setActive(tab.key)}
+                  className={[
+                    "mb-2 w-full rounded-md border px-4 py-3 text-left transition",
+                    selected
+                      ? "border-[rgba(221,211,192,0.32)] bg-[rgba(221,211,192,0.11)] text-cream"
+                      : "border-transparent text-cream-soft hover:border-[rgba(221,211,192,0.16)] hover:bg-[rgba(221,211,192,0.06)] hover:text-cream",
+                  ].join(" ")}
+                >
+                  <span className="font-display block text-base">
+                    {tab.label}
+                  </span>
+                  <span className="font-mono mt-1 block text-[0.66rem] uppercase tracking-[0.18em] opacity-70">
+                    {tab.eyebrow}
+                  </span>
+                </button>
+              );
+            })}
+          </nav>
+        </aside>
+
+        <BrowserSettingsSection active={active} />
+      </div>
+    </main>
+  );
+}
+
+export function BrowserSettingsSection({
+  active,
+}: {
+  active: BrowserSettingsTab;
+}) {
   const [wikis, setWikis] = useState<WikiConfigInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -61,75 +114,35 @@ export default function DesktopConfig() {
   );
 
   return (
-    <main className="min-h-full bg-paper text-ink">
-      <div className="grid min-h-screen grid-cols-[230px_minmax(0,1fr)]">
-        <aside className="spine flex flex-col border-r border-[rgba(221,211,192,0.14)] bg-spine text-cream">
-          <div className="border-b border-[rgba(221,211,192,0.14)] px-6 py-6">
-            <BrandLogo className="mb-4 h-11 w-11" />
-            <p className="eyebrow text-cream-soft">LLM-Wiki Desktop</p>
-            <h1 className="font-display mt-2 text-2xl font-semibold">
-              配置
-            </h1>
+    <section className="min-w-0 overflow-auto">
+      <div className="mx-auto max-w-6xl px-8 py-8">
+        <header className="mb-8 flex flex-wrap items-end justify-between gap-5 border-b border-[var(--rule)] pb-6">
+          <div>
+            <p className="eyebrow">Desktop control panel</p>
+            <h2 className="font-display mt-2 text-4xl font-semibold">
+              {TAB_TITLES[active]}
+            </h2>
           </div>
-
-          <nav className="flex-1 p-3">
-            {tabs.map((tab) => {
-              const selected = active === tab.key;
-              return (
-                <button
-                  key={tab.key}
-                  type="button"
-                  onClick={() => setActive(tab.key)}
-                  className={[
-                    "mb-2 w-full rounded-md border px-4 py-3 text-left transition",
-                    selected
-                      ? "border-[rgba(221,211,192,0.32)] bg-[rgba(221,211,192,0.11)] text-cream"
-                      : "border-transparent text-cream-soft hover:border-[rgba(221,211,192,0.16)] hover:bg-[rgba(221,211,192,0.06)] hover:text-cream",
-                  ].join(" ")}
-                >
-                  <span className="font-display block text-base">
-                    {tab.label}
-                  </span>
-                  <span className="font-mono mt-1 block text-[0.66rem] uppercase tracking-[0.18em] opacity-70">
-                    {tab.eyebrow}
-                  </span>
-                </button>
-              );
-            })}
-          </nav>
-        </aside>
-
-        <section className="min-w-0 overflow-auto">
-          <div className="mx-auto max-w-6xl px-8 py-8">
-            <header className="mb-8 flex flex-wrap items-end justify-between gap-5 border-b border-[var(--rule)] pb-6">
-              <div>
-                <p className="eyebrow">Desktop control panel</p>
-                <h2 className="font-display mt-2 text-4xl font-semibold">
-                  {TAB_TITLES[active]}
-                </h2>
-              </div>
-              <div className="grid grid-cols-2 gap-3 text-right">
-                <Metric label="Wiki" value={String(wikis.length)} />
-                <Metric label="Pages" value={String(totalPages)} />
-              </div>
-            </header>
-
-            {active === "wikis" ? (
-              <WikiDirectoryPanel
-                wikis={wikis}
-                loading={loading}
-                error={error}
-                onWikisChange={setWikis}
-              />
-            ) : active === "runtime" ? (
-              <RuntimePanel />
-            ) : (
-              <SharingPanel wikis={wikis} />
-            )}
+          <div className="grid grid-cols-2 gap-3 text-right">
+            <Metric label="Wiki" value={String(wikis.length)} />
+            <Metric label="Pages" value={String(totalPages)} />
           </div>
-        </section>
+        </header>
+
+        {active === "wikis" ? (
+          <WikiDirectoryPanel
+            wikis={wikis}
+            loading={loading}
+            error={error}
+            onWikisChange={setWikis}
+          />
+        ) : active === "runtime" ? (
+          <RuntimePanel />
+        ) : (
+          <SharingPanel wikis={wikis} />
+        )}
       </div>
-    </main>
+    </section>
   );
 }
 

@@ -5,6 +5,8 @@
   background: var(--color-paper);
 }
 
+#setup-root { min-height: 100%; }
+
 .setup-rail {
   position: relative;
   display: flex;
@@ -213,9 +215,149 @@
 .loading-screen { display: grid; min-height: 100%; place-content: center; justify-items: center; gap: 20px; background: var(--color-spine); }
 .loading-screen .eyebrow { color: var(--color-cream-soft); }
 
+/* Unified settings center. Browser configuration still travels through the
+   authenticated loopback API; Agent capabilities stay on the Tauri-local side
+   of this shell and call Setup Core directly. */
+.settings-shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 232px minmax(0, 1fr);
+  color: var(--color-ink);
+  background: var(--color-paper);
+}
+.settings-rail {
+  position: sticky;
+  z-index: 11;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  padding: 28px 18px 22px;
+  overflow: hidden;
+  color: var(--color-cream);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.025), transparent 34%),
+    var(--color-spine);
+  box-shadow: inset -1px 0 rgba(221,211,192,.12);
+}
+.settings-rail::after {
+  content: "SETTINGS";
+  position: absolute;
+  right: -52px;
+  bottom: 142px;
+  rotate: -90deg;
+  pointer-events: none;
+  color: rgba(221,211,192,.03);
+  font: 600 52px/1 var(--font-display);
+  letter-spacing: .14em;
+}
+.settings-brand {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding: 0 8px 23px;
+  border-bottom: 1px solid rgba(221,211,192,.14);
+}
+.settings-brand .setup-mark { width: 38px; height: 38px; font-size: 18px; }
+.settings-brand .eyebrow { color: var(--color-cream-soft); font-size: 9px; letter-spacing: .18em; }
+.settings-brand h1 { margin-top: 3px; color: var(--color-paper); font: 600 25px/1.1 var(--font-display); }
+.settings-nav {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  flex: 1;
+  padding-top: 22px;
+}
+.settings-nav > p {
+  margin: 18px 10px 5px;
+  color: #70695d;
+  font: 600 9px var(--font-mono);
+  letter-spacing: .2em;
+  text-transform: uppercase;
+}
+.settings-nav > p:first-child { margin-top: 0; }
+.settings-nav button {
+  position: relative;
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  min-height: 52px;
+  padding: 9px 36px 9px 12px;
+  border: 1px solid transparent;
+  color: #a59b89;
+  text-align: left;
+  transition: color .16s ease, background .16s ease, border-color .16s ease, transform .16s ease;
+}
+.settings-nav button:hover {
+  color: var(--color-cream);
+  background: rgba(221,211,192,.045);
+  transform: translateX(2px);
+}
+.settings-nav button.is-active {
+  border-color: rgba(221,211,192,.18);
+  color: var(--color-paper);
+  background: rgba(221,211,192,.09);
+  box-shadow: inset 3px 0 var(--color-cinnabar);
+}
+.settings-nav button span { font: 600 14px var(--font-display); }
+.settings-nav button small {
+  color: #756e62;
+  font: 9px var(--font-mono);
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+.settings-nav button.is-active small { color: var(--color-cream-soft); }
+.settings-nav button i {
+  position: absolute;
+  top: 11px;
+  right: 9px;
+  padding: 3px 5px;
+  color: #6f8875;
+  background: rgba(86,116,94,.13);
+  font: 600 8px var(--font-mono);
+  font-style: normal;
+}
+.settings-nav button i.is-update { color: #d6ba82; background: rgba(151,113,63,.18); }
+.settings-nav button i.is-warn { color: #d5a199; background: rgba(178,63,51,.18); }
+.settings-rail-footer {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: 8px 1fr;
+  gap: 9px;
+  padding: 16px 9px 0;
+  border-top: 1px solid rgba(221,211,192,.14);
+}
+.settings-rail-footer > span {
+  width: 7px;
+  height: 7px;
+  margin-top: 4px;
+  border-radius: 50%;
+  background: #b56d61;
+  box-shadow: 0 0 0 3px rgba(178,63,51,.1);
+}
+.settings-rail-footer > span.is-ready { background: #66816c; box-shadow: 0 0 0 3px rgba(86,116,94,.12); }
+.settings-rail-footer p { color: #756e62; font: 9px/1.65 var(--font-mono); }
+.settings-rail-footer b { display: block; margin-bottom: 2px; color: #aaa08e; font-weight: 500; }
+.settings-content { min-width: 0; min-height: 100vh; overflow: auto; }
+.settings-api-message {
+  width: min(620px, calc(100% - 64px));
+  margin: 15vh auto 0;
+  padding: 32px;
+  border-top: 3px double var(--color-ink);
+  border-bottom: 1px solid var(--rule);
+}
+.settings-api-message h2 { margin-top: 12px; font: 600 34px var(--font-display); }
+.settings-api-message > p:last-child { margin-top: 14px; color: var(--color-ink-soft); font-size: 13px; line-height: 1.8; }
+
 /* The bottom padding clears the fixed repair bar, which grows a progress track
    and a stall note while a repair runs. */
 .manage-shell { min-height: 100%; padding: 42px clamp(34px,5vw,72px) 200px; background: var(--color-paper); }
+.manage-shell.is-embedded { min-height: 100vh; }
 .manage-header { display: flex; align-items: center; justify-content: space-between; padding-bottom: 28px; border-bottom: 3px double var(--color-ink); }
 .manage-header > div { display: flex; align-items: center; gap: 18px; }
 .manage-header h1 { margin-top: 3px; font: 600 34px var(--font-display); }
@@ -292,6 +434,7 @@
 .manual-action-copy { display: block; margin-top: 7px; color: var(--color-cinnabar); font: 600 9px var(--font-mono); transition: color .16s ease; }
 .manual-action-copy:hover { color: var(--color-ink); }
 .repair-bar { position: fixed; z-index: 10; right: 0; bottom: 0; left: 0; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 16px 38px; color: var(--color-paper); background: var(--color-spine); box-shadow: 0 -8px 28px rgba(29,26,22,.16); }
+.settings-shell .repair-bar { left: 232px; }
 .repair-bar.is-done { background: #2f3f33; }
 .repair-bar-copy { display: grid; min-width: 0; gap: 3px; }
 .repair-bar b { overflow: hidden; font: 600 15px var(--font-display); text-overflow: ellipsis; white-space: nowrap; }
@@ -316,6 +459,9 @@
   .toolchain-review > .text-toggle { grid-column: 2; justify-self: start; margin-top: 8px; }
   .toolchain-review-copy > ul { grid-template-columns: 1fr; }
   .manage-grid { grid-template-columns: 1fr; }
+  .settings-shell { grid-template-columns: 196px minmax(0,1fr); }
+  .settings-rail { width: 196px; padding-inline: 13px; }
+  .settings-shell .repair-bar { left: 196px; }
   .asr-install-card { grid-template-columns: 40px minmax(0,1fr); }
   .asr-install-card > button { grid-column: 2; justify-self: start; }
   .complete-view > .asr-install-card { grid-template-columns: 34px minmax(0,1fr) auto; }

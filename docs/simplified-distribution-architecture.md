@@ -236,20 +236,19 @@ setup_repair
 关闭窗口不取消已经开始的操作，重新打开后通过 `setup_status` 恢复展示。是否允许取消由
 具体阶段的原子边界决定，不能通过关闭窗口隐式中断。
 
-安装完成后，托盘保留两个不同入口：
+安装完成后，托盘保留一个入口：
 
 ```text
-Browser 设置…
-Skills 与工具链…
+设置…
 ```
 
-“Browser 设置…”继续打开本地 Web 设置页；“Skills 与工具链…”重新打开 Tauri 内置
-Setup GUI，并显示 Skills Pack、官方工具链、Provider、update、repair 和人工动作状态。
-首次安装和后续工具链管理共用相同的组件与 Setup Core，不复制业务逻辑。
+它重新打开 Tauri 内置的统一设置中心。左侧按职责分为 Browser（Wiki、运行入口、分享）
+和 Agent（Skills 与工具链）；Browser 面板复用经过 Owner 认证的本机配置 API，Agent 面板
+直接调用 Setup Core。首次安装和后续工具链管理共用相同的组件与 Setup Core，不复制业务逻辑。
 
 安装、覆盖、更新和修复等文件写操作不作为本地 HTTP API 暴露，也不得被 relay 转发。
 只有随应用打包且通过 Tauri capability/ACL 授权的 Setup 页面可以调用 mutation commands。
-本地 Web UI 最多读取经过认证的摘要状态，不能直接触发 Setup Core 写操作。
+统一窗口里的 Browser 配置仍只调用既有的本机 HTTP 配置 API，不能直接触发 Setup Core 写操作。
 
 ### 4.3 Skills Pack
 

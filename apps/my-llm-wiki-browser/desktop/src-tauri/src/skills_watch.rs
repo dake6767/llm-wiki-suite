@@ -15,7 +15,7 @@ use tauri::menu::MenuItem;
 /// startup, then once a day.
 const FIRST_CHECK_DELAY: Duration = Duration::from_secs(10);
 const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
-const SETUP_MENU_LABEL: &str = "Skills 与工具链…";
+const SETUP_MENU_LABEL: &str = "设置…";
 
 #[derive(Clone)]
 pub(crate) struct SkillsWatch {
