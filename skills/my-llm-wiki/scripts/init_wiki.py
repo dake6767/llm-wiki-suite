@@ -12,7 +12,7 @@ Layout produced under <path> (mirrors the app's own `create_project`):
   .llm-wiki/project.json   stable identity { "id": <uuid>, "createdAt": <ms> }
   .obsidian/               app.json / appearance.json / core-plugins.json
   schema.md                the Schema layer — conventions any agent follows
-  purpose.md               what this wiki is for (you fill in)
+  purpose.md               what this wiki is for (normally drafted by the Skill)
   raw/sources/             immutable RAW captures (this skill writes here)
   raw/assets/              shared media folder (Obsidian attachment path)
   wiki/                    LLM-generated layer
@@ -30,6 +30,9 @@ Registration: every run also upserts this wiki into the shared registry
 (wikis.py) — *even on the idempotent "exists" path* — so re-running with a new
 `--description` is how you (re)register an already-built wiki for auto-routing.
 Pass `--description` (one line: what belongs here) and optionally `--default`.
+The Skill also passes a complete agent-authored `--purpose-file`; the CLI keeps
+its historical Goal-only fallback for direct callers, but normal Skill-driven
+creation never leaves Purpose placeholders behind.
 
 For an additional wiki, prefer `--slug <directory-name>` over an arbitrary
 `--path`: the script resolves the collection root selected during initial Setup
@@ -39,6 +42,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 import uuid
@@ -95,6 +99,16 @@ PURPOSE_MD = """# Project Purpose
 
 > TBD
 """
+
+PURPOSE_REQUIRED_HEADINGS = (
+    "Goal",
+    "Key Questions",
+    "Scope",
+    "Working Thesis",
+    "Evidence Standard",
+    "Success Criteria",
+)
+PURPOSE_HEADING_RE = re.compile(r"^##[ \t]+(.+?)[ \t]*$", re.MULTILINE)
 
 INDEX_MD = """# Wiki Index
 
@@ -158,6 +172,88 @@ def _write(path: Path, text: str, created: list[str], *, keep_existing: bool = F
     created.append(str(path))
 
 
+def _purpose_section(text: str, heading: str) -> str:
+    """Return one H2 section body without consuming the following heading."""
+    match = re.search(
+        rf"^##[ \t]+{re.escape(heading)}[ \t]*$\n(.*?)(?=^##[ \t]+|\Z)",
+        text,
+        re.MULTILINE | re.DOTALL,
+    )
+    return match.group(1).strip() if match else ""
+
+
+def _has_nonempty_bullet(text: str) -> bool:
+    return bool(re.search(r"^[ \t]*[-*][ \t]+\S", text, re.MULTILINE))
+
+
+def _read_complete_purpose(path: str) -> str:
+    """Read and validate an agent-authored purpose before touching the Wiki.
+
+    The initializer remains deterministic: the Skill does the domain judgment
+    and writes a staged Markdown file; this function only enforces the stable
+    shape that prevents a brand-new Wiki from starting with inert placeholders.
+    """
+    source = native_path(path).resolve()
+    try:
+        text = source.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"cannot read --purpose-file {source}: {exc}") from exc
+
+    errors: list[str] = []
+    if not re.search(r"^# Project Purpose[ \t]*$", text, re.MULTILINE):
+        errors.append("missing `# Project Purpose`")
+
+    headings = set(PURPOSE_HEADING_RE.findall(text))
+    for heading in PURPOSE_REQUIRED_HEADINGS:
+        if heading not in headings:
+            errors.append(f"missing `## {heading}`")
+
+    if "<!--" in text or re.search(
+        r"(?i)\b(?:TBD|TODO)\b|待填写|待补充",
+        text,
+    ):
+        errors.append("contains an initialization placeholder")
+    if re.search(r"(?m)^[ \t]*\d+\.[ \t]*$", text):
+        errors.append("contains an empty numbered question")
+    if re.search(r"(?m)^[ \t]*-[ \t]*$", text):
+        errors.append("contains an empty scope bullet")
+
+    goal = _purpose_section(text, "Goal")
+    if not goal:
+        errors.append("Goal is empty")
+
+    questions = re.findall(
+        r"^[ \t]*\d+\.[ \t]+\S.*$",
+        _purpose_section(text, "Key Questions"),
+        re.MULTILINE,
+    )
+    if not 3 <= len(questions) <= 7:
+        errors.append("Key Questions must contain 3–7 non-empty numbered questions")
+
+    scope = _purpose_section(text, "Scope")
+    in_scope = re.search(
+        r"\*\*In scope:\*\*(.*?)(?=\*\*Out of scope:\*\*|\Z)",
+        scope,
+        re.DOTALL,
+    )
+    out_scope = re.search(r"\*\*Out of scope:\*\*(.*)", scope, re.DOTALL)
+    if not in_scope or not _has_nonempty_bullet(in_scope.group(1)):
+        errors.append("Scope needs at least one non-empty `In scope` bullet")
+    if not out_scope or not _has_nonempty_bullet(out_scope.group(1)):
+        errors.append("Scope needs at least one non-empty `Out of scope` bullet")
+
+    for heading in ("Working Thesis", "Evidence Standard", "Success Criteria"):
+        body = _purpose_section(text, heading)
+        if not body:
+            errors.append(f"{heading} is empty")
+        elif heading != "Working Thesis" and not _has_nonempty_bullet(body):
+            errors.append(f"{heading} needs at least one non-empty bullet")
+
+    if errors:
+        raise ValueError("invalid --purpose-file: " + "; ".join(errors))
+    return text.rstrip() + "\n"
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Initialize a new LLM-WIKI repo (llm_wiki / Obsidian compatible).")
     target = ap.add_mutually_exclusive_group(required=True)
@@ -166,12 +262,25 @@ def main() -> None:
     ap.add_argument("--name", default="", help="human label for the wiki (default: dir name)")
     ap.add_argument("--description", required=True,
                     help="one line: what content belongs here — enables topic auto-routing")
+    ap.add_argument(
+        "--purpose-file",
+        help=(
+            "complete agent-authored purpose.md; validates Goal, 3–7 Key Questions, "
+            "Scope, Working Thesis, Evidence Standard, and Success Criteria"
+        ),
+    )
     ap.add_argument("--default", action="store_true",
                     help="make this the default wiki in the registry")
     args = ap.parse_args()
 
     if not args.description.strip():
         ap.error("--description must be a non-empty topical routing scope")
+    try:
+        complete_purpose = (
+            _read_complete_purpose(args.purpose_file) if args.purpose_file else None
+        )
+    except ValueError as exc:
+        ap.error(str(exc))
 
     if args.slug is not None:
         if (
@@ -221,8 +330,8 @@ def main() -> None:
         _write(root / "schema.md", SCHEMA_TEMPLATE.read_text(encoding="utf-8"), created, keep_existing=True)
     else:
         created.append(f"(schema template missing at {SCHEMA_TEMPLATE} — skipped schema.md)")
-    purpose = PURPOSE_MD
-    if args.description:
+    purpose = complete_purpose or PURPOSE_MD
+    if complete_purpose is None and args.description:
         purpose = PURPOSE_MD.replace(
             "## Goal\n\n<!-- What are you trying to understand or build? -->",
             f"## Goal\n\n{args.description}",
@@ -241,7 +350,16 @@ def main() -> None:
     _write(root / ".obsidian" / "core-plugins.json", json.dumps(OBSIDIAN_CORE_PLUGINS, indent=2), created)
 
     reg = _register(root, name, args)
-    print(_summary("initialized", root, name, created, reg=reg))
+    print(
+        _summary(
+            "initialized",
+            root,
+            name,
+            created,
+            reg=reg,
+            purpose_complete=complete_purpose is not None,
+        )
+    )
 
 
 def _register(root, name, args):
@@ -287,8 +405,19 @@ next steps (purpose.md and schema.md are the only per-wiki files every ingest re
      enough content to be worth filling the domain table and refreshing overview.md.
 """
 
+NEXT_STEPS_PURPOSE_COMPLETE = """
+next steps:
+  1. purpose.md is complete and ready to guide ingest; revise it conversationally
+     when the Wiki's goal or boundaries change.
+  2. leave schema.md's domain table empty for now. Areas are easier to name after
+     a dozen-odd sources than on day one.
+  3. leave tags alone entirely — the vocabulary grows from what you capture.
+  4. run `wiki_ops.py health <root>` occasionally; once the corpus is mature,
+     review proposed domains before writing the controlled table.
+"""
 
-def _summary(status, root, name, created, note="", reg=""):
+
+def _summary(status, root, name, created, note="", reg="", purpose_complete=False):
     lines = [f"status: {status}", f"wiki: {root}", f"name: {name}", "raw_dir: raw/sources"]
     if reg:
         lines.append(f"registered: {reg}")
@@ -298,7 +427,7 @@ def _summary(status, root, name, created, note="", reg=""):
         lines.append("created:")
         lines += [f"  - {c}" for c in created]
     if status == "initialized":
-        lines.append(NEXT_STEPS)
+        lines.append(NEXT_STEPS_PURPOSE_COMPLETE if purpose_complete else NEXT_STEPS)
     return "\n".join(lines)
 
 

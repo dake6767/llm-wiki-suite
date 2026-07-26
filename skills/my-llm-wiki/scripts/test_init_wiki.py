@@ -21,6 +21,7 @@ MAINTAINER_OPS = (
     / "scripts"
     / "wiki_ops.py"
 )
+SCHEMA_TEMPLATE = SCRIPTS.parent / "assets" / "schema.md"
 
 
 class WikiCreationTests(unittest.TestCase):
@@ -45,6 +46,50 @@ class WikiCreationTests(unittest.TestCase):
             json.dumps({"version": 1, "wikis": entries}, ensure_ascii=False),
             encoding="utf-8",
         )
+
+    def write_complete_purpose(self, name: str = "purpose.md") -> Path:
+        purpose = self.root / name
+        purpose.write_text(
+            """# Project Purpose
+
+## Goal
+
+建立关于宋代历史的可追溯知识库，用于理解事件、人物与制度演变。
+
+## Key Questions
+
+1. 宋代政治制度如何形成并变化？
+2. 财政、军事与地方治理之间有什么关系？
+3. 一手史料与现代研究在哪些问题上存在分歧？
+4. 宋与周边政权的互动如何影响内部演变？
+
+## Scope
+
+**In scope:**
+- 北宋与南宋的政治、经济、军事和社会文化
+- 与宋直接相关的辽、西夏、金、蒙古材料
+
+**Out of scope:**
+- 与宋代没有直接关系的通史内容
+- 无法追溯来源的网络轶闻
+
+## Working Thesis
+
+> 初始阶段不预设单一结论；先建立可靠的时间线、人物和制度关系。
+
+## Evidence Standard
+
+- 区分一手史料、现代研究和本库推断。
+- 对争议问题并列保留不同解释及其来源。
+
+## Success Criteria
+
+- 能回答主要事件的时间、人物、制度背景和证据来源。
+- 能区分史实、史料记载、学者解释和开放争议。
+""",
+            encoding="utf-8",
+        )
+        return purpose
 
     def test_collection_root_prefers_the_wiki_recorded_by_setup(self) -> None:
         initialized = self.root / "chosen-collection" / "my-llm-wiki"
@@ -157,6 +202,93 @@ class WikiCreationTests(unittest.TestCase):
         self.assertNotEqual(empty.returncode, 0)
         self.assertIn("non-empty topical routing scope", empty.stderr)
         self.assertFalse(self.root.joinpath("empty-description").exists())
+
+    def test_purpose_file_creates_a_complete_purpose_with_standard_schema(self) -> None:
+        target = self.root / "complete-history"
+        purpose = self.write_complete_purpose()
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(INIT),
+                "--path",
+                str(target),
+                "--name",
+                "宋史",
+                "--description",
+                "宋代政治、制度、财政、军事、社会文化、人物与史料研究",
+                "--purpose-file",
+                str(purpose),
+            ],
+            capture_output=True,
+            text=True,
+            env=self.env,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            target.joinpath("purpose.md").read_text(encoding="utf-8"),
+            purpose.read_text(encoding="utf-8"),
+        )
+        self.assertEqual(
+            target.joinpath("schema.md").read_bytes(),
+            SCHEMA_TEMPLATE.read_bytes(),
+        )
+        self.assertIn("purpose.md is complete and ready to guide ingest", result.stdout)
+        self.assertNotIn("fill in purpose.md", result.stdout)
+
+    def test_invalid_purpose_file_fails_before_creating_or_registering(self) -> None:
+        target = self.root / "invalid-purpose"
+        purpose = self.root / "incomplete-purpose.md"
+        purpose.write_text(
+            """# Project Purpose
+
+## Goal
+
+历史
+
+## Key Questions
+
+1.
+2.
+3.
+
+## Scope
+
+**In scope:**
+-
+
+**Out of scope:**
+-
+
+## Working Thesis
+
+> TBD
+""",
+            encoding="utf-8",
+        )
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(INIT),
+                "--path",
+                str(target),
+                "--description",
+                "历史",
+                "--purpose-file",
+                str(purpose),
+            ],
+            capture_output=True,
+            text=True,
+            env=self.env,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("invalid --purpose-file", result.stderr)
+        self.assertIn("Evidence Standard", result.stderr)
+        self.assertFalse(target.exists())
+        self.assertFalse(self.registry.exists())
 
     def test_registration_failure_is_not_reported_as_success(self) -> None:
         blocker = self.root / "not-a-directory"

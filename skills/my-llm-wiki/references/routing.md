@@ -56,11 +56,12 @@ or to **edit a description**. Re-running `init_wiki.py … --description "…"` 
 same upsert and is safe (project files stay untouched on the idempotent path).
 
 For a new additional wiki, use the canonical initializer's collection-aware
-form:
+form after generating a complete Purpose per `references/initialize.md`:
 
 ```bash
 python3 <skill>/scripts/init_wiki.py --slug history-wiki --name 历史 \
-  --description "中国史 / 世界史 / 历史人物 / 制度与事件"
+  --description "中国史 / 世界史 / 历史人物 / 制度与事件" \
+  --purpose-file "<temporary complete purpose.md>"
 ```
 
 `--slug` resolves the collection root from Setup's recorded `wiki_path`, then

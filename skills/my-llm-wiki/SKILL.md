@@ -210,33 +210,49 @@ The canonical initializer both scaffolds the repository and upserts the shared
 topic-routing registry; a directory tree without that registry entry is an
 incomplete result.
 
-For an additional Wiki, first resolve the collection chosen during initial Setup:
+Read `references/initialize.md` completely before creating or repositioning a
+Wiki. A user's topic sentence is sufficient input: infer the routing description
+and write a complete, purpose-built `purpose.md` for them. Do not hand them the
+blank template as homework. `schema.md` remains the bundled project contract;
+leave its domain table empty until real content reveals stable areas.
+
+For an additional Wiki, first list the registry and resolve the collection chosen
+during initial Setup:
 
 ```bash
+python3 <skill>/scripts/wikis.py list --json
 python3 <skill>/scripts/wikis.py collection-root
 ```
 
-That directory is the default home for every new Wiki repository. Ask for a
-human-facing name and a distinct one-line topical description; infer and show a
-safe directory slug. Do not ask the user to invent another location when the
-collection root resolves. Ask for an explicit path only when resolution fails or
-the user requested a different location.
+That directory is the default home for every new Wiki repository. Infer a
+human-facing name, a safe directory slug, and a distinct one-line topical routing
+description from the request. Continue without a blocking question when those
+choices are clear. Ask one concise question only when the scope materially
+overlaps an existing Wiki, the intended use would change the evidence rules, or
+the collection root cannot be resolved safely.
 
-Create a sibling repository without moving the current default:
+Generate the full Purpose contract from `references/initialize.md`, stage it in a
+fresh temporary directory, and create a sibling repository without moving the
+current default:
 
 ```bash
 python3 <skill>/scripts/init_wiki.py --slug <directory-name> \
-  --name "<name>" --description "<one-line topical scope>"
+  --name "<name>" \
+  --description "<one-line topical routing scope>" \
+  --purpose-file "<temporary complete purpose.md>"
 ```
 
 For an intentional location override, replace `--slug` with `--path <root>`.
 Use `--default` only when the user explicitly wants the new Wiki to receive
 otherwise-unclassified captures.
 
-The command is idempotent and registers the wiki. Make descriptions distinct
-enough for topic routing. Before reporting success, run `wikis.py list --json`
-and verify the exact path, non-empty description, and intended default flag.
-Read `references/routing.md` for registry operations.
+The initializer validates that the staged Purpose has a real Goal, 3–7 Key
+Questions, populated In/Out scope, Working Thesis, Evidence Standard, and Success
+Criteria before it writes anything. The command is idempotent and registers the
+Wiki. Before reporting success, read back `purpose.md`, confirm the standard
+`schema.md` was used, then run `wikis.py list --json` and verify the exact path,
+name, description, and intended default flag. Read `references/routing.md` for
+registry operations.
 
 ## Resolve the target wiki
 

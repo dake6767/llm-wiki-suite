@@ -1,5 +1,5 @@
 {
   "schema": 1,
-  "pack_version": "2.2.2",
-  "pack_notes": "新建 Wiki 统一由 my-llm-wiki 的 canonical initializer 负责：默认创建在首次 Setup 选择的 Wiki collection 下，并强制写入带非空主题描述的 wikis.json 路由项；maintainer 旧 init 入口只做安全转发，避免再生成未注册的仓库。"
+  "pack_version": "2.3.0",
+  "pack_notes": "新建 Wiki 现在只需提供主题：my-llm-wiki 会自动生成完整的 purpose.md（目标、关键问题、范围、工作假设、证据标准与成功标准），并在写入前验证；schema.md 继续使用标准模板，domain/tag 随真实语料成熟后再形成。"
 }

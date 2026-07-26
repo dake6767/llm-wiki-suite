@@ -131,7 +131,7 @@
       "id": 5,
       "name": "create-additional-wiki-in-initialized-collection-and-register-route",
       "prompt": "帮我创建一个新的 Wiki 仓：名称“历史”，目录名 llm-wiki-history，范围是“中外历史：朝代、人物、制度、战争、经济、社会、思想与文化”。使用首次初始化 Wiki 时选择的目录，不要改默认库。",
-      "expected_output": "my-llm-wiki owns the request. It resolves the initialized collection root, creates llm-wiki-history as a sibling of the original Wiki through scripts/init_wiki.py --slug, and verifies a wikis.json entry with name=历史, the non-empty topical description, and default=false. It does not ask the user to choose an arbitrary filesystem location and does not use the maintainer's old scaffold implementation.",
+      "expected_output": "my-llm-wiki owns the request. It resolves the initialized collection root, infers a history/humanities Wiki brief, stages a complete purpose.md, and creates llm-wiki-history as a sibling through scripts/init_wiki.py --slug ... --purpose-file. The standard schema.md remains unchanged with an empty domain table. The agent verifies the purpose and a wikis.json entry with name=历史, a distinct topical description, and default=false.",
       "files": [],
       "assertions": [
         {
@@ -144,6 +144,15 @@
           "text": "The new repository contains schema.md, purpose.md, raw/sources/, and wiki/index.md"
         },
         {
+          "text": "purpose.md has populated Goal, 3–7 Key Questions, In scope, Out of scope, Working Thesis, Evidence Standard, and Success Criteria with no TBD, template comments, or empty list items"
+        },
+        {
+          "text": "The history Purpose distinguishes primary material, secondary research, and inference; it preserves competing interpretations instead of treating newer sources as automatic replacements"
+        },
+        {
+          "text": "schema.md is the bundled standard schema and its controlled domain table is left empty at creation"
+        },
+        {
           "text": "wikis.json contains the exact new path, name 历史, the full non-empty topical description, and default: false"
         },
         {
@@ -151,6 +160,33 @@
         },
         {
           "text": "The agent does not ask for another location because the initialized collection root resolves"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "name": "create-technical-wiki-from-topic-only",
+      "prompt": "帮我建一个“大模型推理优化”Wiki，以后相关资料都整理到这里。",
+      "expected_output": "The topic sentence is sufficient. The Skill inspects registered Wikis, infers a name, safe slug, distinct routing description, and technical archetype without asking the user to author configuration files. It generates a complete technical purpose.md, uses the bundled schema with no initial domains/tags, initializes and registers the Wiki, then reports the inferred inclusion/exclusion boundary for easy correction.",
+      "files": [],
+      "assertions": [
+        {
+          "text": "The agent does not ask the user to write purpose.md, schema.md, tags, domains, or choose a filesystem location when the collection root resolves"
+        },
+        {
+          "text": "The new purpose.md has populated Goal, 3–7 Key Questions, Scope, Working Thesis, Evidence Standard, and Success Criteria with no placeholders"
+        },
+        {
+          "text": "The technical Purpose covers mechanisms and trade-offs and requires version, environment, or reproducibility context for performance and compatibility claims"
+        },
+        {
+          "text": "The routing description concretely identifies large-model inference optimization material and is not merely a slogan or a copy of the Goal"
+        },
+        {
+          "text": "The initializer is invoked with --purpose-file, the bundled schema is preserved, and the domain table is empty"
+        },
+        {
+          "text": "The final response briefly states what will be included, what will be excluded, and that domains will be proposed after the corpus matures"
         }
       ]
     }
