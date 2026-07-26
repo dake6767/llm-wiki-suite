@@ -12,7 +12,6 @@
     { "text": "Lint my knowledge base and show me the broken wikilinks.", "family": "lint" },
     { "text": "Save that answer back into the wiki so the knowledge compounds.", "family": "save" },
     { "text": "Refresh the overview page for this wiki.", "family": "overview" },
-    { "text": "Initialize a new LLM Wiki with purpose.md, schema.md, and wiki/index.md.", "family": "init" },
     { "text": "把这个 wiki 里已沉淀的 raw 源编译成相互链接的页面。", "family": "ingest" },
     { "text": "维护我的 LLM Wiki：跑一遍 review 队列，处理收件箱里的新源。", "family": "review" },
     { "text": "对知识库做 lint，检查坏链和缺失的 frontmatter。", "family": "lint" },
@@ -21,6 +20,8 @@
     { "text": "刷新这个 wiki 的 overview 概览页。", "family": "overview" }
   ],
   "near_neighbor": [
+    { "text": "Initialize a new LLM Wiki with purpose.md, schema.md, and wiki/index.md.", "family": "init-new-wiki" },
+    { "text": "帮我创建一个新的 wiki 仓，专门放中外历史资料。", "family": "init-new-wiki" },
     { "text": "Save this 公众号 article to my wiki.", "family": "capture" },
     { "text": "Clip this X post into my knowledge base.", "family": "capture" },
     { "text": "Archive this link as a faithful Markdown original with its images.", "family": "capture" },

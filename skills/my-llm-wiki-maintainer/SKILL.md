@@ -1,8 +1,8 @@
 ---
 name: my-llm-wiki-maintainer
 description: >-
-  Operate an existing agent-native LLM Wiki: initialize it; compile already
-  captured RAW sources into interlinked pages; update or merge pages and indexes;
+  Operate an existing agent-native LLM Wiki: compile already captured RAW
+  sources into interlinked pages; update or merge pages and indexes;
   run review, deep research, dedup, lint, saved answers, and overview
   refreshes within one explicit project root. 用于维护与运营 LLM Wiki，把已沉淀的 RAW
   编译成互链页面，并执行 review、research、lint、去重与回存。Do not fetch or
@@ -10,7 +10,8 @@ description: >-
   idea into RAW; that upstream work belongs to my-llm-wiki. Do not own read-only
   wiki lookups (“查一下知识库”, “wiki 里搜 X”, “知识库里有没有…”, “之前存过…吗”,
   “what does my wiki say about X”); that query entrance belongs to the sibling
-  my-llm-wiki-search skill.
+  my-llm-wiki-search skill. Do not create or initialize a new Wiki repository;
+  that belongs to my-llm-wiki because creation must also register topic routing.
 ---
 
 # LLM Wiki Maintainer
@@ -22,6 +23,10 @@ Use this skill to act as the maintainer of an LLM Wiki: read raw sources, compil
 ## Hard Rules
 
 - Resolve one project root before doing anything. A project root contains `purpose.md`, `schema.md`, `wiki/`, and usually `raw/sources/`.
+- New repository creation is an upstream boundary: hand it to `my-llm-wiki` and
+  its canonical `scripts/init_wiki.py`. Do not use this skill's maintenance
+  helper as a scaffolder; creation is not complete until `wikis.json` contains
+  the new path and its non-empty routing description.
 - Keep all state per project under that root. Never write a global review/cache/research file for multiple wikis.
 - Treat `raw/sources/` as immutable source material. Write knowledge products under `wiki/`. Keep App-compatible review/lint state under `.llm-wiki/` and Skill-only state under `.llm-wiki/agent/`.
 - Use deterministic scripts for path checks, caches, index merging, review queue edits, and lint. Use the LLM for analysis, synthesis, semantic merge, and conservative semantic review.
@@ -116,7 +121,7 @@ dispatch handle alone.
 
 ## Workflow
 
-1. Identify the requested operation: initialize, ingest, flush pending (process the inbox), update, review, deep research, dedup, lint, query, save, or refresh overview.
+1. Identify the requested operation: ingest, flush pending (process the inbox), update, review, deep research, dedup, lint, query, save, or refresh overview. Hand new-Wiki initialization to `my-llm-wiki`.
 2. Resolve and validate the project root.
 3. Load only the reference needed for the operation:
    - File/REVIEW output contract (block shapes, wikilink + filename rules): `references/output-blocks.md`
@@ -135,7 +140,9 @@ dispatch handle alone.
 
 ## Core Operations
 
-- **Initialize**: create the standard folder layout and template files from `assets/templates/`.
+- **Initialization boundary**: `my-llm-wiki` owns new repositories, collection-root
+  placement, and routing registration. This maintainer starts only after an
+  explicit project root already exists.
 - **Ingest**: analyze a source, emit FILE/REVIEW blocks, run the conflict sentinel (`wiki_ops.py neighbors` + direct-conflict check → `contradiction` review; see `references/ingest-update.md` → Conflict Sentinel), safely apply FILE blocks, merge index deltas, persist review items, and update ingest cache. Gate large sources first with `probe-source`: a long report / big PDF flattened into one un-chunked `.md` takes the two-phase **MAP/REDUCE** path (chunk → per-chunk extract → cross-chunk dedupe → emit blocks) — see `references/large-source-ingest.md`.
 - **Flush pending (process the inbox)**: ingest every raw source not yet synthesized for a wiki. List them with `scripts/wiki_ops.py cache pending <root>` — it returns the sources with no cache entry (`new`) or a changed hash (`changed`) — then ingest each per the Ingest flow. `ingest-cache.json` is the authoritative "already synthesized" ledger; a RAW file's `tags: [inbox]` is only an upstream "freshly captured" hint, never the dedupe key. Operates on the one explicit `<root>` you are given — wiki selection is the caller's job. As the batch's last step, run a scoped semantic lint (`wiki_ops.py lint-scope <root>` → checks on `scope[]` → `--mark`; see `references/lint-query-save.md`) — a batch draining is the contradiction-prone moment.
 - **Update**: re-ingest only changed sources; merge existing content pages instead of overwriting.

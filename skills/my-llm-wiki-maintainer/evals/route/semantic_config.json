@@ -72,10 +72,6 @@
         "save it back into the wiki",
         "refresh the overview",
         "regenerate the overview",
-        "initialize a new llm wiki",
-        "initialize a wiki",
-        "initialize the llm wiki",
-        "set up an llm wiki",
         "purpose.md",
         "schema.md",
         "跑一遍 review 队列",
@@ -90,13 +86,26 @@
         "回存",
         "刷新概览",
         "刷新 overview",
-        "概览页",
-        "初始化 wiki",
-        "初始化一个 wiki"
+        "概览页"
       ]
     }
   },
   "negative_concepts": {
+    "initialize_new_wiki": {
+      "weight": 0.42,
+      "exclusive": true,
+      "phrases": [
+        "initialize a new llm wiki",
+        "initialize a wiki",
+        "create a new wiki repository",
+        "set up an llm wiki",
+        "初始化 wiki",
+        "初始化一个 wiki",
+        "新建一个 wiki",
+        "创建一个新的 wiki 仓",
+        "创建新的wiki仓"
+      ]
+    },
     "capture_into_raw": {
       "weight": 0.32,
       "exclusive": true,

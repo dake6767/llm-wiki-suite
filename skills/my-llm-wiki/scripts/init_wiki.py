@@ -30,6 +30,10 @@ Registration: every run also upserts this wiki into the shared registry
 (wikis.py) — *even on the idempotent "exists" path* — so re-running with a new
 `--description` is how you (re)register an already-built wiki for auto-routing.
 Pass `--description` (one line: what belongs here) and optionally `--default`.
+
+For an additional wiki, prefer `--slug <directory-name>` over an arbitrary
+`--path`: the script resolves the collection root selected during initial Setup
+and creates the new repository beside the original wiki.
 """
 from __future__ import annotations
 
@@ -156,15 +160,38 @@ def _write(path: Path, text: str, created: list[str], *, keep_existing: bool = F
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Initialize a new LLM-WIKI repo (llm_wiki / Obsidian compatible).")
-    ap.add_argument("--path", required=True, help="wiki root to create (e.g. ~/llm-wiki)")
+    target = ap.add_mutually_exclusive_group(required=True)
+    target.add_argument("--path", help="explicit wiki root (use only when overriding the initialized collection)")
+    target.add_argument("--slug", help="one directory name to create under the initialized wiki collection")
     ap.add_argument("--name", default="", help="human label for the wiki (default: dir name)")
-    ap.add_argument("--description", default="",
+    ap.add_argument("--description", required=True,
                     help="one line: what content belongs here — enables topic auto-routing")
     ap.add_argument("--default", action="store_true",
                     help="make this the default wiki in the registry")
     args = ap.parse_args()
 
-    root = native_path(args.path).resolve()
+    if not args.description.strip():
+        ap.error("--description must be a non-empty topical routing scope")
+
+    if args.slug is not None:
+        if (
+            not args.slug.strip()
+            or args.slug != args.slug.strip()
+            or any(separator in args.slug for separator in ("/", "\\"))
+            or args.slug in {".", ".."}
+        ):
+            ap.error("--slug must be one directory name, not a path")
+        if wikis is None:
+            ap.error("--slug needs wikis.py to resolve the initialized collection root")
+        collection = wikis.collection_root()
+        if collection is None:
+            ap.error(
+                "cannot resolve the initialized wiki collection; pass --path only "
+                "after confirming an explicit location"
+            )
+        root = (collection / args.slug).resolve()
+    else:
+        root = native_path(args.path).resolve()
     name = args.name or root.name
     today = time.strftime("%Y-%m-%d")
 
@@ -219,17 +246,20 @@ def main() -> None:
 
 def _register(root, name, args):
     """Upsert this wiki into the shared registry so it's known to auto-routing.
-    Runs on every init (fresh or idempotent). Returns a short status string for
-    the summary, or a note if the registry module is unavailable."""
+    Runs on every init (fresh or idempotent). Registration failure is terminal:
+    a scaffold without a routing entry is not a completed Wiki creation."""
     if wikis is None:
-        return "unavailable (wikis.py not importable — skipped)"
+        raise SystemExit(
+            "error: Wiki files exist, but routing registration failed because "
+            "wikis.py is unavailable"
+        )
     try:
         entry = wikis.register(str(root), name, args.description, args.default)
-    except Exception as e:  # registry must never break scaffolding
-        return f"failed ({e})"
+    except Exception as e:  # surface the incomplete result instead of claiming success
+        raise SystemExit(
+            f"error: Wiki files exist, but routing registration failed: {e}"
+        ) from e
     bits = [f"default={str(entry['default']).lower()}"]
-    if not args.description:
-        bits.append("no description — pass --description to enable topic routing")
     return f"{wikis.registry_path()}  ({', '.join(bits)})"
 
 

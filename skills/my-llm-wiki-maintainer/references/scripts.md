@@ -6,14 +6,16 @@ All commands use:
 python3 /path/to/my-llm-wiki-maintainer/scripts/wiki_ops.py <command>
 ```
 
-## Root And Init
+## Root
 
 ```bash
 wiki_ops.py resolve-root /path/to/wiki/raw/sources/file.md
-wiki_ops.py init /path/to/new-wiki
 ```
 
-`init` creates the standard wiki tree, templates, `.llm-wiki/` App state, `.llm-wiki/agent/` Skill state, and Obsidian compatibility files. Use `--force` only when intentionally replacing templates/state.
+New Wiki creation is intentionally not a maintainer operation. Load
+`my-llm-wiki` and use its canonical `scripts/init_wiki.py`; that path places
+additional repositories in the initialized collection and registers the
+non-empty topic description in `wikis.json`.
 
 ## Index
 
