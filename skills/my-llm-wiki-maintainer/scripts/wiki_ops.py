@@ -1952,8 +1952,8 @@ def cmd_schema_upgrade(args: argparse.Namespace) -> None:
 # schema.md asks that every tag be "reusable across ≥2 pages", but an ingest
 # agent generating tags for a new page has no way to honor that blind: it can't
 # see what the corpus already uses, so each session coins fresh words and
-# near-synonyms pile up (one wiki accumulated `近代中国`, `民国政治` and
-# `中国近代史` from three separate ingests of the same subject). The vocabulary
+# near-synonyms pile up (one wiki accumulated `大模型`, `LLM` and `大语言模型`
+# from three separate ingests of the same subject). The vocabulary
 # has to be readable *back* into ingest, not merely written out — that feedback
 # loop is what makes the facet converge instead of sprawl, and it's why the
 # vocabulary is derived from the corpus on every call rather than stored in a
@@ -1974,12 +1974,13 @@ def _tag_near_duplicate(a: str, b: str) -> str | None:
 
     - Case-folded equality catches `YouTube` / `youtube`.
     - CJK pairs need *two* tests, because Chinese near-synonyms fail in two
-      different shapes. Morpheme reordering (`近代中国` vs `中国近代史`) isn't a
-      substring relation at all, so character-set Jaccard catches it — that pair
-      scores 0.80 while unrelated `孙中山`/`中国` stays at 0.25. Specialization
-      (`中东` vs `中东局势`, `霸权` vs `美国霸权`) *is* nesting, but Jaccard
-      penalizes the length gap down to 0.50 and misses it, so containment covers
-      that half. Either test firing is enough.
+      different shapes. An expansion like `大模型` vs `大语言模型` is not a
+      substring relation at all — the shared characters are not contiguous — so
+      character-set Jaccard catches it at 0.60, while a merely adjacent pair
+      like `大模型`/`模型压缩` stays at 0.40 and is left alone. Specialization
+      (`检索` vs `检索增强`) *is* nesting, but Jaccard penalizes the length gap
+      down to 0.50 and would miss it, so containment covers that half. Either
+      test firing is enough.
     - ASCII pairs use containment with a length floor, so `SEO` doesn't swallow
       every tag that happens to contain those letters.
 
@@ -2003,10 +2004,10 @@ def _tag_near_duplicate(a: str, b: str) -> str | None:
 
 # Word-ish runs, ASCII and CJK scored separately. Splitting on whitespace alone
 # was actively harmful: a query written the way the docs show it —
-# `"孙中山 / 洪门"` — made `/` its own term, and `/` occurs in every body
+# `"检索增强 / 向量数据库"` — made `/` its own term, and `/` occurs in every body
 # wikilink (`[[entities/…]]`), so it matched the entire corpus. A nonsense query
 # containing a slash returned 40 confidently "relevant" tags. The mirror-image
-# failure was CJK punctuation: `孙中山，洪门` has no whitespace, so the whole
+# failure was CJK punctuation: `检索增强，向量数据库` has no whitespace, so the whole
 # string became one term and matched nothing. Both directions are worse than a
 # crude match — one fabricates relevance, the other silently reports new ground.
 TAG_QUERY_TOKEN_RE = re.compile(
@@ -2021,10 +2022,15 @@ def tag_query_terms(query: str) -> list[str]:
     `v2.1` are real tags); everything else that isn't alphanumeric or CJK is a
     separator. Single characters are dropped — a lone `党` or `a` matches
     almost everything and only blurs the ranking.
+
+    Trailing `+` and `#` are **kept**, unlike `.`/`-`/`_` which are usually
+    sentence punctuation. Stripping them turned `C++` and `C#` into a bare `c`,
+    which then failed the length filter, so two ordinary subjects for a
+    technical wiki were rejected outright as "no usable search terms".
     """
     terms: list[str] = []
     for raw in TAG_QUERY_TOKEN_RE.findall(query or ""):
-        token = raw.strip("-._#+").lower()
+        token = raw.rstrip("-._").lower()  # regex already guarantees an alnum start
         if len(token) >= 2:
             terms.append(token)
     return list(dict.fromkeys(terms))
@@ -2151,10 +2157,35 @@ TAG_SINGLETON_TAIL = 25  # unscoped promotion window — see cmd_tags
 
 def cmd_tags(args: argparse.Namespace) -> None:
     root = resolve_root(Path(args.project_root))
-    scope_paths = _read_pages_paths(args) or None
-    if scope_paths is None and args.q and not tag_query_terms(args.q):
+    # `or None` here silently turned an explicitly empty --paths-file into an
+    # unscoped call, which then printed the global singleton tail — an agent
+    # whose retrieval found nothing would read a list of unrelated tags as "the
+    # tags relevant to this source". Absent scope and empty scope are different
+    # questions and must not collapse into the same answer. Same reason missing
+    # pages are an error rather than "0 tags on 1 given pages": that phrasing
+    # reads as "new ground for the wiki", which is a claim about the corpus,
+    # not about a typo'd path.
+    scope_paths: list[str] | None = None
+    if args.paths or args.paths_file:
+        scope_paths = _read_pages_paths(args)
+        if not scope_paths:
+            die("--paths/--paths-file was given but resolved to zero paths. If the "
+                "retrieval working set is genuinely empty, omit the flag (or use --q) "
+                "rather than passing an empty scope.")
+        missing = [p for p in scope_paths
+                   if not (root / "wiki" / normalize_rel(p).removeprefix("wiki/")).is_file()]
+        if len(missing) == len(scope_paths):
+            die("none of the --paths/--paths-file entries exist under wiki/: "
+                + ", ".join(missing[:5]) + ("…" if len(missing) > 5 else ""))
+        if missing:
+            print(f"# warning: {len(missing)} of {len(scope_paths)} scope paths do not exist "
+                  f"under wiki/ and were ignored: " + ", ".join(missing[:5])
+                  + ("…" if len(missing) > 5 else ""), file=sys.stderr)
+            # Drop them, or the header would claim more pages than it read.
+            scope_paths = [p for p in scope_paths if p not in set(missing)]
+    elif args.q and not tag_query_terms(args.q):
         die("--q has no usable search terms (only punctuation / single characters). "
-            "Pass topic words or entity names, e.g. --q \"孙中山 洪门 致公堂\".")
+            "Pass topic words or entity names, e.g. --q \"检索增强 向量数据库 嵌入\".")
     vocab = tag_vocabulary(root, query=args.q, scope_top=args.scope_top,
                            scope_paths=scope_paths,
                            with_duplicates=args.audit or bool(args.json))

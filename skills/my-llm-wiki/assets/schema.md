@@ -119,8 +119,8 @@ across ≥2 pages:
   a word coined by the previous ingest would be invisible and could never reach 2.
   The vocabulary is derived from the pages themselves, so each ingest both reads
   it and extends it — that loop is what makes the facet converge. Skipping the
-  read is how one wiki ended up with `近代中国`, `民国政治` and `中国近代史` as
-  three separate tags for one subject.
+  read is how one wiki ended up with `大模型`, `LLM` and `大语言模型` as three
+  separate tags for one subject.
 - **No type/domain semantics.** Don't put `concept`/`entity` or domain words in
   `tags` — those live in `type` and `domain`.
 - **Never carry RAW capture frontmatter into wiki tags as a substitute for real

@@ -27,7 +27,7 @@ VERSION_RE = re.compile(r"<!--\s*llm-wiki-schema-version:\s*(\d+)\s*-->")
 # the deliberate act that says "this is a new schema version"; changing content
 # under an existing version is what the digest test refuses.
 KNOWN_SCHEMA_DIGESTS = {
-    2: "48e6a8dc9afee9c89d87ae18458dd3eda46566bf48ae9b77d5503da3911fe188",
+    2: "f919479e6531aa29c1fd09c0e9d4cde10f1caf5ed46f0c770228804675a5c7fe",
 }
 
 

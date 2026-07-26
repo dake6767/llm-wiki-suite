@@ -127,8 +127,8 @@ Goal: compile one raw source into durable wiki pages while preserving traceabili
      only when nothing in the list covers the page. This is what makes the
      schema's "reusable across ≥2 pages" rule satisfiable at all — without
      reading the vocabulary you are guessing blind, and every session's guesses
-     fragment the facet (`近代中国` / `民国政治` / `中国近代史` all arrived this
-     way, from three separate ingests of one subject). Your new tags become the
+     fragment the facet (`大模型` / `LLM` / `大语言模型` all arrived this way,
+     from three separate ingests of one subject). Your new tags become the
      next ingest's vocabulary — that feedback loop is the whole mechanism, so a
      sloppy tag here costs more than this page.
 

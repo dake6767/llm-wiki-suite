@@ -81,5 +81,6 @@ jobs:
           python -m unittest scripts.test_schema_template_sync
           python -m unittest discover -s skills/my-llm-wiki/scripts -p "test_*.py"
           python -m unittest discover -s skills/my-llm-wiki-video/scripts -p "test_*.py"
+          python -m unittest discover -s skills/my-llm-wiki-maintainer/scripts -p "test_*.py"
       - name: Check approval-clean examples
         run: python scripts/check_approval_safety.py

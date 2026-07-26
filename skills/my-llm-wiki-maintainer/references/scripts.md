@@ -148,7 +148,7 @@ for cross-host before/after comparison (see `project-protocol.md` → Token Poli
 ## Tag Vocabulary (read before tagging)
 
 ```bash
-wiki_ops.py tags <root> --q "孙中山 洪门 致公堂"      # INGEST VIEW — always scope it
+wiki_ops.py tags <root> --q "检索增强 向量数据库 嵌入"   # INGEST VIEW — always scope it
 wiki_ops.py tags <root> --paths-file cands.json   # ...or scope to exact pages (most precise)
 wiki_ops.py tags <root>                           # unscoped backbone + bounded singleton tail
 wiki_ops.py tags <root> --limit 0                 # all established tags
@@ -157,7 +157,7 @@ wiki_ops.py tags <root> --json --verbose          # machine-readable, plus tag �
 ```
 
 `--q` takes topic words / entity names; punctuation (ASCII or CJK) is treated as
-a separator and single characters are dropped, so `孙中山，洪门` and `孙中山 洪门`
+a separator and single characters are dropped, so `检索增强，向量库` and `检索增强 向量库`
 behave identically and a query of pure punctuation is rejected rather than
 matching everything. Hyphens and dots stay inside tokens — `agent-skills` and
 `claude-code` are real tags. `--paths` / `--paths-file` skip term matching
@@ -195,7 +195,7 @@ explicit tag-consolidation pass. `--audit`/`--json` are also the only modes that
 pay the O(tags²) duplicate scan. `nearDuplicates` pairs are ranked highest-impact first
 and are a hint to judge, never an automatic merge — the test is lexical
 (case-folding, CJK character-set overlap, containment), so it finds
-`中东`/`中东局势` but not semantic pairs like `洪门`/`致公堂`.
+`检索`/`检索增强` but not semantic pairs like `大模型`/`LLM`.
 
 ## Wiki Health (project-level drift)
 
