@@ -1866,6 +1866,37 @@ def domain_table_is_empty(text: str) -> bool:
     return not any(c.strip() for c in rows.replace("|", " ").split())
 
 
+# Above this many lines of local content the bundled template doesn't have,
+# `--apply` stops and asks. The domain table is the only section this command
+# knows how to carry across, and that was written assuming it is the only
+# per-wiki section — false for any wiki whose owner actually edited schema.md.
+# One real wiki had 44 such lines: domain-usage examples naming its own values,
+# tag rules citing its own pages, naming conventions with its own filenames.
+# The five untouched wikis alongside it had 3–10, all superseded template
+# wording. The gap between those two populations is what the number splits;
+# below it is ordinary drift, above it someone wrote something.
+SCHEMA_LOCAL_EDIT_LIMIT = 15
+
+
+def schema_local_only_lines(current: str, bundled: str) -> list[str]:
+    """Non-trivial lines in a wiki's schema.md absent from the bundled template.
+
+    Line-level and deliberately crude: this decides whether to *ask*, not what
+    to keep. Blank lines and bare markdown punctuation are ignored so that
+    reformatting alone doesn't trip it.
+    """
+    template = {line.strip() for line in bundled.splitlines() if line.strip()}
+    orphans = []
+    for line in current.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped in template:
+            continue
+        if set(stripped) <= set("-|`#*_ "):  # rules, fences, table separators
+            continue
+        orphans.append(stripped)
+    return orphans
+
+
 def cmd_schema_upgrade(args: argparse.Namespace) -> None:
     root = resolve_root(Path(args.project_root))
     target = root / "schema.md"
@@ -1918,6 +1949,7 @@ def cmd_schema_upgrade(args: argparse.Namespace) -> None:
     diff = list(difflib.unified_diff(
         current.splitlines(keepends=True), new_text.splitlines(keepends=True),
         fromfile=f"schema.md (v{have}, current)", tofile=f"schema.md (v{want}, bundled)"))
+    orphans = schema_local_only_lines(current, new_text)
     report: dict[str, Any] = {
         "status": "up-to-date" if have >= want and not diff else ("behind" if have < want else "drifted"),
         "wiki": str(root),
@@ -1925,10 +1957,13 @@ def cmd_schema_upgrade(args: argparse.Namespace) -> None:
         "bundledVersion": want,
         "domainTableCarried": carried,
         "diffLines": len(diff),
+        "localOnlyLines": len(orphans),
     }
     if not args.apply:
         report["hint"] = ("re-run with --apply to write it (a backup is kept under "
                           ".llm-wiki/agent/page-history/)")
+        if orphans:
+            report["localOnlySample"] = [truncate(o, 90) for o in orphans[:8]]
         print(json.dumps(report, indent=2, ensure_ascii=False))
         if diff and args.diff:
             sys.stdout.write("".join(diff))
@@ -1937,6 +1972,20 @@ def cmd_schema_upgrade(args: argparse.Namespace) -> None:
         report["status"] = "up-to-date"
         print(json.dumps(report, indent=2, ensure_ascii=False))
         return
+    # Only the domain table survives an upgrade. Everything else a wiki's owner
+    # wrote into schema.md is replaced, and a report saying "upgraded" is how
+    # that becomes invisible.
+    if len(orphans) > SCHEMA_LOCAL_EDIT_LIMIT and not args.accept_local_loss:
+        report["status"] = "refused"
+        report["detail"] = (
+            f"schema.md has {len(orphans)} lines of content the bundled template does not, "
+            f"well past the {SCHEMA_LOCAL_EDIT_LIMIT} expected from ordinary template drift. "
+            "This wiki's schema looks hand-written, and only the domain table is carried "
+            "across — the rest would be replaced. Review with --diff, merge the new "
+            "sections by hand, or pass --accept-local-loss if the backup is enough.")
+        report["localOnlySample"] = [truncate(o, 90) for o in orphans[:8]]
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+        sys.exit(1)
     if target.exists():
         backup = agent_state_path(
             root, f"page-history/schema.md-v{have}-{dt.datetime.now().strftime('%Y%m%d%H%M%S')}.md")
@@ -3435,6 +3484,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--diff", action="store_true", help="print the unified diff")
     p.add_argument("--apply", action="store_true",
                    help="write the new template (backs up the old, carries the domain table over)")
+    p.add_argument("--accept-local-loss", action="store_true",
+                   help="apply even though schema.md carries substantial hand-written content "
+                        "the upgrade cannot preserve (only the domain table is carried)")
     p.set_defaults(func=cmd_schema_upgrade)
 
     p = sub.add_parser("sweep-reviews")
