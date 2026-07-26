@@ -41,6 +41,14 @@ import uuid
 from pathlib import Path
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
+# THIS file is the schema every new wiki actually gets — init copies it verbatim
+# and never overwrites it afterward, so a wiki's conventions are frozen at the
+# template's state on its creation day. `my-llm-wiki-maintainer` ships a second
+# copy at `assets/templates/schema.md` for its own Initialize flow; the two must
+# stay byte-identical. They silently diverged once (2026-06-24 → 2026-07-01): a
+# Tag & Domain Policy fix went into the maintainer copy only, which no code path
+# reads, so every wiki initialized for the next month still got the pre-fix
+# schema and ingest kept emitting `tags: []`. Edit both, or neither.
 SCHEMA_TEMPLATE = SKILL_DIR / "assets" / "schema.md"
 
 # wikis.py is a sibling in scripts/ — make sure it imports regardless of CWD.
@@ -99,11 +107,17 @@ INDEX_MD = """# Wiki Index
 ## Synthesis
 """
 
+# Exactly four fields, and deliberately no `tags` / `related` — overview is the
+# one page type the contract exempts from tagging (project-protocol.md "Refresh
+# Overview", lint-query-save.md's overview SOP, and schema.md's Tag Policy all
+# say so, and lint skips overview.md for that reason). This template used to
+# emit `tags: []` + `related: []`, which contradicted all three and left every
+# wiki's overview carrying an empty tag set it was never supposed to have.
 OVERVIEW_MD = """---
 type: overview
 title: Project Overview
-tags: []
-related: []
+created: {today}
+updated: {today}
 ---
 
 # Overview
@@ -192,7 +206,7 @@ def main() -> None:
     # Wiki layer seed files.
     _write(root / "wiki" / "index.md", INDEX_MD, created)
     _write(root / "wiki" / "log.md", f"# Research Log\n\n## {today}\n\n- Project created\n", created)
-    _write(root / "wiki" / "overview.md", OVERVIEW_MD, created)
+    _write(root / "wiki" / "overview.md", OVERVIEW_MD.format(today=today), created)
 
     # Obsidian vault config (graph view, attachment folder, ignore .llm-wiki).
     _write(root / ".obsidian" / "app.json", json.dumps(OBSIDIAN_APP, indent=2), created)
@@ -219,6 +233,31 @@ def _register(root, name, args):
     return f"{wikis.registry_path()}  ({', '.join(bits)})"
 
 
+# Scaffolding used to end here, and in practice that is where the setup stopped:
+# a wiki ran a month and 22 pages with purpose.md's Key Questions / Scope /
+# Thesis still holding their placeholder text. purpose.md and schema.md are the
+# only two per-wiki files an ingest agent reads on every single run, so blank
+# sections there are not cosmetic — they cost relevance judgement on every page
+# the agent writes. Hence an explicit next-steps block.
+#
+# Note what it does NOT ask for: a tag vocabulary. Someone creating a "政治" wiki
+# knows the subject in one sentence and cannot enumerate its tags on day one;
+# demanding a taxonomy up front produces a guessed one that fights the corpus.
+# Tags grow from real content instead (`wiki_ops.py tags`), and `wiki_ops.py
+# health` raises the domain table once there is enough material to see the areas.
+NEXT_STEPS = """
+next steps (purpose.md and schema.md are the only per-wiki files every ingest reads):
+  1. fill in purpose.md — Key Questions, In/Out of scope, Thesis. One line each is
+     plenty; it is what lets ingest judge "worth its own page" vs "a mention".
+  2. leave schema.md's domain table empty for now. Areas are easier to name after
+     a dozen-odd sources than on day one.
+  3. leave tags alone entirely — the vocabulary grows from what you capture.
+     `wiki_ops.py tags <root>` shows it; ingest reads it before tagging.
+  4. run `wiki_ops.py health <root>` occasionally — it tells you when this wiki has
+     enough content to be worth filling the domain table and refreshing overview.md.
+"""
+
+
 def _summary(status, root, name, created, note="", reg=""):
     lines = [f"status: {status}", f"wiki: {root}", f"name: {name}", "raw_dir: raw/sources"]
     if reg:
@@ -228,6 +267,8 @@ def _summary(status, root, name, created, note="", reg=""):
     if created:
         lines.append("created:")
         lines += [f"  - {c}" for c in created]
+    if status == "initialized":
+        lines.append(NEXT_STEPS)
     return "\n".join(lines)
 
 

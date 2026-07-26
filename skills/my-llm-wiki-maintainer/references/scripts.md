@@ -145,6 +145,54 @@ mcp|browser|local`, `--candidates`, `--pages-read`, `--context-chars`,
 `--prompt-tokens`, `--cache-read-tokens`) are the runtime-agnostic counters used
 for cross-host before/after comparison (see `project-protocol.md` → Token Policy).
 
+## Tag Vocabulary (read before tagging)
+
+```bash
+wiki_ops.py tags /path/to/wiki                  # compact: established / singletons / dup pairs
+wiki_ops.py tags /path/to/wiki --limit 0        # all established tags, not just the top 40
+wiki_ops.py tags /path/to/wiki --json --verbose # machine-readable, plus tag → pages
+```
+
+Derived from the pages on every call — there is no stored vocabulary file to
+drift. **Ingest reads this before generating tags** (`ingest-update.md` step 7):
+prefer an established tag, then an existing singleton, and coin a new word only
+when nothing fits. That read-then-extend loop is what makes schema.md's
+"reusable across ≥2 pages" rule satisfiable at all; without it each session
+guesses blind and near-synonyms accumulate. `nearDuplicates` pairs are a hint
+for a human or LLM to judge, never an automatic merge — the test is lexical
+(case-folding, CJK character-set overlap, containment), so it finds
+`中东`/`中东局势` but not semantic pairs like `洪门`/`致公堂`.
+
+## Wiki Health (project-level drift)
+
+```bash
+wiki_ops.py health /path/to/wiki
+wiki_ops.py health /path/to/wiki --json
+```
+
+`lint` asks "is this page well-formed"; `health` asks "is this wiki still
+configured for the corpus it grew into" — schema version gap, empty domain
+table, `purpose.md` still holding init placeholders, `overview.md` never
+refreshed, tag sprawl. Setup nudges stay quiet under `HEALTH_SOURCE_THRESHOLD`
+(12) sources: a young wiki should *not* have a taxonomy yet. Everything it
+reports is advisory.
+
+## Schema Upgrade (reach already-initialized wikis)
+
+```bash
+wiki_ops.py schema-upgrade /path/to/wiki           # report the version gap
+wiki_ops.py schema-upgrade /path/to/wiki --diff    # ...and show the unified diff
+wiki_ops.py schema-upgrade /path/to/wiki --apply   # take it (backs up first)
+```
+
+`init_wiki.py` copies the schema template into a wiki once and never overwrites
+it, so a wiki's conventions freeze on its creation day and later template fixes
+never arrive. The `<!-- llm-wiki-schema-version: N -->` marker makes that gap
+visible; a marker-less schema reads as v1. `--apply` backs the old file up to
+`.llm-wiki/agent/page-history/` and carries the hand-filled `| domain | covers |`
+table across, **verifying the carry-over and aborting if it can't be preserved**
+rather than reporting success over a lost taxonomy.
+
 ## Lint Scope (incremental semantic lint)
 
 ```bash
