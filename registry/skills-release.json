@@ -1,5 +1,5 @@
 {
   "schema": 1,
-  "pack_version": "2.2.0",
-  "pack_notes": "ingest 不再把 tags 写成空数组：模板、SOP、lint 与 apply-blocks 四处补齐，空标签会被告警。新增 wiki_ops.py tags 让标签词表从语料自生长（ingest 打标签前先读，支持 --q 按来源取相关词表），以及 health / schema-upgrade——已初始化的库现在能收到 schema 模板更新，升级会搬运手填的 domain 表且拒绝降级。"
+  "pack_version": "2.2.1",
+  "pack_notes": "schema-upgrade 不再静默替换手工撰写的 schema：本库自撰内容超过阈值时拒绝执行并要求先看 --diff（升级只搬运 domain 表，其余会被覆盖）。health 也不再把「明确推迟」的 Thesis（`> TBD —— 随研究推进更新`）当成没人填的模板占位符来报。"
 }
