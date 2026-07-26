@@ -2,11 +2,13 @@
 name: my-llm-wiki
 description: >-
   Ingest external content into the immutable RAW layer of an LLM-WIKI knowledge
-  base as a faithful, self-contained original, not a summary. Use when the user
+  base as a faithful, self-contained original, not a summary, and initialize or
+  create new Wiki repositories with routing registration. Use when the user
   wants to save, archive, clip, capture, file, or “沉淀” a URL, WeChat article,
   webpage, Xiaohongshu note, local document, X/Twitter post or bookmarks, online
-  video, or their own note/idea; also use to initialize a wiki or when explicitly
-  invoked. Combine with my-llm-wiki-x for X/Twitter and my-llm-wiki-video for
+  video, or their own note/idea; also use for “创建一个新的 wiki 仓 / 新建知识库 /
+  initialize a wiki” or when explicitly invoked. Combine with my-llm-wiki-x for
+  X/Twitter and my-llm-wiki-video for
   online video. For requests that combine capture with synthesis—such as “抓取并整理”,
   “抓取并理解/读懂/吃透”, or “capture then ingest”—own the full chain: write RAW,
   hand its exact wiki root and path to my-llm-wiki-maintainer, verify the ingest
@@ -203,16 +205,38 @@ shape and hands it back to this core's normalization script.
 
 ## Initialize a wiki
 
-When no target resolves, do not write RAW into an arbitrary directory. Confirm a
-path and name, suggest the suite default when appropriate, then run:
+New Wiki creation belongs to this skill, not the maintainer's `wiki_ops.py init`.
+The canonical initializer both scaffolds the repository and upserts the shared
+topic-routing registry; a directory tree without that registry entry is an
+incomplete result.
+
+For an additional Wiki, first resolve the collection chosen during initial Setup:
 
 ```bash
-python3 <skill>/scripts/init_wiki.py --path <root> --name "<name>" \
-  --description "<one-line topical scope>" --default
+python3 <skill>/scripts/wikis.py collection-root
 ```
 
+That directory is the default home for every new Wiki repository. Ask for a
+human-facing name and a distinct one-line topical description; infer and show a
+safe directory slug. Do not ask the user to invent another location when the
+collection root resolves. Ask for an explicit path only when resolution fails or
+the user requested a different location.
+
+Create a sibling repository without moving the current default:
+
+```bash
+python3 <skill>/scripts/init_wiki.py --slug <directory-name> \
+  --name "<name>" --description "<one-line topical scope>"
+```
+
+For an intentional location override, replace `--slug` with `--path <root>`.
+Use `--default` only when the user explicitly wants the new Wiki to receive
+otherwise-unclassified captures.
+
 The command is idempotent and registers the wiki. Make descriptions distinct
-enough for topic routing. Read `references/routing.md` for registry operations.
+enough for topic routing. Before reporting success, run `wikis.py list --json`
+and verify the exact path, non-empty description, and intended default flag.
+Read `references/routing.md` for registry operations.
 
 ## Resolve the target wiki
 

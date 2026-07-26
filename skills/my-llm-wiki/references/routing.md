@@ -39,6 +39,9 @@ each wiki's `purpose.md`, so the registry is the single source of truth for rout
 # list (the agent reads this to classify); --json for the raw table
 python3 <skill>/scripts/wikis.py list
 
+# show the directory selected during initial Setup; new wiki repos go here
+python3 <skill>/scripts/wikis.py collection-root
+
 # add / update a wiki (upsert by path); --default marks the fallback
 python3 <skill>/scripts/wikis.py register --path ~/llm-wiki --name 技术 \
   --description "AI / 编程 / 工具 / 技术文章与论文" --default
@@ -51,6 +54,20 @@ python3 <skill>/scripts/wikis.py remove --path ~/llm-wiki-old
 by hand — except to **back-register an existing wiki** that predates the registry,
 or to **edit a description**. Re-running `init_wiki.py … --description "…"` does the
 same upsert and is safe (project files stay untouched on the idempotent path).
+
+For a new additional wiki, use the canonical initializer's collection-aware
+form:
+
+```bash
+python3 <skill>/scripts/init_wiki.py --slug history-wiki --name 历史 \
+  --description "中国史 / 世界史 / 历史人物 / 制度与事件"
+```
+
+`--slug` resolves the collection root from Setup's recorded `wiki_path`, then
+falls back to the existing registry default or sole registered wiki. The new
+repository is created as a sibling of the initialized wiki. If that root cannot
+be resolved, the agent asks for an explicit location and uses `--path`; it never
+silently chooses the current working directory.
 
 Behaviors worth knowing:
 - The **first** wiki registered becomes the default automatically.

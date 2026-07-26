@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import urllib.error
 import urllib.parse
@@ -233,100 +234,33 @@ def state_path(root: Path, rel: str) -> Path:
     return agent_state_path(root, rel)
 
 
-# Mirrors `my-llm-wiki/scripts/init_wiki.py`'s NEXT_STEPS. Two init paths exist
-# (that skill's, for capture-side scaffolding, and this one) and a wiki created
-# by either needs the same nudges — the first version of this guidance went
-# into only one of them, so wikis scaffolded here got nothing and waited for
-# `health` to notice at 12 sources. Keep the two texts saying the same thing.
-#
-# What it deliberately does not ask for is a tag vocabulary: someone creating a
-# "政治" wiki knows the subject in a sentence and cannot enumerate its tags on
-# day one. Tags grow from real content (`wiki_ops.py tags`) instead.
-INIT_NEXT_STEPS = """
-next steps (purpose.md and schema.md are the only per-wiki files every ingest reads):
-  1. fill in purpose.md — Key Questions, In/Out of scope, Thesis. One line each is
-     plenty; it is what lets ingest judge "worth its own page" vs "a mention".
-  2. leave schema.md's domain table empty for now. Areas are easier to name after
-     a dozen-odd sources than on day one.
-  3. leave tags alone entirely — the vocabulary grows from what you capture.
-     `wiki_ops.py tags <root> --q "<topic>"` shows it; ingest reads it before tagging.
-  4. run `wiki_ops.py health <root>` occasionally — it tells you when this wiki has
-     enough content to be worth filling the domain table and refreshing overview.md.
-"""
-
-
+# This legacy command stays as a thin compatibility wrapper. New-Wiki intent is
+# routed to my-llm-wiki, whose initializer owns both scaffolding and registration.
 def init_project(args: argparse.Namespace) -> None:
-    root = Path(args.project_root).expanduser().resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    for rel in [
-        "raw/sources",
-        "raw/assets",
-        "wiki/entities",
-        "wiki/concepts",
-        "wiki/sources",
-        "wiki/queries",
-        "wiki/synthesis",
-        "wiki/comparisons",
-        ".obsidian",
-        APP_STATE_DIR,
-        f"{AGENT_STATE_DIR}/research/runs",
-        f"{AGENT_STATE_DIR}/page-history",
-        f"{AGENT_STATE_DIR}/runs",
-        f"{AGENT_STATE_DIR}/ingest-staging",
-    ]:
-        (root / rel).mkdir(parents=True, exist_ok=True)
-
-    replacements = {"YYYY-MM-DD": today_text()}
-    for name, dest in [
-        ("purpose.md", "purpose.md"),
-        ("schema.md", "schema.md"),
-        ("index.md", "wiki/index.md"),
-        ("log.md", "wiki/log.md"),
-        ("overview.md", "wiki/overview.md"),
-    ]:
-        target = root / dest
-        if target.exists() and not args.force:
-            continue
-        text = read_text(TEMPLATE_DIR / name)
-        for old, new in replacements.items():
-            text = text.replace(old, new)
-        write_text(target, text)
-
-    obsidian_files = {
-        ".obsidian/app.json": {
-            "attachmentFolderPath": "raw/assets",
-            "userIgnoreFilters": [".cache", ".llm-wiki", ".superpowers"],
-            "useMarkdownLinks": False,
-            "newLinkFormat": "shortest",
-            "showUnsupportedFiles": False,
-        },
-        ".obsidian/appearance.json": {
-            "baseFontSize": 16,
-            "theme": "obsidian",
-        },
-    }
-    for rel, data in obsidian_files.items():
-        target = root / rel
-        if not target.exists() or args.force:
-            write_text(target, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
-
-    for name, default in [
-        ("review.json", []),
-        ("lint.json", []),
-    ]:
-        path = app_state_path(root, name)
-        if not path.exists() or args.force:
-            write_text(path, json.dumps(default, indent=2, ensure_ascii=False) + "\n")
-
-    for name, default in [
-        ("ingest-cache.json", {"entries": {}}),
-        ("research/queue.json", []),
-    ]:
-        path = agent_state_path(root, name)
-        if not path.exists() or args.force:
-            write_text(path, json.dumps(default, indent=2, ensure_ascii=False) + "\n")
-    print(root)
-    print(INIT_NEXT_STEPS, end="")
+    """Compatibility wrapper around the one initializer that also registers."""
+    if args.force:
+        die("init never overwrites an existing wiki; remove --force")
+    initializer = SKILL_DIR.parent / "my-llm-wiki" / "scripts" / "init_wiki.py"
+    if not initializer.is_file():
+        die(
+            "new Wiki creation requires the sibling my-llm-wiki skill; "
+            "its canonical init_wiki.py was not found"
+        )
+    command = [
+        sys.executable,
+        str(initializer),
+        "--path",
+        args.project_root,
+        "--description",
+        args.description,
+    ]
+    if args.name:
+        command.extend(["--name", args.name])
+    if args.default:
+        command.append("--default")
+    result = subprocess.run(command, check=False)
+    if result.returncode:
+        raise SystemExit(result.returncode)
 
 
 # A YAML frontmatter key at line start (`type:`, `title:`, `related:` …).
@@ -2315,11 +2249,9 @@ def cmd_tags(args: argparse.Namespace) -> None:
 # genuinely should not have a domain taxonomy yet.
 
 HEALTH_SOURCE_THRESHOLD = 12  # schema.md's own "often after a dozen-plus sources"
-# Two init paths write two different placeholder wordings — `my-llm-wiki`'s
-# `init_wiki.py` inline templates and this skill's `assets/templates/`. Matching
-# only the first meant a wiki scaffolded by the maintainer's own Initialize flow
-# reported a clean bill of health with every placeholder still in place. Any new
-# init template has to add its markers here too.
+# Existing wikis may carry either canonical `init_wiki.py` placeholders or
+# historical maintainer-template placeholders. Keep recognizing both so health
+# still diagnoses repositories created before initialization was centralized.
 PURPOSE_STUB_MARKERS = (
     "<!-- List the primary questions", "<!-- What is in scope?",
     "<!-- Your current working hypothesis",                   # init_wiki.py
@@ -3374,6 +3306,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("init")
     p.add_argument("project_root")
+    p.add_argument("--name", default="")
+    p.add_argument("--description", required=True)
+    p.add_argument("--default", action="store_true")
     p.add_argument("--force", action="store_true")
     p.set_defaults(func=init_project)
 

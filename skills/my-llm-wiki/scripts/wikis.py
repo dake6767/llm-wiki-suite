@@ -28,12 +28,14 @@ source of truth for routing — the resolver never opens each wiki's purpose.md.
 
 CLI:
     wikis.py list [--json]
+    wikis.py collection-root [--json]
     wikis.py register --path P --name N --description D [--default]
     wikis.py remove --path P
 
 Importable helpers (used by init_wiki.py / normalize_raw.py):
     register(path, name, description, default=False) -> dict
     default_path() -> Path | None      # the default wiki, if it exists on disk
+    collection_root() -> Path | None   # parent chosen during suite setup
     registered_paths(existing_only=True) -> list[Path]
 """
 from __future__ import annotations
@@ -191,6 +193,59 @@ def registered_paths(existing_only: bool = True) -> list[Path]:
     return out
 
 
+def _is_wiki_root(path: Path) -> bool:
+    return path.joinpath("schema.md").is_file() and path.joinpath("wiki").is_dir()
+
+
+def collection_root_info() -> dict[str, str] | None:
+    """Resolve the directory meant to hold sibling wiki repositories.
+
+    Browser Setup records the originally initialized wiki in setup-state.json;
+    its parent is the collection root the user selected. That source wins even
+    if the user later moves the registry default to a wiki elsewhere. The
+    registry fallbacks keep the Skills-only path useful when Setup Core is not
+    installed.
+    """
+    state_path = registry_path().parent / "setup-state.json"
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        state = None
+    if isinstance(state, dict) and isinstance(state.get("wiki_path"), str):
+        wiki = native_path(state["wiki_path"]).resolve()
+        if _is_wiki_root(wiki):
+            return {
+                "collection_root": str(wiki.parent),
+                "wiki": str(wiki),
+                "source": "setup-state",
+            }
+
+    default = default_path()
+    if default is not None and _is_wiki_root(default):
+        wiki = default.resolve()
+        return {
+            "collection_root": str(wiki.parent),
+            "wiki": str(wiki),
+            "source": "registry-default",
+        }
+
+    existing = [path.resolve() for path in registered_paths() if _is_wiki_root(path)]
+    if len(existing) == 1:
+        wiki = existing[0]
+        return {
+            "collection_root": str(wiki.parent),
+            "wiki": str(wiki),
+            "source": "registry-single",
+        }
+    return None
+
+
+def collection_root() -> Path | None:
+    """The initialized collection root, or None when it cannot be inferred."""
+    info = collection_root_info()
+    return Path(info["collection_root"]) if info else None
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -226,6 +281,20 @@ def _cmd_register(args) -> None:
     print(f"  default: {str(entry['default']).lower()}")
 
 
+def _cmd_collection_root(args) -> None:
+    info = collection_root_info()
+    if args.json:
+        print(json.dumps(info, ensure_ascii=False, indent=2))
+    elif info:
+        print(f"collection_root: {info['collection_root']}")
+        print(f"wiki: {info['wiki']}")
+        print(f"source: {info['source']}")
+    else:
+        print("collection_root: unresolved")
+    if info is None:
+        raise SystemExit(1)
+
+
 def _cmd_remove(args) -> None:
     ok = remove(args.path)
     print(f"status: {'removed' if ok else 'not-found'}")
@@ -239,6 +308,13 @@ def main() -> None:
     p_list = sub.add_parser("list", help="list registered wikis (agent reads this to classify)")
     p_list.add_argument("--json", action="store_true", help="emit raw registry JSON")
     p_list.set_defaults(func=_cmd_list)
+
+    p_collection = sub.add_parser(
+        "collection-root",
+        help="show the initialized directory that should hold sibling wiki repositories",
+    )
+    p_collection.add_argument("--json", action="store_true", help="emit JSON")
+    p_collection.set_defaults(func=_cmd_collection_root)
 
     p_reg = sub.add_parser("register", help="add or update a wiki by path (upsert)")
     p_reg.add_argument("--path", required=True, help="wiki root")

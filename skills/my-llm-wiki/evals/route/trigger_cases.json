@@ -66,6 +66,10 @@
       "family": "init_wiki"
     },
     {
+      "text": "帮我创建一个新的 wiki 仓，专门放中外历史资料",
+      "family": "init_wiki"
+    },
+    {
       "text": "把这个 PDF 存到知识库 /Users/me/paper.pdf",
       "family": "archive_link"
     },

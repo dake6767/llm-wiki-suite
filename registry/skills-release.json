@@ -1,5 +1,5 @@
 {
   "schema": 1,
-  "pack_version": "2.2.1",
-  "pack_notes": "schema-upgrade 不再静默替换手工撰写的 schema：本库自撰内容超过阈值时拒绝执行并要求先看 --diff（升级只搬运 domain 表，其余会被覆盖）。health 也不再把「明确推迟」的 Thesis（`> TBD —— 随研究推进更新`）当成没人填的模板占位符来报。"
+  "pack_version": "2.2.2",
+  "pack_notes": "新建 Wiki 统一由 my-llm-wiki 的 canonical initializer 负责：默认创建在首次 Setup 选择的 Wiki collection 下，并强制写入带非空主题描述的 wikis.json 路由项；maintainer 旧 init 入口只做安全转发，避免再生成未注册的仓库。"
 }

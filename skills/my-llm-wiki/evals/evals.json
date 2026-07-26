@@ -126,6 +126,33 @@
           "text": "The terminal result is gated on cache check hit: true and reports the written pages"
         }
       ]
+    },
+    {
+      "id": 5,
+      "name": "create-additional-wiki-in-initialized-collection-and-register-route",
+      "prompt": "帮我创建一个新的 Wiki 仓：名称“历史”，目录名 llm-wiki-history，范围是“中外历史：朝代、人物、制度、战争、经济、社会、思想与文化”。使用首次初始化 Wiki 时选择的目录，不要改默认库。",
+      "expected_output": "my-llm-wiki owns the request. It resolves the initialized collection root, creates llm-wiki-history as a sibling of the original Wiki through scripts/init_wiki.py --slug, and verifies a wikis.json entry with name=历史, the non-empty topical description, and default=false. It does not ask the user to choose an arbitrary filesystem location and does not use the maintainer's old scaffold implementation.",
+      "files": [],
+      "assertions": [
+        {
+          "text": "The request routes to my-llm-wiki rather than my-llm-wiki-maintainer"
+        },
+        {
+          "text": "The new repository is created at <initialized collection root>/llm-wiki-history as a sibling of the originally initialized Wiki"
+        },
+        {
+          "text": "The new repository contains schema.md, purpose.md, raw/sources/, and wiki/index.md"
+        },
+        {
+          "text": "wikis.json contains the exact new path, name 历史, the full non-empty topical description, and default: false"
+        },
+        {
+          "text": "The agent verifies the registry entry before reporting success"
+        },
+        {
+          "text": "The agent does not ask for another location because the initialized collection root resolves"
+        }
+      ]
     }
   ]
 }

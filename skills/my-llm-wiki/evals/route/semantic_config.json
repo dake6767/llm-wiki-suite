@@ -1,8 +1,8 @@
 {
   "optimizer_hints": {
-    "capability": "Ingest external content into the immutable RAW layer of an LLM-WIKI knowledge base",
-    "inputs": ["a URL", "a WeChat 公众号 link", "an X/Twitter post", "a 小红书 note", "a web page", "an online video link", "the user's own thought", "a local PDF/doc"],
-    "trigger_actions": ["save a link into the wiki", "archive/clip/沉淀 a source into RAW", "capture a source and synthesize it into wiki pages in the same turn", "sync X bookmarks into RAW", "file my own note/idea", "distill a video into RAW", "initialize a new wiki"],
+    "capability": "Ingest external content into the immutable RAW layer of an LLM-WIKI knowledge base, or create and route-register a new Wiki repository",
+    "inputs": ["a URL", "a WeChat 公众号 link", "an X/Twitter post", "a 小红书 note", "a web page", "an online video link", "the user's own thought", "a local PDF/doc", "a new Wiki name and topical scope"],
+    "trigger_actions": ["save a link into the wiki", "archive/clip/沉淀 a source into RAW", "capture a source and synthesize it into wiki pages in the same turn", "sync X bookmarks into RAW", "file my own note/idea", "distill a video into RAW", "initialize or create a new wiki repository and register its route"],
     "exclusions": ["summarize or analyze the content", "search for content", "judge whether it is worth reading", "rip a video file to keep", "convert a PDF just to read it", "generate the wiki's derived pages", "sync notes between apps"]
   },
   "fallback_positive_concepts": ["archive_link", "bookmark_sync", "first_party_note", "video_to_raw", "init_wiki"],
@@ -49,7 +49,8 @@
       "weight": 0.12,
       "phrases": [
         "initialize a wiki", "set up my llm-wiki", "create a knowledge base", "scaffold a wiki",
-        "初始化 wiki", "建一个知识库", "搭一个知识库", "新建一个 wiki", "初始化我的知识库"
+        "初始化 wiki", "建一个知识库", "搭一个知识库", "新建一个 wiki", "创建一个新的 wiki 仓",
+        "创建新的wiki仓", "初始化我的知识库"
       ]
     },
     "raw_terms": {
