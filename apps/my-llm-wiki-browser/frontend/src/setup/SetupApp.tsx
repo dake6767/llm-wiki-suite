@@ -116,7 +116,7 @@ interface SkillsUpdate {
 
 interface BrowserUpdateStatus {
   current_version: string;
-  state: "idle" | "checking" | "up-to-date" | "available" | "downloading" | "ready-to-restart" | "portable" | "error";
+  state: "idle" | "checking" | "up-to-date" | "available" | "downloading" | "installing" | "ready-to-restart" | "portable" | "error";
   latest_version?: string;
   notes?: string;
   downloaded?: number;
@@ -369,6 +369,24 @@ export default function SetupApp() {
     };
   }, []);
 
+  useEffect(() => {
+    if (previewMode) return;
+    let mounted = true;
+    const started = listen("settings-update-check-started", () => {
+      invoke<BrowserUpdateStatus>("setup_browser_update_status")
+        .then((next) => mounted && setBrowserUpdate(next))
+        .catch(() => undefined);
+    }).catch(() => () => undefined);
+    const checked = listen<UpdateResult>("skills-update-checked", (event) => {
+      if (mounted) setUpdate(event.payload);
+    }).catch(() => () => undefined);
+    return () => {
+      mounted = false;
+      void started.then((dispose) => dispose());
+      void checked.then((dispose) => dispose());
+    };
+  }, []);
+
   // Free space is the reason people move the install, so the chosen location is
   // checked while it is being typed rather than only when a multi-gigabyte
   // download runs out of room.
@@ -392,7 +410,9 @@ export default function SetupApp() {
   }, [installRoot]);
 
   const pollingBrowserUpdate =
-    browserUpdate?.state === "checking" || browserUpdate?.state === "downloading";
+    browserUpdate?.state === "checking" ||
+    browserUpdate?.state === "downloading" ||
+    browserUpdate?.state === "installing";
   useEffect(() => {
     if (!pollingBrowserUpdate) return;
     const timer = window.setTimeout(() => {
@@ -440,8 +460,9 @@ export default function SetupApp() {
     if (previewMode || view !== "manage") return;
     invoke<SetupInspection>("setup_inspect").then(setInspection).catch(() => undefined);
     // Show what the daily background check already found rather than making
-    // the user press 检查更新 to learn there is a newer Skills Pack. Cached
-    // only — opening this page must not start a network round trip.
+    // the user press 检查更新 to learn there is a newer Skills Pack. This
+    // component only reads the cache; the tray-open action owns the fresh
+    // asynchronous check.
     invoke<UpdateResult | null>("setup_update_cached")
       .then((cached) => cached && setUpdate((current) => current ?? cached))
       .catch(() => undefined);
@@ -1239,12 +1260,21 @@ function Management({ status, hosts, hostJob, onInstallHost, onRemoveHost, updat
 }) {
   const ready = status?.state === "ready";
   const announcingSuccess = useSuccessAnnouncement(repair?.state);
-  const browserBusy = browserUpdate?.state === "checking" || browserUpdate?.state === "downloading";
+  const browserBusy =
+    browserUpdate?.state === "checking" ||
+    browserUpdate?.state === "downloading" ||
+    browserUpdate?.state === "installing";
   const browserRestart = browserUpdate?.state === "ready-to-restart";
   const updateAvailable =
     update?.state === "available" ||
     browserUpdate?.state === "available" ||
     update?.skills.state === "available";
+  const updateNotice =
+    updateAvailable ||
+    update?.state === "restart-required" ||
+    update?.skills.state === "blocked-by-app" ||
+    browserRestart ||
+    (browserUpdate?.state === "portable" && Boolean(browserUpdate.latest_version));
   const [section, setSection] = useState<SettingsSection>(() => {
     if (preferSkills) return "skills";
     const saved = window.localStorage.getItem(SETTINGS_SECTION_KEY);
@@ -1301,9 +1331,13 @@ function Management({ status, hosts, hostJob, onInstallHost, onRemoveHost, updat
           >
             <span>Skills 与工具链</span>
             <small>Agents &amp; toolchain</small>
-            <i className={!ready ? "is-warn" : updateAvailable ? "is-update" : ""}>
-              {!ready ? "处理" : updateAvailable ? "更新" : "正常"}
-            </i>
+            {updateNotice ? (
+              <i className="settings-update-dot" aria-label="有更新可用" title="有更新可用" />
+            ) : !ready ? (
+              <i className="settings-nav-status is-warn">处理</i>
+            ) : (
+              <i className="settings-nav-status">正常</i>
+            )}
           </button>
         </nav>
 
@@ -1356,10 +1390,12 @@ function Management({ status, hosts, hostJob, onInstallHost, onRemoveHost, updat
               <StatusPanel index="03" title="Wiki" healthy={status?.wiki.ready ?? false}>
                 <p className="panel-path">{status?.wiki.path}</p>
               </StatusPanel>
-              <StatusPanel index="04" title="联合更新" healthy={!updateAvailable && !browserRestart && browserUpdate?.state !== "error"}>
+              <StatusPanel index="04" title="联合更新" healthy={!updateNotice && browserUpdate?.state !== "error"}>
                 <p>{browserUpdateText(browserUpdate, update, status?.distribution_version)}</p>
                 {update ? <SkillsUpdateLine skills={update.skills} /> : null}
-                {browserUpdate?.state === "downloading" ? <UpdateProgress status={browserUpdate} /> : null}
+                {browserUpdate?.state === "downloading" || browserUpdate?.state === "installing"
+                  ? <UpdateProgress status={browserUpdate} />
+                  : null}
                 {browserUpdate?.state === "error" && browserUpdate.error ? <p className="setup-inline-error">{browserUpdate.error}</p> : null}
                 <div className="panel-actions">
                   {!browserRestart ? <SecondaryButton disabled={busy || browserBusy} onClick={onCheck}>{browserUpdate?.state === "checking" ? "检查中…" : "检查更新"}</SecondaryButton> : null}
@@ -1620,7 +1656,7 @@ function useTicker(active: boolean) {
 }
 
 function StatusPanel({ index, title, healthy, children }: { index: string; title: string; healthy: boolean; children: React.ReactNode }) {
-  return <article className="status-panel"><header><span>{index}</span><h2>{title}</h2><i className={healthy ? "ok" : "warn"}>{healthy ? "OK" : "!"}</i></header><div>{children}</div></article>;
+  return <article className="status-panel"><header><span>{index}</span><h2>{title}</h2><i className={`status-panel-mark ${healthy ? "ok" : "warn"}`}>{healthy ? "OK" : "!"}</i></header><div>{children}</div></article>;
 }
 
 function LoadingScreen() {
@@ -1662,7 +1698,8 @@ function updateText(update: UpdateResult) {
 
 function browserUpdateText(browser: BrowserUpdateStatus | null, update: UpdateResult | null, distributionVersion?: string) {
   if (browser?.state === "checking") return "正在检查 Browser 与 distribution…";
-  if (browser?.state === "downloading") return `正在安装 Browser v${browser.latest_version ?? "—"}`;
+  if (browser?.state === "downloading") return `正在下载 Browser v${browser.latest_version ?? "—"}`;
+  if (browser?.state === "installing") return `正在校验并安装 Browser v${browser.latest_version ?? "—"}`;
   if (browser?.state === "ready-to-restart") return `Browser v${browser.latest_version ?? "—"} 已安装，重启后继续更新`;
   if (browser?.state === "available") return `Browser v${browser.latest_version ?? "—"} 可用`;
   if (browser?.state === "portable") return browser.latest_version ? `便携版发现 v${browser.latest_version}，请手动替换应用` : "便携版需手动替换 Browser";
@@ -1699,6 +1736,24 @@ function skillsUpdateText(skills: SkillsUpdate) {
 }
 
 function UpdateProgress({ status }: { status: BrowserUpdateStatus }) {
-  const percent = status.total ? Math.min(100, Math.round(((status.downloaded ?? 0) / status.total) * 100)) : 12;
-  return <div className="manage-update-progress"><i style={{ width: `${percent}%` }} /><span>{status.total ? `${percent}%` : "下载中…"}</span></div>;
+  const hasKnownTotal = status.state === "downloading" && Boolean(status.total && status.total > 0);
+  const percent = hasKnownTotal
+    ? Math.min(100, Math.floor(((status.downloaded ?? 0) / status.total!) * 100))
+    : undefined;
+  const label = status.state === "installing"
+    ? "正在校验并安装…"
+    : percent === undefined ? "下载中…" : `${percent}%`;
+  return (
+    <div
+      className={`manage-update-progress${percent === undefined ? " is-indeterminate" : ""}`}
+      role="progressbar"
+      aria-label={status.state === "installing" ? "正在校验并安装 Browser" : "正在下载 Browser"}
+      aria-valuemin={percent === undefined ? undefined : 0}
+      aria-valuemax={percent === undefined ? undefined : 100}
+      aria-valuenow={percent}
+    >
+      <i className="manage-update-progress-fill" style={percent === undefined ? undefined : { width: `${percent}%` }} />
+      <span className="manage-update-progress-label">{label}</span>
+    </div>
+  );
 }

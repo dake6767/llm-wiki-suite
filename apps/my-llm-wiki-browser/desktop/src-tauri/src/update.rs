@@ -41,6 +41,9 @@ enum State {
         downloaded: u64,
         total: Option<u64>,
     },
+    Installing {
+        version: String,
+    },
     ReadyToRestart {
         version: String,
     },
@@ -113,6 +116,10 @@ impl UpdateManager {
                 status.downloaded = Some(downloaded);
                 status.total = total;
             }
+            State::Installing { version } => {
+                status.state = "installing".into();
+                status.latest_version = Some(version);
+            }
             State::ReadyToRestart { version } => {
                 status.state = "ready-to-restart".into();
                 status.latest_version = Some(version);
@@ -134,7 +141,13 @@ impl UpdateManager {
     pub fn check(&self) {
         {
             let mut state = self.state.lock().unwrap();
-            if matches!(*state, State::Checking | State::Downloading { .. }) {
+            if matches!(
+                *state,
+                State::Checking
+                    | State::Downloading { .. }
+                    | State::Installing { .. }
+                    | State::ReadyToRestart { .. }
+            ) {
                 return;
             }
             *state = State::Checking;
@@ -180,7 +193,10 @@ impl UpdateManager {
                 State::Portable { .. } => {
                     return Err("便携版不支持原地更新，请手动下载新版本".into());
                 }
-                State::Checking | State::Downloading { .. } | State::ReadyToRestart { .. } => {
+                State::Checking
+                | State::Downloading { .. }
+                | State::Installing { .. }
+                | State::ReadyToRestart { .. } => {
                     return Ok(());
                 }
                 State::Idle | State::UpToDate | State::Available { .. } | State::Error { .. } => {
@@ -222,6 +238,8 @@ impl UpdateManager {
         };
         let progress_state = self.state.clone();
         let progress_version = version.clone();
+        let install_state = self.state.clone();
+        let install_version = version.clone();
         let mut downloaded: u64 = 0;
         let result = update
             .download_and_install(
@@ -233,7 +251,11 @@ impl UpdateManager {
                         total,
                     };
                 },
-                || {},
+                move || {
+                    *install_state.lock().unwrap() = State::Installing {
+                        version: install_version,
+                    };
+                },
             )
             .await;
         match result {

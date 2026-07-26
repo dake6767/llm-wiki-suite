@@ -5,10 +5,12 @@
 //! for that in the background and says so; it never installs anything on its
 //! own — applying an update stays a thing the user asks for.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use llm_wiki_setup::{SetupCore, SkillsUpdateState, UpdateResult};
+use tauri::Emitter as _;
 use tauri::menu::MenuItem;
 
 /// Matches the Browser updater's cadence: late enough not to compete with
@@ -20,13 +22,17 @@ const SETUP_MENU_LABEL: &str = "设置…";
 #[derive(Clone)]
 pub(crate) struct SkillsWatch {
     latest: Arc<Mutex<Option<UpdateResult>>>,
+    checking: Arc<AtomicBool>,
+    app: tauri::AppHandle,
     menu: MenuItem<tauri::Wry>,
 }
 
 impl SkillsWatch {
-    pub(crate) fn new(menu: MenuItem<tauri::Wry>) -> Self {
+    pub(crate) fn new(app: tauri::AppHandle, menu: MenuItem<tauri::Wry>) -> Self {
         Self {
             latest: Arc::new(Mutex::new(None)),
+            checking: Arc::new(AtomicBool::new(false)),
+            app,
             menu,
         }
     }
@@ -43,6 +49,7 @@ impl SkillsWatch {
             *latest = Some(result.clone());
         }
         self.mark(result);
+        let _ = self.app.emit("skills-update-checked", result);
     }
 
     /// Carry the news on the tray entry that already opens this page, rather
@@ -62,9 +69,29 @@ impl SkillsWatch {
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(FIRST_CHECK_DELAY).await;
             loop {
-                watch.check_now().await;
+                watch.check();
                 tokio::time::sleep(CHECK_INTERVAL).await;
             }
+        });
+    }
+
+    /// Start a fresh read-only check unless one is already running.
+    ///
+    /// Tray-open checks and the daily timer can land at the same time. Keeping
+    /// one flight avoids duplicate release requests and ensures the last event
+    /// delivered to the settings window belongs to the current check.
+    pub(crate) fn check(&self) {
+        if self
+            .checking
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+        let watch = self.clone();
+        tauri::async_runtime::spawn(async move {
+            watch.check_now().await;
+            watch.checking.store(false, Ordering::Release);
         });
     }
 
