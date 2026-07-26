@@ -17,8 +17,14 @@ FILE/REVIEW-block boundary, so `source-page` / `apply-blocks` / `merge-index` /
 
 ## 1. When this applies — the size gate
 
-After resolving the root and reading `purpose.md` / `schema.md` / `wiki/index.md`
-(Ingest steps 1–2), run the gate before extracting:
+Run `ingest-update.md` steps 1–5 first, unchanged — resolve root, read
+`purpose.md` and `schema.md`, hash, check the cache, and build the bounded
+retrieval working set (including **step 5.6, the scoped tag vocabulary read**).
+The size gate sits at the end of step 5 precisely so everything before it is
+shared by both paths. Do **not** read `wiki/index.md` into context here; the
+disk grep sentinel is the substitute, same as the main SOP.
+
+Then run the gate before extracting:
 
 ```bash
 scripts/wiki_ops.py probe-source <root> --raw raw/sources/<...>.md
@@ -147,16 +153,17 @@ Only start when `stage-status` reports `ready: true` (`pending == 0 && stale == 
    (`grep -F "[[entities/<name>" wiki/index.md`), then `read-pages` the top
    3–5 pages that overlap. Never load the whole index to "see what exists".
 
-   Read the tag vocabulary here too, scoped to the deduped candidates — this
-   phase replaces `ingest-update.md` steps 6–7, so its step 5.6 read never ran:
+   Reuse the tag vocabulary read in step 5.6. Re-run it **only** if chunk
+   dedup produced candidates materially different from the names that step 5
+   was given — a long source often surfaces subjects the title never hinted at:
 
    ```bash
    scripts/wiki_ops.py tags <root> --q "<deduped candidate names>"
    ```
 
-   Reuse established tags, and reuse `*`-marked ones (used once so far) rather
-   than coining near-synonyms. Bounded (~590 tokens regardless of wiki size);
-   never `--audit` mid-ingest.
+   Prefer established tags, then `*`-marked ones (used once so far), over
+   coining near-synonyms. Bounded (~590 tokens regardless of wiki size); never
+   `--audit` mid-ingest.
 4. Run source identity first (dedup one source → one page):
 
 ```bash

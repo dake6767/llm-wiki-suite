@@ -71,6 +71,7 @@ jobs:
           python -m scripts.skills_release
           python -m scripts.check_pack_release_version --base "${{ github.event.pull_request.base.sha || github.event.before }}"
           python -m scripts.check_skills_release_version --base "${{ github.event.pull_request.base.sha || github.event.before }}"
+          python -m scripts.check_schema_version_bump --base "${{ github.event.pull_request.base.sha || github.event.before }}"
           python -m scripts.build_distribution --help
       - name: Compile and test Provider/pack code
         run: |

@@ -148,11 +148,20 @@ for cross-host before/after comparison (see `project-protocol.md` → Token Poli
 ## Tag Vocabulary (read before tagging)
 
 ```bash
-wiki_ops.py tags /path/to/wiki                  # ingest view: top-40 established tags only
-wiki_ops.py tags /path/to/wiki --limit 0        # all established tags
-wiki_ops.py tags /path/to/wiki --audit          # cleanup view: + singletons, dup pairs, untagged
-wiki_ops.py tags /path/to/wiki --json --verbose # machine-readable, plus tag → pages
+wiki_ops.py tags <root> --q "孙中山 洪门 致公堂"      # INGEST VIEW — always scope it
+wiki_ops.py tags <root> --paths-file cands.json   # ...or scope to exact pages (most precise)
+wiki_ops.py tags <root>                           # unscoped backbone + bounded singleton tail
+wiki_ops.py tags <root> --limit 0                 # all established tags
+wiki_ops.py tags <root> --audit                   # cleanup view: + singletons, dups, untagged
+wiki_ops.py tags <root> --json --verbose          # machine-readable, plus tag → pages
 ```
+
+`--q` takes topic words / entity names; punctuation (ASCII or CJK) is treated as
+a separator and single characters are dropped, so `孙中山，洪门` and `孙中山 洪门`
+behave identically and a query of pure punctuation is rejected rather than
+matching everything. Hyphens and dots stay inside tokens — `agent-skills` and
+`claude-code` are real tags. `--paths` / `--paths-file` skip term matching
+entirely and are the better call when the caller already has a working set.
 
 Derived from the pages on every call — there is no stored vocabulary file to
 maintain or to drift out of sync. A hand-kept registry was considered and
@@ -163,19 +172,27 @@ maintenance burden. Where a registry looked uniquely useful — knowing that `ai
 should be spelled `AI` — the canonical form is just the more-used spelling, a
 rule rather than data, so it needs no storage.
 
-**Ingest reads the default view before generating tags** (`ingest-update.md`
-step 7): prefer an established tag, coin a new word only when nothing fits.
-That read-then-extend loop is what makes schema.md's "reusable across ≥2 pages"
-rule satisfiable at all; without it each session guesses blind and near-synonyms
-accumulate.
+**Ingest reads the scoped view before generating tags** (`ingest-update.md`
+step 5.6, placed before the size gate so the large-source and video paths get it
+too): prefer an established tag, then a `*`-marked one, and coin a new word only
+when nothing fits. That read-then-extend loop is what makes schema.md's
+"reusable across ≥2 pages" rule satisfiable at all.
 
-**Keep the two views apart.** The default is bounded by `--limit`, so it costs
-the same on a 900-page wiki as on a 20-page one (~340 tokens either way) — that
-matters because ingest pays it on every source, and the SOP's first retrieval
-rule is O(top-k), never O(wiki). `--audit` adds the full singleton list, every
-duplicate pair and every untagged page (16KB on a 911-page wiki); that is
-cleanup material, useless mid-ingest, and belongs to `health` or an explicit
-tag-consolidation pass. `nearDuplicates` pairs are ranked highest-impact first
+**Scope it, or the loop is open.** A tag coined by one ingest sits at count 1.
+The unscoped view leads with established (≥2 page) tags, so that new word is
+invisible to the next ingest, never reused, and can never reach 2 — the facet
+would only ever recycle what was already popular. The scoped view lists
+one-page tags too, marked `*`. Unscoped calls keep a bounded 25-tag tail as a
+fallback, but `--q` / `--paths-file` is the intended ingest path.
+
+**Keep the two views apart.** Both scoped and unscoped are bounded, so cost is
+flat in corpus size (~590 tokens on a 900-page wiki, ~440 on a 20-page one) —
+that matters because ingest pays it on every source, and the SOP's first
+retrieval rule is O(top-k), never O(wiki). `--audit` adds the full singleton
+list, every duplicate pair and every untagged page (16KB on a 911-page wiki);
+that is cleanup material, useless mid-ingest, and belongs to `health` or an
+explicit tag-consolidation pass. `--audit`/`--json` are also the only modes that
+pay the O(tags²) duplicate scan. `nearDuplicates` pairs are ranked highest-impact first
 and are a hint to judge, never an automatic merge — the test is lexical
 (case-folding, CJK character-set overlap, containment), so it finds
 `中东`/`中东局势` but not semantic pairs like `洪门`/`致公堂`.

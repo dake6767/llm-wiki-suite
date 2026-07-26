@@ -233,6 +233,28 @@ def state_path(root: Path, rel: str) -> Path:
     return agent_state_path(root, rel)
 
 
+# Mirrors `my-llm-wiki/scripts/init_wiki.py`'s NEXT_STEPS. Two init paths exist
+# (that skill's, for capture-side scaffolding, and this one) and a wiki created
+# by either needs the same nudges — the first version of this guidance went
+# into only one of them, so wikis scaffolded here got nothing and waited for
+# `health` to notice at 12 sources. Keep the two texts saying the same thing.
+#
+# What it deliberately does not ask for is a tag vocabulary: someone creating a
+# "政治" wiki knows the subject in a sentence and cannot enumerate its tags on
+# day one. Tags grow from real content (`wiki_ops.py tags`) instead.
+INIT_NEXT_STEPS = """
+next steps (purpose.md and schema.md are the only per-wiki files every ingest reads):
+  1. fill in purpose.md — Key Questions, In/Out of scope, Thesis. One line each is
+     plenty; it is what lets ingest judge "worth its own page" vs "a mention".
+  2. leave schema.md's domain table empty for now. Areas are easier to name after
+     a dozen-odd sources than on day one.
+  3. leave tags alone entirely — the vocabulary grows from what you capture.
+     `wiki_ops.py tags <root> --q "<topic>"` shows it; ingest reads it before tagging.
+  4. run `wiki_ops.py health <root>` occasionally — it tells you when this wiki has
+     enough content to be worth filling the domain table and refreshing overview.md.
+"""
+
+
 def init_project(args: argparse.Namespace) -> None:
     root = Path(args.project_root).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -304,6 +326,7 @@ def init_project(args: argparse.Namespace) -> None:
         if not path.exists() or args.force:
             write_text(path, json.dumps(default, indent=2, ensure_ascii=False) + "\n")
     print(root)
+    print(INIT_NEXT_STEPS, end="")
 
 
 # A YAML frontmatter key at line start (`type:`, `title:`, `related:` …).
@@ -1978,10 +2001,39 @@ def _tag_near_duplicate(a: str, b: str) -> str | None:
     return None
 
 
+# Word-ish runs, ASCII and CJK scored separately. Splitting on whitespace alone
+# was actively harmful: a query written the way the docs show it —
+# `"孙中山 / 洪门"` — made `/` its own term, and `/` occurs in every body
+# wikilink (`[[entities/…]]`), so it matched the entire corpus. A nonsense query
+# containing a slash returned 40 confidently "relevant" tags. The mirror-image
+# failure was CJK punctuation: `孙中山，洪门` has no whitespace, so the whole
+# string became one term and matched nothing. Both directions are worse than a
+# crude match — one fabricates relevance, the other silently reports new ground.
+TAG_QUERY_TOKEN_RE = re.compile(
+    r"[0-9A-Za-z][0-9A-Za-z_+#.\-]*"                       # latin/alnum runs, hyphens kept
+    r"|[一-鿿぀-ヿ가-힯]+")        # CJK runs
+
+
+def tag_query_terms(query: str) -> list[str]:
+    """Search terms from a free-text query, punctuation and noise removed.
+
+    Hyphens and dots stay *inside* tokens (`agent-skills`, `claude-code` and
+    `v2.1` are real tags); everything else that isn't alphanumeric or CJK is a
+    separator. Single characters are dropped — a lone `党` or `a` matches
+    almost everything and only blurs the ranking.
+    """
+    terms: list[str] = []
+    for raw in TAG_QUERY_TOKEN_RE.findall(query or ""):
+        token = raw.strip("-._#+").lower()
+        if len(token) >= 2:
+            terms.append(token)
+    return list(dict.fromkeys(terms))
+
+
 def _tag_query_scope(root: Path, query: str, top: int) -> set[str]:
     """Pages most relevant to a free-text query — the same bounded keyword
     scoring the local retrieval tier uses, reduced to just page paths."""
-    terms = [t.lower() for t in query.split() if t.strip()]
+    terms = tag_query_terms(query)
     if not terms:
         return set()
     scored: list[tuple[float, str]] = []
@@ -2007,6 +2059,7 @@ def _tag_query_scope(root: Path, query: str, top: int) -> set[str]:
 
 
 def tag_vocabulary(root: Path, *, query: str | None = None, scope_top: int = 12,
+                   scope_paths: list[str] | None = None,
                    with_duplicates: bool = True) -> dict[str, Any]:
     """Derive the live tag vocabulary from the wiki layer.
 
@@ -2051,8 +2104,13 @@ def tag_vocabulary(root: Path, *, query: str | None = None, scope_top: int = 12,
     # reach 2. Every new tag would die at count 1 and the "self-growing"
     # vocabulary would only ever recycle whatever was already popular.
     relevant: list[dict[str, Any]] = []
-    if query:
-        scope = _tag_query_scope(root, query, scope_top)
+    if scope_paths is not None or query:
+        if scope_paths is not None:
+            # Exact pages from the caller — ingest already picked these in step
+            # 5, so reusing them beats re-deriving relevance from a text blob.
+            scope = {normalize_rel(p).removeprefix("wiki/") for p in scope_paths}
+        else:
+            scope = _tag_query_scope(root, query or "", scope_top)
         in_scope = {t for t, pages in pages_for.items() if scope.intersection(pages)}
         relevant = [{"tag": t, "count": counts[t], "new": counts[t] < TAG_ESTABLISHED_MIN}
                     for t, _ in ranked if t in in_scope]
@@ -2093,8 +2151,14 @@ TAG_SINGLETON_TAIL = 25  # unscoped promotion window — see cmd_tags
 
 def cmd_tags(args: argparse.Namespace) -> None:
     root = resolve_root(Path(args.project_root))
+    scope_paths = _read_pages_paths(args) or None
+    if scope_paths is None and args.q and not tag_query_terms(args.q):
+        die("--q has no usable search terms (only punctuation / single characters). "
+            "Pass topic words or entity names, e.g. --q \"孙中山 洪门 致公堂\".")
     vocab = tag_vocabulary(root, query=args.q, scope_top=args.scope_top,
+                           scope_paths=scope_paths,
                            with_duplicates=args.audit or bool(args.json))
+    scoped = scope_paths is not None or bool(args.q)
     if args.json:
         if not args.verbose:
             vocab.pop("pagesFor", None)
@@ -2112,10 +2176,12 @@ def cmd_tags(args: argparse.Namespace) -> None:
     shown = est if args.limit <= 0 else est[: args.limit]
     print(f"# tag vocabulary — {vocab['taggedPages']}/{vocab['contentPages']} pages tagged, "
           f"{vocab['distinctTags']} distinct")
-    if args.q:
+    if scoped:
         rel = vocab["relevant"]
         rel_shown = rel if args.limit <= 0 else rel[: args.limit]
-        print(f"\n## relevant to this source ({len(rel)} tags on the {args.scope_top} nearest pages)")
+        where = (f"{len(scope_paths)} given pages" if scope_paths is not None
+                 else f"the {args.scope_top} nearest pages")
+        print(f"\n## relevant to this source ({len(rel)} tags on {where})")
         print(", ".join(f"{r['tag']}({r['count']}){'*' if r['new'] else ''}" for r in rel_shown)
               if rel_shown else "(no related pages yet — this is new ground for the wiki)")
         if args.limit > 0 and len(rel) > args.limit:
@@ -2130,7 +2196,7 @@ def cmd_tags(args: argparse.Namespace) -> None:
     # and reused, or nothing ever climbs from 1 to 2. Show the tail bounded —
     # the whole list is 899 entries on a large wiki, which is what made the
     # first version of this command expensive.
-    if not args.q and not args.audit and vocab["singletons"]:
+    if not scoped and not args.audit and vocab["singletons"]:
         tail = vocab["singletons"][:TAG_SINGLETON_TAIL]
         print(f"\n## used once so far ({len(vocab['singletons'])} total, showing {len(tail)} — "
               "reuse one instead of coining a near-synonym)")
@@ -3307,8 +3373,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="the wiki's live tag vocabulary — read this BEFORE generating tags for a new page")
     p.add_argument("project_root")
     p.add_argument("--q", help="scope to tags on the pages nearest this text — what ingest should "
-                               "pass (the source's topic/entities). Surfaces relevant new tags that "
-                               "the global backbone view hides.")
+                               "pass (the source's topic/entities, space-separated). Surfaces "
+                               "relevant new tags that the global backbone view hides.")
+    p.add_argument("--paths", help="comma-separated wiki page paths to scope to, instead of --q "
+                                   "(most precise: pass the working set step 5 already selected)")
+    p.add_argument("--paths-file", help="JSON array or one-per-line file of wiki page paths to scope to")
     p.add_argument("--scope-top", type=int, default=12,
                    help="pages the --q scope considers (default 12)")
     p.add_argument("--limit", type=int, default=40,
