@@ -1856,6 +1856,23 @@ def cmd_schema_upgrade(args: argparse.Namespace) -> None:
     new_text = read_text(bundled)
     have, want = schema_version(current), schema_version(new_text)
 
+    # Never write backwards. A wiki ahead of the bundled template means either a
+    # hand-extended schema or an older skill install talking to a newer wiki;
+    # overwriting either silently discards rules the wiki actively relies on.
+    # The backup is not a defense — "upgraded" in the report is what makes it
+    # dangerous, because nobody goes looking for a backup of a success.
+    if have > want:
+        print(json.dumps({
+            "status": "refused",
+            "wiki": str(root),
+            "currentVersion": have,
+            "bundledVersion": want,
+            "detail": (f"this wiki's schema.md is v{have}, ahead of the bundled v{want}. "
+                       "Refusing to overwrite it — that would be a downgrade, not an upgrade. "
+                       "Update the skill install, or reconcile the two by hand."),
+        }, indent=2, ensure_ascii=False))
+        sys.exit(1)
+
     # Carry the one section that is genuinely per-wiki across the upgrade.
     # Verify the result rather than trusting the substitution: losing a
     # hand-built domain taxonomy to a silent regex miss is the worst outcome
@@ -1961,13 +1978,51 @@ def _tag_near_duplicate(a: str, b: str) -> str | None:
     return None
 
 
-def tag_vocabulary(root: Path) -> dict[str, Any]:
+def _tag_query_scope(root: Path, query: str, top: int) -> set[str]:
+    """Pages most relevant to a free-text query — the same bounded keyword
+    scoring the local retrieval tier uses, reduced to just page paths."""
+    terms = [t.lower() for t in query.split() if t.strip()]
+    if not terms:
+        return set()
+    scored: list[tuple[float, str]] = []
+    for path in wiki_files(root):
+        if path.name in {"index.md", "log.md", "overview.md"}:
+            continue
+        try:
+            text = read_text(path)[:6000]
+        except OSError:
+            continue
+        title = (frontmatter_value(text, "title") or path.stem).lower()
+        _, body = strip_frontmatter(text)
+        body_lower = body.lower()
+        score = 0.0
+        for term in terms:
+            if term in title:
+                score += 5.0
+            score += float(min(body_lower.count(term), 5))
+        if score > 0:
+            scored.append((score, lint_page(root, path)))
+    scored.sort(key=lambda s: (-s[0], s[1]))
+    return {rel for _, rel in scored[:top]}
+
+
+def tag_vocabulary(root: Path, *, query: str | None = None, scope_top: int = 12,
+                   with_duplicates: bool = True) -> dict[str, Any]:
     """Derive the live tag vocabulary from the wiki layer.
 
     Returns established tags (used on ≥2 pages), singletons (used once — either
     a tag that hasn't caught on yet or a near-synonym of an established one),
     untagged pages, and consolidation hints. Index/log/overview are excluded:
     overview carries no `tags` key by contract, the other two aren't content.
+
+    `query` scopes the result to tags appearing on the pages most relevant to
+    it, which is how ingest should read this. Counts stay corpus-wide so the
+    caller still sees how established each tag really is; only the *selection*
+    narrows. This is also what keeps new tags reachable — see `relevant` below.
+
+    `with_duplicates=False` skips the O(tags²) pair scan. On a 1500-tag wiki
+    that scan is 1.1M comparisons and ~2s, pure waste for callers that only
+    want the backbone.
     """
     counts: dict[str, int] = {}
     pages_for: dict[str, list[str]] = {}
@@ -1989,37 +2044,57 @@ def tag_vocabulary(root: Path) -> dict[str, Any]:
     established = [{"tag": t, "count": c} for t, c in ranked if c >= TAG_ESTABLISHED_MIN]
     singletons = [t for t, c in ranked if c < TAG_ESTABLISHED_MIN]
 
+    # Tags on the pages nearest this source, singletons included and marked.
+    # Without this the facet cannot actually grow: a tag coined on one page is
+    # a singleton, the backbone view only lists established (≥2) tags, so the
+    # next ingest never sees the new word, never reuses it, and it can never
+    # reach 2. Every new tag would die at count 1 and the "self-growing"
+    # vocabulary would only ever recycle whatever was already popular.
+    relevant: list[dict[str, Any]] = []
+    if query:
+        scope = _tag_query_scope(root, query, scope_top)
+        in_scope = {t for t, pages in pages_for.items() if scope.intersection(pages)}
+        relevant = [{"tag": t, "count": counts[t], "new": counts[t] < TAG_ESTABLISHED_MIN}
+                    for t, _ in ranked if t in in_scope]
+
     # Rank by how much merging the pair would actually buy, because on a large
     # wiki this list runs to hundreds of entries and an unordered dump is one
     # nobody reads. Case-variants lead: they need no judgement at all (`AI`/`ai`
     # split 58 pages in one real wiki), so they are pure wins. Everything else
     # follows by total pages affected.
     hints: list[dict[str, Any]] = []
-    all_tags = [t for t, _ in ranked]
-    for i, a in enumerate(all_tags):
-        for b in all_tags[i + 1:]:
-            reason = _tag_near_duplicate(a, b)
-            if reason:
-                hints.append({"a": a, "b": b, "reason": reason,
-                              "counts": f"{counts[a]}/{counts[b]}",
-                              "pagesAffected": counts[a] + counts[b]})
-    hints.sort(key=lambda h: (h["reason"] != "case-variant", -h["pagesAffected"],
-                              h["a"], h["b"]))
+    if with_duplicates:
+        all_tags = [t for t, _ in ranked]
+        for i, a in enumerate(all_tags):
+            for b in all_tags[i + 1:]:
+                reason = _tag_near_duplicate(a, b)
+                if reason:
+                    hints.append({"a": a, "b": b, "reason": reason,
+                                  "counts": f"{counts[a]}/{counts[b]}",
+                                  "pagesAffected": counts[a] + counts[b]})
+        hints.sort(key=lambda h: (h["reason"] != "case-variant", -h["pagesAffected"],
+                                  h["a"], h["b"]))
     return {
         "contentPages": total,
         "taggedPages": total - len(untagged),
         "distinctTags": len(counts),
         "established": established,
         "singletons": singletons,
+        "relevant": relevant,
         "untaggedPages": untagged,
         "nearDuplicates": hints,
+        "duplicatesComputed": with_duplicates,
         "pagesFor": pages_for,
     }
 
 
+TAG_SINGLETON_TAIL = 25  # unscoped promotion window — see cmd_tags
+
+
 def cmd_tags(args: argparse.Namespace) -> None:
     root = resolve_root(Path(args.project_root))
-    vocab = tag_vocabulary(root)
+    vocab = tag_vocabulary(root, query=args.q, scope_top=args.scope_top,
+                           with_duplicates=args.audit or bool(args.json))
     if args.json:
         if not args.verbose:
             vocab.pop("pagesFor", None)
@@ -2037,17 +2112,33 @@ def cmd_tags(args: argparse.Namespace) -> None:
     shown = est if args.limit <= 0 else est[: args.limit]
     print(f"# tag vocabulary — {vocab['taggedPages']}/{vocab['contentPages']} pages tagged, "
           f"{vocab['distinctTags']} distinct")
+    if args.q:
+        rel = vocab["relevant"]
+        rel_shown = rel if args.limit <= 0 else rel[: args.limit]
+        print(f"\n## relevant to this source ({len(rel)} tags on the {args.scope_top} nearest pages)")
+        print(", ".join(f"{r['tag']}({r['count']}){'*' if r['new'] else ''}" for r in rel_shown)
+              if rel_shown else "(no related pages yet — this is new ground for the wiki)")
+        if args.limit > 0 and len(rel) > args.limit:
+            print(f"… +{len(rel) - args.limit} more (--limit 0 for all)")
+        print("* = used on only one page so far; reusing it here is what promotes it")
     print("\n## established (reuse these when they fit)")
     print(", ".join(f"{e['tag']}({e['count']})" for e in shown) if shown
           else "(none yet — this wiki is still building its vocabulary)")
     if args.limit > 0 and len(est) > args.limit:
         print(f"… +{len(est) - args.limit} more established tags (--limit 0 for all)")
+    # Unscoped callers still need a path by which a brand-new tag can be seen
+    # and reused, or nothing ever climbs from 1 to 2. Show the tail bounded —
+    # the whole list is 899 entries on a large wiki, which is what made the
+    # first version of this command expensive.
+    if not args.q and not args.audit and vocab["singletons"]:
+        tail = vocab["singletons"][:TAG_SINGLETON_TAIL]
+        print(f"\n## used once so far ({len(vocab['singletons'])} total, showing {len(tail)} — "
+              "reuse one instead of coining a near-synonym)")
+        print(", ".join(tail))
+        print("(`--q \"<source topic>\"` for the ones actually related to what you're tagging)")
     if not args.audit:
-        extras = len(vocab["singletons"]) + len(vocab["nearDuplicates"]) + len(vocab["untaggedPages"])
-        if extras:
-            print(f"\n({len(vocab['singletons'])} singletons, {len(vocab['nearDuplicates'])} possible "
-                  f"duplicate pairs, {len(vocab['untaggedPages'])} untagged pages — `--audit` or "
-                  "`wiki_ops.py health` to see them; not needed to tag a page)")
+        print(f"\n({len(vocab['singletons'])} tags used once, {len(vocab['untaggedPages'])} untagged "
+              "pages — `--audit` or `wiki_ops.py health` for the full cleanup view)")
         return
     if vocab["singletons"]:
         print("\n## singletons (used once — prefer reusing one over coining a near-synonym)")
@@ -2078,9 +2169,21 @@ def cmd_tags(args: argparse.Namespace) -> None:
 # genuinely should not have a domain taxonomy yet.
 
 HEALTH_SOURCE_THRESHOLD = 12  # schema.md's own "often after a dozen-plus sources"
-PURPOSE_STUB_MARKERS = ("<!-- List the primary questions", "<!-- What is in scope?",
-                        "> TBD", "<!-- Your current working hypothesis")
-OVERVIEW_STUB_MARKER = "<!-- Provide a high-level summary"
+# Two init paths write two different placeholder wordings — `my-llm-wiki`'s
+# `init_wiki.py` inline templates and this skill's `assets/templates/`. Matching
+# only the first meant a wiki scaffolded by the maintainer's own Initialize flow
+# reported a clean bill of health with every placeholder still in place. Any new
+# init template has to add its markers here too.
+PURPOSE_STUB_MARKERS = (
+    "<!-- List the primary questions", "<!-- What is in scope?",
+    "> TBD", "<!-- Your current working hypothesis",          # init_wiki.py
+    "Describe what this wiki is trying to understand",        # assets/templates
+    "## Working Thesis\n\nTBD.",
+)
+OVERVIEW_STUB_MARKERS = (
+    "<!-- Provide a high-level summary",                      # init_wiki.py
+    "<!-- `refresh overview` regenerates this",               # assets/templates
+)
 
 
 def cmd_health(args: argparse.Namespace) -> None:
@@ -2119,7 +2222,8 @@ def cmd_health(args: argparse.Namespace) -> None:
              "fill in the sections — this is one of only two per-wiki files ingest always reads")
 
     overview = root / "wiki" / "overview.md"
-    if overview.exists() and OVERVIEW_STUB_MARKER in read_text(overview) and source_count > 0:
+    if (overview.exists() and source_count > 0
+            and any(m in read_text(overview) for m in OVERVIEW_STUB_MARKERS)):
         note("overview", "info",
              "wiki/overview.md is still the init placeholder.",
              "refresh it per the Refresh Overview flow (manual, never during ingest)")
@@ -3202,6 +3306,11 @@ def build_parser() -> argparse.ArgumentParser:
         "tags",
         help="the wiki's live tag vocabulary — read this BEFORE generating tags for a new page")
     p.add_argument("project_root")
+    p.add_argument("--q", help="scope to tags on the pages nearest this text — what ingest should "
+                               "pass (the source's topic/entities). Surfaces relevant new tags that "
+                               "the global backbone view hides.")
+    p.add_argument("--scope-top", type=int, default=12,
+                   help="pages the --q scope considers (default 12)")
     p.add_argument("--limit", type=int, default=40,
                    help="max established tags in text output (0 = all; default 40)")
     p.add_argument("--audit", action="store_true",

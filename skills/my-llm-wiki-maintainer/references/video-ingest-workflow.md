@@ -215,6 +215,18 @@ tags per `schema.md`'s Tag & Domain Policy (e.g. `[清朝, 雍正朝, 官员, �
 not `[video, inbox]`) — and reuse an existing combo from sibling source pages in the
 same series where it fits, rather than inventing a one-off set per video.
 
+**Read the vocabulary before writing those tags** — this streamlined flow does not
+run `ingest-update.md` step 5, so nothing else in it will:
+
+```bash
+python3 scripts/wiki_ops.py tags <root> --q "<video topic / key names>"
+```
+
+Reuse an established tag over coining one, and reuse a `*`-marked tag (used once so
+far) over coining a near-synonym of it — for a series, that is usually exactly the
+combo the earlier episodes established. ~590 tokens, flat in wiki size. Never
+`--audit` here.
+
 ### 7. Two-Pass Apply-Blocks
 
 Write ALL new pages into one blocks file, then ALL updates into another.

@@ -62,7 +62,19 @@ Goal: compile one raw source into durable wiki pages while preserving traceabili
       A `compact-index --no-desc` load is acceptable only for a small wiki
       (listing under ~10k chars); large wikis get their global pass in review
       batches instead (see `review-research.md` → Link Densification).
-   6. Record the retrieval trace so before/after comparisons stay possible on
+   6. **Read the tag vocabulary**, scoped to what this source is about — pass
+      the same candidate names from substep 1:
+
+      ```bash
+      python3 scripts/wiki_ops.py tags <root> --q "<candidate names / topic>"
+      ```
+
+      Part of the working set on purpose, not a step-7 detail: it must land
+      **before the size gate below**, or the large-source path (which replaces
+      steps 6–7 and rejoins at step 8) would skip tagging guidance entirely.
+      Bounded like the rest of this step — ~590 tokens on a 900-page wiki, the
+      same on a small one. What you do with it is in step 7.
+   7. Record the retrieval trace so before/after comparisons stay possible on
       any host:
 
       ```bash
@@ -104,11 +116,11 @@ Goal: compile one raw source into durable wiki pages while preserving traceabili
      acceptable; a format word like `video`/`bilibili` is fine alongside real tags
      but never as the whole set). `apply-blocks` and `lint` both warn on an empty
      set, but the warning arrives after the page is written — get it right here.
-   - **Read the wiki's existing tag vocabulary first — one cheap call, before you
-     write any tag:**
+   - **Use the tag vocabulary you read in step 5.6** (re-run it there if this is
+     the large-source or video path rejoining here):
 
      ```bash
-     python3 scripts/wiki_ops.py tags <root>
+     python3 scripts/wiki_ops.py tags <root> --q "<candidate names / topic>"
      ```
 
      Prefer an established tag that fits over coining a new one; coin a new tag
@@ -120,11 +132,18 @@ Goal: compile one raw source into durable wiki pages while preserving traceabili
      next ingest's vocabulary — that feedback loop is the whole mechanism, so a
      sloppy tag here costs more than this page.
 
-     The default output is bounded (top-40 established tags, ~340 tokens on a
-     900-page wiki and the same on a 20-page one), so this does not violate the
-     step-5 budget. **Do not pass `--audit` during ingest** — it adds the full
-     singleton list, every duplicate pair and every untagged page, which is
-     cleanup material worth 16KB on a large wiki and useless for tagging one page.
+     **Pass `--q`.** Tags marked `*` are used on exactly one page so far, and
+     they only appear in the scoped view — the unscoped backbone lists
+     established (≥2 page) tags, so without `--q` a tag coined by the previous
+     ingest is invisible, never gets reused, and can never reach 2. The scoped
+     view is what lets the vocabulary actually grow rather than just recycle
+     whatever was already popular.
+
+     Bounded either way (~590 tokens on a 900-page wiki, the same on a 20-page
+     one), so this does not violate the step-5 budget. **Never pass `--audit`
+     during ingest** — it adds every singleton, duplicate pair and untagged
+     page, which is 16KB of cleanup material on a large wiki and useless for
+     tagging one page.
    - **REVIEW blocks are part of the deliverable, not an optional extra.** For every
      source, explicitly decide 0–3 `suggestion` items — the research gaps this source
      opens: claims worth verifying, adjacent topics the wiki lacks, tensions with

@@ -146,6 +146,17 @@ Only start when `stage-status` reports `ready: true` (`pending == 0 && stale == 
    `retrieval-search --top 8` (Browser-first, local fallback) plus the disk grep sentinel
    (`grep -F "[[entities/<name>" wiki/index.md`), then `read-pages` the top
    3–5 pages that overlap. Never load the whole index to "see what exists".
+
+   Read the tag vocabulary here too, scoped to the deduped candidates — this
+   phase replaces `ingest-update.md` steps 6–7, so its step 5.6 read never ran:
+
+   ```bash
+   scripts/wiki_ops.py tags <root> --q "<deduped candidate names>"
+   ```
+
+   Reuse established tags, and reuse `*`-marked ones (used once so far) rather
+   than coining near-synonyms. Bounded (~590 tokens regardless of wiki size);
+   never `--audit` mid-ingest.
 4. Run source identity first (dedup one source → one page):
 
 ```bash

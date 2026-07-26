@@ -13,6 +13,7 @@ Nothing caught it because nothing compared the two. This does.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import unittest
 from pathlib import Path
@@ -21,6 +22,13 @@ REPO = Path(__file__).resolve().parents[1]
 CAPTURE_COPY = REPO / "skills" / "my-llm-wiki" / "assets" / "schema.md"
 MAINTAINER_COPY = REPO / "skills" / "my-llm-wiki-maintainer" / "assets" / "templates" / "schema.md"
 VERSION_RE = re.compile(r"<!--\s*llm-wiki-schema-version:\s*(\d+)\s*-->")
+
+# sha256 of the schema template at each published version. Adding an entry is
+# the deliberate act that says "this is a new schema version"; changing content
+# under an existing version is what the digest test refuses.
+KNOWN_SCHEMA_DIGESTS = {
+    2: "48e6a8dc9afee9c89d87ae18458dd3eda46566bf48ae9b77d5503da3911fe188",
+}
 
 
 class SchemaTemplateSyncTests(unittest.TestCase):
@@ -46,13 +54,32 @@ class SchemaTemplateSyncTests(unittest.TestCase):
         self.assertIsNotNone(match, "schema template lost its version marker")
         self.assertGreaterEqual(int(match.group(1)), 2)
 
-    def test_bumping_content_without_bumping_version_is_visible(self) -> None:
-        # Not a content assertion — a reminder encoded as a test name: the
-        # marker must rise whenever the template's rules change, or existing
-        # wikis silently stay behind. Asserts the marker is parseable as int.
-        version = VERSION_RE.search(MAINTAINER_COPY.read_text(encoding="utf-8"))
-        self.assertIsNotNone(version)
-        self.assertTrue(version.group(1).isdigit())
+    def test_content_change_requires_a_version_bump(self) -> None:
+        # The gate that actually bites. Editing the template's rules without
+        # raising the marker leaves every existing wiki silently behind —
+        # `schema-upgrade` compares versions, not content, so a same-version
+        # edit is invisible to it and reaches nobody. Binding the content
+        # digest to the version makes that impossible to do by accident: change
+        # the template and this fails until you bump the marker AND record the
+        # new digest below.
+        #
+        # An earlier version of this test only asserted the marker was numeric,
+        # which its own name claimed was a bump gate. It was not — the template
+        # could be rewritten wholesale and it still passed.
+        text = CAPTURE_COPY.read_text(encoding="utf-8")
+        version = int(VERSION_RE.search(text).group(1))
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        expected = KNOWN_SCHEMA_DIGESTS.get(version)
+        self.assertIsNotNone(
+            expected,
+            f"schema template is v{version} with no recorded digest. If you bumped "
+            f"the version, add it:\n    {version}: \"{digest}\",")
+        self.assertEqual(
+            digest, expected,
+            f"schema template content changed but the version marker is still "
+            f"v{version}. Existing wikis compare versions, not content, so this "
+            f"edit would reach none of them. Bump the marker in BOTH templates and "
+            f"record the new digest:\n    {version + 1}: \"{digest}\",")
 
 
 if __name__ == "__main__":

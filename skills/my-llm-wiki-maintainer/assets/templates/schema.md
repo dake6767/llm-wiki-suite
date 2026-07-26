@@ -31,7 +31,7 @@ type: entity | concept | source | query | comparison | synthesis | overview
 title: Human-readable title
 domain: []                   # controlled facet — see Tag & Domain Policy
                              # (omit until you've defined values; never on entity/concept)
-tags: []
+tags: [topical-word, another-topical-word]   # REQUIRED — real subject words, never []
 related: []
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
@@ -110,11 +110,13 @@ across ≥2 pages:
   rule is only satisfiable if you first look at what the corpus already uses:
 
   ```bash
-  python3 <maintainer-skill>/scripts/wiki_ops.py tags <root>
+  python3 <maintainer-skill>/scripts/wiki_ops.py tags <root> --q "<this page's topic>"
   ```
 
-  Prefer an established tag that fits; prefer an existing singleton over a fresh
-  near-synonym of it; coin a new word only when nothing listed covers the page.
+  Prefer an established tag that fits; prefer a `*`-marked one (used once so far)
+  over a fresh near-synonym of it; coin a new word only when nothing listed covers
+  the page. Pass `--q` — the unscoped view lists only tags already on ≥2 pages, so
+  a word coined by the previous ingest would be invisible and could never reach 2.
   The vocabulary is derived from the pages themselves, so each ingest both reads
   it and extends it — that loop is what makes the facet converge. Skipping the
   read is how one wiki ended up with `近代中国`, `民国政治` and `中国近代史` as

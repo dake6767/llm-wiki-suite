@@ -77,6 +77,7 @@ jobs:
           python -m compileall -q scripts skills
           python -m unittest scripts.test_distribution
           python -m unittest scripts.test_skills_release
+          python -m unittest scripts.test_schema_template_sync
           python -m unittest discover -s skills/my-llm-wiki/scripts -p "test_*.py"
           python -m unittest discover -s skills/my-llm-wiki-video/scripts -p "test_*.py"
       - name: Check approval-clean examples
