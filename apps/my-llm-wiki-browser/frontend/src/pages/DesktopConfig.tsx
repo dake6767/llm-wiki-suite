@@ -11,6 +11,7 @@ import {
 } from "../api/client";
 import SharePanel from "../components/SharePanel";
 import { BrandLogo } from "../components/BrandLogo";
+import ThemeSwitcher from "../components/ThemeSwitcher";
 
 export type BrowserSettingsTab = "wikis" | "runtime" | "share";
 
@@ -68,6 +69,10 @@ export default function DesktopConfig() {
               );
             })}
           </nav>
+          <div className="border-t border-[color:var(--rule-cream)] px-4 py-4">
+            <div className="eyebrow mb-2 px-1 text-cream-soft">主题家族 · Theme</div>
+            <ThemeSwitcher tone="spine" className="w-full" />
+          </div>
         </aside>
 
         <BrowserSettingsSection active={active} />
@@ -239,7 +244,7 @@ function WikiDirectoryPanel({
                 {wiki.name}
               </h3>
               {wiki.default ? (
-                <span className="rounded-sm bg-cinnabar px-1.5 py-0.5 font-mono text-[0.62rem] uppercase tracking-[0.14em] text-paper">
+                <span className="rounded-sm bg-cinnabar px-1.5 py-0.5 font-mono text-[0.62rem] uppercase tracking-[0.14em] text-on-accent">
                   default
                 </span>
               ) : (
@@ -377,7 +382,7 @@ function ServerPortPanel() {
       {!valid && port !== "" ? (
         <p className="mt-2 text-sm text-cinnabar">端口需为 1024–65535 的整数。</p>
       ) : null}
-      {error ? <p className="mt-2 text-sm text-cinnabar">{error}</p> : null}
+      {error ? <p className="mt-2 text-sm text-danger">{error}</p> : null}
 
       {phase === "confirming" ? (
         <div className="mt-4 rounded-md border border-cinnabar/40 bg-cinnabar/10 px-4 py-3">
@@ -390,7 +395,7 @@ function ServerPortPanel() {
               type="button"
               onClick={saveAndRestart}
               disabled={busy}
-              className="rounded-sm bg-cinnabar px-4 py-2 text-sm font-semibold text-paper transition hover:opacity-90 disabled:opacity-60"
+              className="rounded-sm bg-cinnabar px-4 py-2 text-sm font-semibold text-on-accent transition hover:opacity-90 disabled:opacity-60"
             >
               确认重启
             </button>
@@ -409,7 +414,7 @@ function ServerPortPanel() {
           type="button"
           onClick={() => setPhase("confirming")}
           disabled={!changed}
-          className="mt-4 rounded-sm bg-cinnabar px-4 py-2 text-sm font-semibold text-paper transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+          className="mt-4 rounded-sm bg-cinnabar px-4 py-2 text-sm font-semibold text-on-accent transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
         >
           保存并重启
         </button>
@@ -492,7 +497,7 @@ function AutostartPanel() {
           />
         </button>
       </div>
-      {error ? <p className="mt-2 text-sm text-cinnabar">{error}</p> : null}
+      {error ? <p className="mt-2 text-sm text-danger">{error}</p> : null}
     </div>
   );
 }
@@ -524,7 +529,7 @@ function PanelMessage({
       className={[
         "rounded-md border px-6 py-5",
         tone === "error"
-          ? "border-cinnabar/40 bg-cinnabar/10"
+          ? "border-danger/40 bg-danger-surface"
           : "border-[var(--rule)] bg-paper-2/55",
       ].join(" ")}
     >

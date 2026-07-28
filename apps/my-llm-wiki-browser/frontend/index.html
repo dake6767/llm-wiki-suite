@@ -6,15 +6,47 @@
     <base href="/" />
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="light" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#f6f2e9" />
     <title>My LLM Wiki</title>
+    <script>
+      (() => {
+        try {
+          const savedFamily = localStorage.getItem("my-llm-wiki.theme-family");
+          const savedMode = localStorage.getItem("my-llm-wiki.theme-mode");
+          const legacy = localStorage.getItem("my-llm-wiki.theme");
+          const family = /^(archive|signal|field)$/.test(savedFamily || "")
+            ? savedFamily
+            : "archive";
+          const legacyMode = legacy === "paper" ? "light" : legacy === "ink" ? "dark" : "system";
+          const preference = /^(light|dark|system)$/.test(savedMode || "")
+            ? savedMode
+            : legacyMode;
+          const mode = preference === "system"
+            ? (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
+            : preference;
+          const colors = {
+            archive: { light: "#f6f2e9", dark: "#181714" },
+            signal: { light: "#eaf4f4", dark: "#061217" },
+            field: { light: "#eef1e5", dark: "#151d18" },
+          };
+          const root = document.documentElement;
+          root.dataset.theme = `${family}-${mode}`;
+          root.dataset.themeFamily = family;
+          root.dataset.themeMode = mode;
+          root.dataset.themePreference = preference;
+          root.style.colorScheme = mode;
+          document.querySelector('meta[name="theme-color"]').content = colors[family][mode];
+        } catch {}
+      })();
+    </script>
     <!-- 单色 SVG 图标：内嵌样式随系统深浅色取墨/纸色；相对路径经 <base> 解析，分租户下亦可达 -->
     <link rel="icon" type="image/svg+xml" href="icon.svg" />
     <link rel="apple-touch-icon" href="apple-touch-icon.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400;1,9..144,500&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Serif+SC:wght@400;500;600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400;1,9..144,500&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=Noto+Sans+SC:wght@400;500;600&family=Noto+Serif+SC:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
   </head>

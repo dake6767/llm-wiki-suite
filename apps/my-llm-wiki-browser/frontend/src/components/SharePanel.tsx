@@ -397,7 +397,7 @@ export default function SharePanel({
                 <button
                   onClick={onCreate}
                   disabled={creating || !wiki}
-                  className="w-full bg-cinnabar py-2.5 font-mono text-sm font-medium text-paper transition-colors hover:bg-cinnabar-deep disabled:opacity-50"
+                  className="w-full bg-cinnabar py-2.5 font-mono text-sm font-medium text-on-accent transition-colors hover:bg-cinnabar-deep disabled:opacity-50"
                 >
                   {creating
                     ? "创建中…"

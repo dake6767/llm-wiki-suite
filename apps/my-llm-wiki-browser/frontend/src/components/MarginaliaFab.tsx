@@ -63,7 +63,7 @@ export default function MarginaliaFab({ items }: { items: FabItem[] }) {
               </span>
             )}
             {it.count > 0 && (
-              <span className="absolute -right-1 -top-1 flex h-[1.05rem] min-w-[1.05rem] items-center justify-center rounded-full bg-cinnabar px-1 font-mono text-[0.6rem] leading-none text-paper">
+              <span className="absolute -right-1 -top-1 flex h-[1.05rem] min-w-[1.05rem] items-center justify-center rounded-full bg-cinnabar px-1 font-mono text-[0.6rem] leading-none text-on-accent">
                 {it.count > 99 ? "99+" : it.count}
               </span>
             )}
@@ -73,7 +73,7 @@ export default function MarginaliaFab({ items }: { items: FabItem[] }) {
               onClick={it.secondaryAction.onClick}
               aria-label={it.secondaryAction.label}
               title={it.secondaryAction.label}
-              className="absolute -bottom-1.5 -right-1.5 flex h-5 w-5 items-center justify-center rounded-full border border-[color:var(--rule)] bg-paper font-mono text-sm leading-none text-cinnabar shadow-md transition-colors hover:bg-cinnabar hover:text-paper"
+              className="absolute -bottom-1.5 -right-1.5 flex h-5 w-5 items-center justify-center rounded-full border border-[color:var(--rule)] bg-paper font-mono text-sm leading-none text-cinnabar shadow-md transition-colors hover:bg-cinnabar hover:text-on-accent"
             >
               +
             </button>

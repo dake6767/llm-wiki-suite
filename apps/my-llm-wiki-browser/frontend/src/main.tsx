@@ -9,8 +9,10 @@ import {
   markOpenSharePanel,
   routerBasePath,
 } from "./lib/shareSession";
+import { initializeTheme, ThemeProvider } from "./lib/theme";
 import "./index.css";
 
+initializeTheme();
 // 新分享协议：从 `/share/<grant_id>/#key=<secret>` 建立访客会话；key 常驻 fragment，
 // 当前页面地址本身始终可复制、刷新和转发。
 bootstrapShareFromUrl();
@@ -33,9 +35,11 @@ initProseSize(); // 应用上次保存的正文字号
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    {/* Owner basename=/<uid>；Guest basename=/<uid>/share/<grant_id>。 */}
-    <BrowserRouter basename={routerBasePath() || undefined}>
-      <App />
-    </BrowserRouter>
+    <ThemeProvider>
+      {/* Owner basename=/<uid>；Guest basename=/<uid>/share/<grant_id>。 */}
+      <BrowserRouter basename={routerBasePath() || undefined}>
+        <App />
+      </BrowserRouter>
+    </ThemeProvider>
   </StrictMode>,
 );

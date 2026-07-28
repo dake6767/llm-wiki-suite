@@ -8,6 +8,7 @@ import {
   browserSettingsTabs,
   type BrowserSettingsTab,
 } from "../pages/DesktopConfig";
+import ThemeSwitcher from "../components/ThemeSwitcher";
 
 type DestinationState = "absent" | "owned" | "foreign";
 type SetupHealth = "ready" | "not-configured" | "needs-repair" | "action-required";
@@ -781,7 +782,7 @@ function SetupRail({ active, version }: { active: number; version?: string }) {
     <aside className="setup-rail">
       <div>
         <div className="setup-mark">文</div>
-        <p className="mt-4 font-display text-xl text-paper">My LLM Wiki</p>
+        <p className="mt-4 font-display text-xl text-cream">My LLM Wiki</p>
         <p className="font-mono mt-1 text-[0.62rem] uppercase tracking-[0.2em] text-cream-soft">
           Field Kit · {version ? `v${version}` : "local"}
         </p>
@@ -794,7 +795,10 @@ function SetupRail({ active, version }: { active: number; version?: string }) {
           </li>
         ))}
       </ol>
-      <p className="setup-rail-note">本页由应用直接加载。安装能力不经过本地 Web 服务。</p>
+      <div>
+        <ThemeSwitcher tone="spine" className="mb-4 w-full" />
+        <p className="setup-rail-note">本页由应用直接加载。安装能力不经过本地 Web 服务。</p>
+      </div>
     </aside>
   );
 }
@@ -1341,6 +1345,7 @@ function Management({ status, hosts, hostJob, onInstallHost, onRemoveHost, updat
           </button>
         </nav>
 
+        <ThemeSwitcher tone="spine" className="mb-3 w-full" />
         <footer className="settings-rail-footer">
           <span className={ready ? "is-ready" : "is-warn"} />
           <p><b>{ready ? "本机环境运行正常" : "本机环境需要处理"}</b>Browser 与 Agent 设置集中在此管理。</p>

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useShareNavigate } from "../lib/shareNavigation";
 import { listWikis, setToken } from "../api/client";
 import { BrandLogo, BrandMark } from "../components/BrandLogo";
+import ThemeSwitcher from "../components/ThemeSwitcher";
 
 export default function Login() {
   const [token, setTok] = useState("");
@@ -22,6 +23,11 @@ export default function Login() {
 
   return (
     <div className="relative flex h-full items-center justify-center overflow-hidden bg-spine text-cream">
+      <ThemeSwitcher
+        tone="spine"
+        className="absolute right-5 top-5 z-20 w-72"
+      />
+
       {/* 品牌开卷水印 */}
       <BrandMark
         className="pointer-events-none absolute -right-20 -top-16 h-[42rem] w-[42rem] select-none text-cream opacity-[0.035]"
@@ -31,7 +37,7 @@ export default function Login() {
         <div className="mb-7 flex items-center gap-3">
           <BrandLogo className="h-12 w-12" />
           <span className="leading-tight">
-            <span className="block font-display text-xl font-semibold text-paper">
+            <span className="block font-display text-xl font-semibold text-cream">
               LLM&nbsp;Wiki
             </span>
             <span className="eyebrow block text-cream-soft">The&nbsp;Collection</span>
@@ -53,12 +59,12 @@ export default function Login() {
         />
 
         {err && (
-          <p className="mt-3 font-mono text-xs text-cinnabar">{err}</p>
+          <p className="mt-3 font-mono text-xs text-danger">{err}</p>
         )}
 
         <button
           type="submit"
-          className="mt-7 w-full rounded bg-cinnabar py-2.5 font-mono text-sm font-medium tracking-wide text-paper transition-colors hover:bg-cinnabar-deep"
+          className="mt-7 w-full rounded bg-cinnabar py-2.5 font-mono text-sm font-medium tracking-wide text-on-accent transition-colors hover:bg-cinnabar-deep"
         >
           进入 · ENTER →
         </button>
