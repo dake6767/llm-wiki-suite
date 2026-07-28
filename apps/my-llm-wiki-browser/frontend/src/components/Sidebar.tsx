@@ -22,6 +22,7 @@ import SharePanel from "./SharePanel";
 import ResizeHandle from "./ResizeHandle";
 import { ShareLink, useShareNavigate } from "../lib/shareNavigation";
 import { BrandLogo } from "./BrandLogo";
+import ThemeSwitcher from "./ThemeSwitcher";
 
 export default function Sidebar({
   wikis,
@@ -117,7 +118,7 @@ export default function Sidebar({
       >
         <BrandLogo className="h-10 w-10" />
         <span className="leading-tight">
-          <span className="block font-display text-lg font-semibold tracking-wide text-paper">
+          <span className="block font-display text-lg font-semibold tracking-wide text-cream">
             MY&nbsp;LLM&nbsp;Wiki
           </span>
           <span className="eyebrow block text-cream-soft">The&nbsp;Collection</span>
@@ -178,7 +179,7 @@ export default function Sidebar({
           />
           <span
             className={`font-serif text-[0.95rem] transition-colors ${
-              !type && !onReview ? "text-cinnabar" : "text-cream group-hover:text-paper"
+              !type && !onReview ? "text-cinnabar" : "text-cream group-hover:text-cream"
             }`}
           >
             全部 · 最近
@@ -196,7 +197,7 @@ export default function Sidebar({
             />
             <span
               className={`font-serif text-[0.95rem] transition-colors ${
-                onReview ? "text-cinnabar" : "text-cream group-hover:text-paper"
+                onReview ? "text-cinnabar" : "text-cream group-hover:text-cream"
               }`}
             >
               待审 · Review
@@ -206,7 +207,7 @@ export default function Sidebar({
               style={{ borderColor: "var(--rule-cream)" }}
             />
             {reviewOpen > 0 ? (
-              <span className="tnum rounded-full bg-cinnabar px-1.5 font-mono text-xs text-paper">
+              <span className="tnum rounded-full bg-cinnabar px-1.5 font-mono text-xs text-on-accent">
                 {reviewOpen}
               </span>
             ) : (
@@ -237,7 +238,7 @@ export default function Sidebar({
                 className={`font-serif text-[0.95rem] transition-colors ${
                   active
                     ? "text-cinnabar"
-                    : "text-cream group-hover:text-paper"
+                    : "text-cream group-hover:text-cream"
                 }`}
               >
                 {typeLabel(node.type)}
@@ -257,6 +258,14 @@ export default function Sidebar({
           );
         })}
       </nav>
+
+      <div
+        className="px-4 py-3"
+        style={{ borderTop: "1px solid var(--rule-cream)" }}
+      >
+        <div className="eyebrow mb-2 px-1 text-cream-soft">主题家族 · Theme</div>
+        <ThemeSwitcher tone="spine" className="w-full" />
+      </div>
 
       <div
         className="flex items-center justify-between px-5 py-4"

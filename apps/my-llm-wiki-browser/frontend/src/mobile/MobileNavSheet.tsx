@@ -14,6 +14,7 @@ import { useShareNavigate } from "../lib/shareNavigation";
 import { BASE } from "../lib/basePath";
 import { clearActiveShare, isGuest } from "../lib/shareSession";
 import { BrandLogo } from "../components/BrandLogo";
+import ThemeSwitcher from "../components/ThemeSwitcher";
 
 // 移动端左侧抽屉：知识库切换 + 类目索引 + 退出。沿用书脊（spine）配色。
 export default function MobileNavSheet({
@@ -105,7 +106,7 @@ export default function MobileNavSheet({
         >
           <BrandLogo className="h-10 w-10" />
           <span className="leading-tight">
-            <span className="block font-display text-lg font-semibold tracking-wide text-paper">
+            <span className="block font-display text-lg font-semibold tracking-wide text-cream">
               LLM&nbsp;Wiki
             </span>
             <span className="eyebrow block text-cream-soft">The&nbsp;Collection</span>
@@ -178,7 +179,7 @@ export default function MobileNavSheet({
                 style={{ borderColor: "var(--rule-cream)" }}
               />
               {reviewOpen > 0 ? (
-                <span className="tnum rounded-full bg-cinnabar px-1.5 font-mono text-xs text-paper">
+                <span className="tnum rounded-full bg-cinnabar px-1.5 font-mono text-xs text-on-accent">
                   {reviewOpen}
                 </span>
               ) : (
@@ -221,6 +222,14 @@ export default function MobileNavSheet({
             );
           })}
         </nav>
+
+        <div
+          className="px-4 py-3"
+          style={{ borderTop: "1px solid var(--rule-cream)" }}
+        >
+          <div className="eyebrow mb-2 px-1 text-cream-soft">主题家族 · Theme</div>
+          <ThemeSwitcher tone="spine" className="w-full" />
+        </div>
 
         <div
           className="flex items-center justify-between px-5 py-4"
