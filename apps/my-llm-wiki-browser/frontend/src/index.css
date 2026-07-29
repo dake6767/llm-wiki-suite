@@ -487,6 +487,15 @@ summary,
   font-family: var(--font-mono);
 }
 
+.theme-switcher-controls {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.theme-switcher-controls[hidden] {
+  display: none;
+}
+
 .theme-switcher[data-tone="spine"] {
   --picker-border: var(--rule-cream);
   --picker-border-strong: color-mix(in srgb, var(--color-cream) 42%, transparent);
@@ -494,6 +503,80 @@ summary,
   --picker-surface-active: color-mix(in srgb, var(--color-cream) 14%, transparent);
   --picker-text: var(--color-cream);
   --picker-muted: var(--color-cream-soft);
+}
+
+.theme-compact-trigger {
+  display: grid;
+  min-height: 3rem;
+  grid-template-columns: 2.4rem minmax(0, 1fr) 1.25rem;
+  align-items: center;
+  gap: 0.65rem;
+  width: 100%;
+  padding: 0.35rem 0.55rem;
+  border: 1px solid var(--picker-border);
+  border-radius: var(--theme-control-radius);
+  color: var(--picker-text);
+  background: var(--picker-surface);
+  text-align: left;
+  touch-action: manipulation;
+  transition:
+    border-color 0.18s ease,
+    background-color 0.18s ease;
+}
+
+.theme-compact-trigger:hover,
+.theme-compact-trigger:focus-visible {
+  border-color: var(--picker-border-strong);
+  background: var(--picker-surface-active);
+}
+
+.theme-compact-copy {
+  display: grid;
+  min-width: 0;
+  gap: 0.12rem;
+}
+
+.theme-compact-copy small {
+  color: var(--picker-muted);
+  font-size: 0.52rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.theme-compact-copy b {
+  overflow: hidden;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.theme-compact-copy b span {
+  color: var(--picker-muted);
+  font-weight: 500;
+}
+
+.theme-compact-preview {
+  height: 1.75rem;
+}
+
+.theme-compact-chevron {
+  width: 1.1rem;
+  height: 1.1rem;
+  fill: none;
+  stroke: var(--picker-muted);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
+  transition: rotate 0.18s ease;
+}
+
+.theme-compact-trigger[aria-expanded="true"] .theme-compact-chevron {
+  rotate: 180deg;
+}
+
+.theme-switcher[data-compact="true"] .theme-switcher-controls {
+  padding-top: 0.1rem;
 }
 
 .theme-family-options {
@@ -675,7 +758,13 @@ summary,
 }
 
 .theme-switcher[data-compact="true"] .theme-family-option {
-  min-height: 3.4rem;
+  min-height: 3rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .theme-compact-chevron {
+    transition: none;
+  }
 }
 
 /* 朱砂印章 */
