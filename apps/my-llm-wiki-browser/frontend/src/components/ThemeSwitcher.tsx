@@ -1,4 +1,4 @@
-import type { KeyboardEvent, ReactNode } from "react";
+import { useId, useState, type KeyboardEvent, type ReactNode } from "react";
 import {
   THEME_FAMILIES,
   THEME_MODES,
@@ -82,6 +82,12 @@ export default function ThemeSwitcher({
     setFamily,
     setMode,
   } = useTheme();
+  const [expanded, setExpanded] = useState(false);
+  const controlsId = useId();
+  const activeFamily =
+    THEME_FAMILIES.find((option) => option.id === family) ?? THEME_FAMILIES[0];
+  const activeMode =
+    THEME_MODES.find((option) => option.id === mode) ?? THEME_MODES[0];
 
   return (
     <section
@@ -91,79 +97,116 @@ export default function ThemeSwitcher({
       data-resolved-mode={resolvedMode}
       aria-label="主题设置"
     >
-      <div
-        className="theme-family-options"
-        role="radiogroup"
-        aria-label="主题家族"
-      >
-        {THEME_FAMILIES.map((option, index) => {
-          const selected = family === option.id;
-          return (
-            <button
-              key={option.id}
-              type="button"
-              className="theme-family-option"
-              role="radio"
-              aria-checked={selected}
-              aria-label={`${option.label} · ${option.englishLabel}：${option.description}`}
-              title={option.description}
-              tabIndex={selected ? 0 : -1}
-              onClick={() => setFamily(option.id)}
-              onKeyDown={(event) =>
-                selectWithKeyboard(
-                  event,
-                  index,
-                  THEME_FAMILIES.length,
-                  (next) =>
-                    setFamily(THEME_FAMILIES[next].id as ThemeFamily),
-                )
-              }
-            >
-              <span
-                className="theme-family-preview"
-                data-family-preview={option.id}
-                aria-hidden="true"
-              />
-              <span className="theme-family-label">
-                <b>{option.label}</b>
-                {!compact && <small>{option.englishLabel}</small>}
-              </span>
-            </button>
-          );
-        })}
-      </div>
+      {compact && (
+        <button
+          type="button"
+          className="theme-compact-trigger"
+          aria-expanded={expanded}
+          aria-controls={controlsId}
+          aria-label={`当前主题：${activeFamily.label}，${activeMode.label}色模式；${expanded ? "收起" : "展开"}主题设置`}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          <span
+            className="theme-family-preview theme-compact-preview"
+            data-family-preview={activeFamily.id}
+            aria-hidden="true"
+          />
+          <span className="theme-compact-copy">
+            <small>主题 · Theme</small>
+            <b>
+              {activeFamily.label}
+              <span> · {activeMode.label}</span>
+            </b>
+          </span>
+          <svg
+            className="theme-compact-chevron"
+            viewBox="0 0 20 20"
+            aria-hidden="true"
+          >
+            <path d="m5.5 7.5 4.5 4.5 4.5-4.5" />
+          </svg>
+        </button>
+      )}
 
       <div
-        className="theme-mode-options"
-        role="radiogroup"
-        aria-label="外观模式"
+        id={controlsId}
+        className="theme-switcher-controls"
+        hidden={compact && !expanded}
       >
-        {THEME_MODES.map((option, index) => {
-          const selected = mode === option.id;
-          return (
-            <button
-              key={option.id}
-              type="button"
-              className="theme-mode-option"
-              role="radio"
-              aria-checked={selected}
-              aria-label={option.description}
-              title={option.description}
-              tabIndex={selected ? 0 : -1}
-              onClick={() => setMode(option.id)}
-              onKeyDown={(event) =>
-                selectWithKeyboard(event, index, THEME_MODES.length, (next) =>
-                  setMode(THEME_MODES[next].id),
-                )
-              }
-            >
-              <span className="theme-mode-icon">
-                <ModeIcon mode={option.id} />
-              </span>
-              <span>{option.label}</span>
-            </button>
-          );
-        })}
+        <div
+          className="theme-family-options"
+          role="radiogroup"
+          aria-label="主题家族"
+        >
+          {THEME_FAMILIES.map((option, index) => {
+            const selected = family === option.id;
+            return (
+              <button
+                key={option.id}
+                type="button"
+                className="theme-family-option"
+                role="radio"
+                aria-checked={selected}
+                aria-label={`${option.label} · ${option.englishLabel}：${option.description}`}
+                title={option.description}
+                tabIndex={selected ? 0 : -1}
+                onClick={() => setFamily(option.id)}
+                onKeyDown={(event) =>
+                  selectWithKeyboard(
+                    event,
+                    index,
+                    THEME_FAMILIES.length,
+                    (next) =>
+                      setFamily(THEME_FAMILIES[next].id as ThemeFamily),
+                  )
+                }
+              >
+                <span
+                  className="theme-family-preview"
+                  data-family-preview={option.id}
+                  aria-hidden="true"
+                />
+                <span className="theme-family-label">
+                  <b>{option.label}</b>
+                  {!compact && <small>{option.englishLabel}</small>}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
+        <div
+          className="theme-mode-options"
+          role="radiogroup"
+          aria-label="外观模式"
+        >
+          {THEME_MODES.map((option, index) => {
+            const selected = mode === option.id;
+            return (
+              <button
+                key={option.id}
+                type="button"
+                className="theme-mode-option"
+                role="radio"
+                aria-checked={selected}
+                aria-label={option.description}
+                title={option.description}
+                tabIndex={selected ? 0 : -1}
+                onClick={() => setMode(option.id)}
+                onKeyDown={(event) =>
+                  selectWithKeyboard(event, index, THEME_MODES.length, (next) =>
+                    setMode(THEME_MODES[next].id),
+                  )
+                }
+              >
+                <span className="theme-mode-icon">
+                  <ModeIcon mode={option.id} />
+                </span>
+                <span>{option.label}</span>
+              </button>
+            );
+          })}
+        </div>
       </div>
     </section>
   );

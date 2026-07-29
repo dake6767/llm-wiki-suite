@@ -224,11 +224,15 @@ export default function MobileNavSheet({
         </nav>
 
         <div
-          className="px-4 py-3"
+          className="px-4 py-2"
           style={{ borderTop: "1px solid var(--rule-cream)" }}
         >
-          <div className="eyebrow mb-2 px-1 text-cream-soft">主题家族 · Theme</div>
-          <ThemeSwitcher tone="spine" className="w-full" />
+          <ThemeSwitcher
+            key={open ? "theme-sheet-open" : "theme-sheet-closed"}
+            tone="spine"
+            compact
+            className="w-full"
+          />
         </div>
 
         <div
