@@ -16,7 +16,8 @@ description: >-
 
 Capture the video's spoken content, provenance, and cover. Produce a faithful
 transcript rather than a summary. Keep the URL as the original; delete temporary
-audio after transcription and never retain the video file.
+audio only after the verified transcript has been normalized successfully, and
+never retain the video file.
 
 This skill owns the video SOP and its platform variants. The sibling
 `my-llm-wiki` skill owns wiki routing, the Adapter/RAW contracts, normalization,
@@ -68,6 +69,10 @@ custom Providers only through the same resolver and output checks.
    every Python runner and native Provider in this capture. Do not substitute a
    Git Bash `/tmp/...` path: once a shell-free child launches `yt-dlp.exe` or
    another native tool, MSYS path mapping is no longer a reliable shared boundary.
+   A host Agent's ordinary `write_file` tool may reject the native temp root
+   (for example macOS `/private/var/...`) even though shipped subprocesses may
+   write there. Never work around that guard or treat its error as success: use
+   this skill's atomic assembly/repair scripts for files inside `VIDEO_WORKDIR`.
 4. **Probe metadata without executable pipes.** Run
    `python3 "$VIDEO_SKILL/scripts/video_probe.py" --url <url> --output "$VIDEO_WORKDIR/metadata.json"`.
    Retry with `--cookies-from-browser <browser>` only after a real auth/bot wall
@@ -81,11 +86,12 @@ custom Providers only through the same resolver and output checks.
    captions into context to inspect them.
    For local ASR, invoke the shipped runners (`scripts/sensevoice_to_srt.py`
    for Chinese, `scripts/faster_whisper_to_srt.py` for everything else); never
-   copy their implementation into a temporary script or an arbitrary-code tool. Write semantic transcript repairs as data
-   with the runtime's normal file-write tool.
+   copy their implementation into a temporary script or an arbitrary-code tool.
    Convert subtitle cues with
-   `python3 "$VIDEO_SKILL/scripts/srt_to_anchors.py" ...`. Never normalize the
-   converter's bare intermediate output.
+   `python3 "$VIDEO_SKILL/scripts/srt_to_anchors.py" ... --output
+   "$VIDEO_WORKDIR/anchored.md"`, then create the complete acceptance document
+   with `scripts/assemble_transcript.py`. Both writes are atomic and verified.
+   Never normalize the converter's bare intermediate output.
 6. **Handle long work safely.** Run long ASR in the background and poll its
    `status.yaml`; do not rely on a foreground tool timeout or passive notification.
    When the same turn will wait for the result, explicitly disable asynchronous
@@ -96,26 +102,42 @@ custom Providers only through the same resolver and output checks.
    before reading the transcript.
 7. **Polish faithfully.** Repair punctuation, paragraphing, and obvious ASR
    errors without summarizing or dropping content. Preserve every timestamp anchor
-   exactly. For non-Chinese videos, append a full `## 中文译文` with the same anchors.
+   exactly. Because the transcript lives in the native temp root, express
+   semantic repairs as an exact JSON replacement plan in an Agent-writable
+   scratch file, then run `scripts/apply_transcript_repairs.py`; the script
+   refuses a mismatched replacement count or any anchor change and replaces the
+   transcript atomically. For non-Chinese videos, append a full `## 中文译文`
+   from an Agent-writable data file with its `--translation-file` option; it
+   requires the same anchors in the same order.
 8. **Verify before commit.** Confirm URL/ID/title, duration plausibility,
    transcript length, timestamp coverage, and cover presence. Stop on an error or
-   stub rather than writing degraded RAW silently.
+   stub rather than writing degraded RAW silently. Before any retry, run
+   `scripts/capture_checkpoint.py` against the same workspace: a valid existing
+   `transcript.srt`, audio file, anchored transcript, or complete
+   `transcript.md` must be resumed rather than downloaded/transcribed again.
 9. **Resolve the wiki.** Apply the sibling core's routing policy using title,
    channel, description, and transcript. Pass the chosen wiki explicitly when
    auto-classification was used.
-10. **Normalize once.** Commit the verified temp directory through the shared core:
+10. **Commit once, then clean.** Use the transactional video wrapper; it calls
+   the shared normalizer, verifies the final RAW file, localized cover and
+   `capture_health: ok`, writes an idempotent checkpoint, and only then removes
+   exact staged audio/SRT/intermediate files:
 
    ```bash
-   python3 "$CORE_SKILL/scripts/normalize_raw.py" --from "$VIDEO_WORKDIR" \
-     --source-type video --wiki <wiki-root> \
+   python3 "$VIDEO_SKILL/scripts/commit_capture.py" \
+     --workdir "$VIDEO_WORKDIR" --wiki <wiki-root> \
      --title "<video title>" --source-url "<canonical url>" \
      --original-id "<platform id>" --author "<channel>" \
      --publish-time "<publish date>" \
      --captured-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
    ```
 
-   Require a meaningful title and at least one localized asset (the cover).
-   Surface every `capture_health` warning.
+   Never put an ad-hoc transcript write and deletion command in one execution
+   block. A nonzero exit, malformed success result, missing RAW/cover, or
+   `capture_health: warn` retains every recovery input and must propagate as a
+   task failure. Re-running the wrapper resumes its checkpoint instead of
+   normalizing twice. Require a meaningful title and at least one localized
+   asset (the cover); surface every warning.
 11. **Report and optionally synthesize.** Report the wiki, RAW path, transcript
    source, timestamp/translation status, and cover. For capture-only intent, leave
    it pending. For explicit synthesis intent, hand the exact wiki root and new RAW
@@ -125,7 +147,10 @@ custom Providers only through the same resolver and output checks.
 ## Invariants
 
 - Preserve timestamp anchors through transcription, polish, translation, and RAW.
-- Keep only the source URL, transcript, and cover; delete temporary audio/video.
+- Keep only the source URL, transcript, and cover in RAW; delete temporary
+  audio/video only after `commit_capture.py` verifies the normalized result.
+- Treat every file-write and nested command result as a hard gate. On any error,
+  retain audio, SRT, anchors, and the assembled transcript for a resumable retry.
 - Treat `status: error`, wrong metadata, implausible duration, or a short stub as
   failure, not a capture.
 - Never edit an existing RAW file. Recapture to a versioned file instead.

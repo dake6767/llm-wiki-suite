@@ -62,7 +62,8 @@ command substitution.
 
 Same as Douyin (`references/video-douyin.md`): `ffprobe` the mp4 duration for
 sanity (`video-asr.md` §5), extract 16 kHz mono wav, keep the downloaded cover
-jpg (or take frame 0), **delete the mp4**, run the SenseVoice recipe
+jpg (or take frame 0), retain the mp4/audio until `commit_capture.py` verifies
+RAW, run the SenseVoice recipe
 (`video-asr.md` §3), then SOP §3 `srt_to_anchors.py --url
 'https://www.xiaohongshu.com/discovery/item/<note_id>'` — the 小红书 player
 ignores `?t=` params today, so anchors are index-only, same as Douyin. Then

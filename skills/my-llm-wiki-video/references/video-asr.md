@@ -37,6 +37,18 @@ bare `-x` grabs a merged DASH stream whose audio silently truncates. If the
 probe returned no `audio_format_id` (rare extractor gap), fall back to listing
 formats manually as that file describes.
 
+Before any download or ASR retry, inspect the current capture:
+
+```bash
+python3 "$VIDEO_SKILL/scripts/capture_checkpoint.py" "$VIDEO_WORKDIR" \
+  --source-url "$URL" --original-id "$VIDEO_ID"
+```
+
+Honor its `next_action`. In particular, `asr-ready`, `audio-ready`,
+`wav-ready`, `ready-to-assemble`, and `ready-to-commit` mean reuse the existing
+artifact and skip every earlier network/ASR stage. An identity mismatch is a
+hard failure, not permission to reuse another video's checkpoint.
+
 If the selected format fails with a transport/CDN error such as connection
 refused, timeout, TLS failure, or HTTP 5xx, retry the next entry in the probe's
 ranked `audio_formats` list. Use a fresh output name so a `.part` file from the
@@ -46,10 +58,18 @@ ids or CDN ports: both can change. Authentication, login, geo, and HTTP
 401/403/412 failures are not format failover signals; surface or handle those
 through the platform's documented login-wall path.
 
-**Convert m4a → wav for Python-API ASR backends** (soundfile can't
-read m4a): `ffmpeg -i audio.m4a -ar 16000 -ac 1 audio.wav` anywhere, or
-`afconvert -f WAVE -d LEI16@16000 audio.m4a audio.wav` (macOS-only tool —
-don't cite it in cross-platform notes).
+**Convert downloaded audio → WAV for SenseVoice** (soundfile cannot read m4a)
+with the shipped wrapper:
+
+```bash
+python3 "$VIDEO_SKILL/scripts/audio_to_wav.py" \
+  "$VIDEO_WORKDIR/audio.m4a" "$VIDEO_WORKDIR/audio.wav"
+```
+
+It resolves FFmpeg through `media.extract-audio`, always requests 16 kHz,
+mono, PCM output, validates those properties, and atomically publishes the WAV.
+It reuses a valid existing WAV. Do not use `afconvert`: its format arguments do
+not reliably enforce mono and have caused a fast failed ASR launch.
 
 ## 2. Route the ASR backend by language BEFORE transcribing
 
@@ -116,8 +136,10 @@ Backend chosen, three rules that apply to every backend:
    keywords/tags + first description line** (≤ ~600 chars) — free, and it
    travels with every video. Model size is the other big lever: `medium` is the
    floor, `turbo`/`large-v3` for term-dense content.
-3. **Delete the audio when done.** Transcription is local and free; the media
-   is never kept.
+3. **Retain the audio through commit.** Transcription is local, but redownloading
+   and rerunning it is not free. Only `commit_capture.py` may delete audio, after
+   it has verified the assembled transcript and normalized RAW. Any write,
+   validation, or normalize error retains audio, SRT, and anchors.
 
 ## 3. ASR → timestamped SRT: the shipped runners
 
@@ -230,7 +252,10 @@ one command at 300 s). The universal contract:
   incident). Always allocate the directory with the SOP §1
   `create_temp_dir.py --prefix llmwiki-vid-` command; do not reuse or recursively
   clear a shared directory. Keep the status file inside that fresh native
-  directory.
+  directory. "Fresh" applies when starting a different capture; after a
+  downstream failure in the same capture, resume that exact identity-matched
+  workspace with `capture_checkpoint.py` instead of allocating a replacement
+  and redownloading.
 - Backgrounding changes nothing about speed — only how promptly you *notice*
   completion. Poll every ~30–60 s; a long video legitimately takes 10–25 min
   (SenseVoice: a 28-min zh video ≈ 5 min; whisper `medium` on CPU: the same

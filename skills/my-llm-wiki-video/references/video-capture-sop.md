@@ -15,9 +15,9 @@ when §2 lands on Path B. Platform-specific recipes and dead ends (Bilibili,
 in `scripts/`.
 
 The scenario: the user wants a video's **content** in RAW with the link kept —
-**never** the video file, and never the audio after transcription. The faithful
-"original" is the **URL**; the body is a timestamped **transcript** (a lossy text
-extraction, like a `doc`'s markitdown text). source_type = `video`.
+**never** the video file, and never the audio after a verified RAW commit. The
+faithful "original" is the **URL**; the body is a timestamped **transcript** (a
+lossy text extraction, like a `doc`'s markitdown text). source_type = `video`.
 
 ## Contents
 
@@ -43,6 +43,13 @@ value for `yt-dlp`, `ffmpeg`, the ASR runner, status polling, assembly, and
 normalization. In Windows + Git Bash, `/tmp/...` is an MSYS path whose physical
 mapping is not preserved when Python launches a native tool without a shell;
 do not create or substitute one for this workflow.
+
+Some Agent file-write tools classify the native temp root as a sensitive system
+path (macOS commonly resolves it to `/private/var/...`). Do not switch temp
+roots, weaken the guard, or ignore the tool error. The shipped
+`srt_to_anchors.py --output`, `assemble_transcript.py`, and
+`apply_transcript_repairs.py` scripts perform the required atomic writes and
+read-back verification inside this workspace.
 
 A finished capture has this `--from` folder shape:
 
@@ -177,7 +184,9 @@ backend means stop and put the install-or-degrade choice to the user, never a
 silent substitute), the shipped VAD-first runner that produces timestamped
 SRT, the background+poll discipline for the minutes-long run, and the
 audio-specific checks. Its output is a standard SRT — §3 consumes it
-unchanged. The audio is deleted after transcription, always.
+unchanged. Audio and SRT remain recovery inputs until `commit_capture.py` has
+verified the final normalized RAW. A failed assembly or normalize must never
+trigger cleanup.
 
 ---
 
@@ -189,7 +198,13 @@ as a script. Don't hand-transcode cue lines or rewrite the logic ad hoc:
 
 ```bash
 python3 <video-skill>/scripts/srt_to_anchors.py subs.srt \
-  --url 'https://www.youtube.com/watch?v=<id>' > anchored.md   # or a .vtt
+  --url 'https://www.youtube.com/watch?v=<id>' \
+  --output "$VIDEO_WORKDIR/anchored.md"   # or a .vtt
+
+python3 <video-skill>/scripts/assemble_transcript.py \
+  --workdir "$VIDEO_WORKDIR" \
+  --source-url 'https://www.youtube.com/watch?v=<id>' \
+  --transcript-source '<official captions or ASR backend>'
 ```
 
 It handles both SRT and VTT, picks the deep-link form from the URL's host
@@ -213,6 +228,13 @@ a RAW file titled/slugged `anchored` with no cover (`assets: 0`), which then
 needs frontmatter patching and a rename — a recurring live incident.
 `normalize_raw.py` now hard-refuses a title falling back to a generic working
 filename for exactly this reason.
+
+Do not hand-assemble `transcript.md` with an Agent `write_file` call against the
+native temp directory. `assemble_transcript.py` consumes `metadata.json`,
+`status.yaml`, the localized cover and `anchored.md`, atomically writes
+`transcript.md`, reads it back, and validates the complete acceptance shape. It
+reuses an already-valid transcript by default; replacing one requires an
+explicit `--force`.
 
 Related trap: with **multiple `.md` files in the `--from` dir**, "first by
 alphabet" would pick `anchored.md` over `transcript.md` (also a live
@@ -247,7 +269,13 @@ corrections from the *full transcript*, not the title (one 36-min video produced
 zero remaining with grep. Per-corpus glossaries are content data — they belong
 in the wiki's `data/`, not in this skill.
 
-**After normalizing:**
+**Commit and post-normalize verification:**
+
+Run `scripts/commit_capture.py` as SKILL.md §10 specifies instead of invoking
+`normalize_raw.py` and a deletion command ad hoc. It refuses cleanup until all
+checks below pass, and records `.capture-commit.json` before deleting any exact
+staged media. If normalization succeeded but cleanup was interrupted, rerunning
+the script performs cleanup only; it does not mint another RAW version.
 
 1. **Title/slug** — set at normalize time, never patched after: the title
    comes from `--title` or the markdown's H1, and `normalize_raw.py` refuses
@@ -261,9 +289,10 @@ in the wiki's `data/`, not in this skill.
    count ≥ 1; a video capture with `assets: 0` is flagged `capture_health: warn`).
 3. `normalize_raw.py` special-cases `source_type: video`: no `has_video` /
    "can't download" callout — the transcript *is* the capture.
-4. Found ASR errors **after** normalizing? RAW is immutable — fix the temp-dir
-   `transcript.md`, delete the RAW file + its assets, re-run `normalize_raw.py`
-   (same flags). Don't edit RAW in place.
+4. Found ASR errors **after** normalizing? RAW is immutable — fix the retained
+   temp-dir `transcript.md`, then deliberately recapture with
+   `commit_capture.py --on-exists version`. Don't edit or delete the old RAW in
+   place.
 
 ---
 
