@@ -25,7 +25,7 @@ The rules:
 
 Pure stdlib, no network, no ASR stack — same input, same output. Usage:
 
-    python3 srt_to_anchors.py subs.srt --url 'https://www.youtube.com/watch?v=ID' > anchored.md
+    python3 srt_to_anchors.py subs.srt --url 'https://www.youtube.com/watch?v=ID' --output anchored.md
     python3 srt_to_anchors.py subs.vtt --url 'https://www.bilibili.com/video/BV…/' --chunk 30
 """
 from __future__ import annotations
@@ -39,6 +39,7 @@ from urllib.parse import urlparse
 CORE_SCRIPTS = Path(__file__).resolve().parents[2] / "my-llm-wiki" / "scripts"
 sys.path.insert(0, str(CORE_SCRIPTS))
 from path_compat import native_path  # noqa: E402
+from capture_state import atomic_write_text  # noqa: E402
 
 _TAG = re.compile(r"<[^>]+>")            # inline <i>/<c.color>/SenseVoice tags
 _CJK = re.compile(r"[一-鿿]")
@@ -122,12 +123,22 @@ def main() -> None:
     ap.add_argument("subs", type=native_path, help="input .srt or .vtt file")
     ap.add_argument("--url", required=True, help="canonical video URL for deep links")
     ap.add_argument("--chunk", type=float, default=30.0, help="min chunk length in seconds (default 30)")
+    ap.add_argument(
+        "--output",
+        type=native_path,
+        help="atomically write the anchored Markdown (default: stdout)",
+    )
     args = ap.parse_args()
 
     cues = parse_cues(args.subs.read_text(encoding="utf-8"))
     if not cues:
         sys.exit(f"srt_to_anchors: no cues found in {args.subs}")
-    print(assemble(cues, args.url, args.chunk))
+    rendered = assemble(cues, args.url, args.chunk) + "\n"
+    if args.output:
+        atomic_write_text(args.output, rendered)
+        print(f"srt_to_anchors: wrote {len(cues)} cues to {args.output}")
+    else:
+        print(rendered, end="")
 
 
 if __name__ == "__main__":

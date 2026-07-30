@@ -47,6 +47,7 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -75,6 +76,26 @@ _HOST_SOURCE_TYPE = (
     ("x.com", "x"),
     ("twitter.com", "x"),
 )
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    """Durably publish RAW without exposing a partially written destination."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.", dir=path.parent
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
 
 
 def source_type_from_host(url: str) -> str:
@@ -797,8 +818,7 @@ def main() -> None:
             )
     parts.append(new_body.rstrip() + "\n")
 
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text("\n".join(parts), encoding="utf-8")
+    atomic_write_text(dest, "\n".join(parts))
 
     # Persist any health warnings to a per-wiki log so flagged captures are
     # reviewable later (e.g. to decide the skill/adapter needs an update). Lives

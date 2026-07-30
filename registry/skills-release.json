@@ -1,5 +1,5 @@
 {
   "schema": 1,
-  "pack_version": "2.3.0",
-  "pack_notes": "新建 Wiki 现在只需提供主题：my-llm-wiki 会自动生成完整的 purpose.md（目标、关键问题、范围、工作假设、证据标准与成功标准），并在写入前验证；schema.md 继续使用标准模板，domain/tag 随真实语料成熟后再形成。"
+  "pack_version": "2.3.1",
+  "pack_notes": "修复视频转写失败后的重复下载与重复 ASR：transcript.md 现在通过确定性脚本原子组装，RAW 成功持久化并验证前不会清理音频、SRT 或锚点；同一工作区可从已有产物断点续跑，SenseVoice 输入统一由 FFmpeg 生成并验证为 16 kHz 单声道。"
 }

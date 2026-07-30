@@ -63,13 +63,15 @@ used. Download it with the same mobile UA + `Referer: https://www.douyin.com/`.
 
 - Download the mp4 (`curl -sL`), then `ffprobe` its duration against the
   metadata duration (`video-asr.md` §5) before spending ASR time on it.
-- Extract audio, take the cover from frame 0, and **delete the mp4** — the
-  media is never kept:
+- Extract a validated 16 kHz mono WAV with `audio_to_wav.py`, take the cover
+  from frame 0, and retain the mp4 as a recovery input until
+  `commit_capture.py` verifies RAW:
   ```bash
-  ffmpeg -v error -i video.mp4 -ar 16000 -ac 1 audio.wav
+  python3 "$VIDEO_SKILL/scripts/audio_to_wav.py" video.mp4 audio.wav
   ffmpeg -v error -i video.mp4 -frames:v 1 -q:v 3 images/cover.jpg
-  rm video.mp4
   ```
+  `commit_capture.py` removes the staged mp4/audio only after successful
+  normalization. On any assembly or normalize failure, reuse them.
   (Recipe B's `cover_url` serves **WebP** regardless of extension — if you use
   it instead of frame 0, convert: `ffmpeg -i cover.webp cover.jpg`.)
 - Run the VAD-first SenseVoice recipe (`references/video-asr.md` §3), then SOP §3
