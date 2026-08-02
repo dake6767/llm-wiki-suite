@@ -17,6 +17,8 @@
     { "text": "对知识库做 lint，检查坏链和缺失的 frontmatter。", "family": "lint" },
     { "text": "从 wiki 里带引用回答这个问题，然后把答案回存。", "family": "query" },
     { "text": "对这个知识库去重，把重名的实体页合并成一个。", "family": "dedup" },
+    { "text": "治理这个技术 Wiki 的 tags：清理格式变体、检查 singleton，并生成一批可审阅的 canonical mapping。", "family": "tag-governance" },
+    { "text": "Audit and consolidate the tag vocabulary in /tmp/tech-wiki; separate formatting aliases from parent-child containment and do not auto-merge semantic candidates.", "family": "tag-governance" },
     { "text": "刷新这个 wiki 的 overview 概览页。", "family": "overview" }
   ],
   "near_neighbor": [
@@ -39,7 +41,8 @@
     { "text": "What does my wiki say about prompt caching?", "family": "query-readonly" },
     { "text": "wiki 里搜一下 SpaceX。", "family": "query-readonly" },
     { "text": "之前存过关于 SEO 的文章吗？", "family": "query-readonly" },
-    { "text": "Search my knowledge base for notes on Rust async.", "family": "query-readonly" }
+    { "text": "Search my knowledge base for notes on Rust async.", "family": "query-readonly" },
+    { "text": "wiki 里按 tag 查一下 MCP 相关页面，只要结果，不要修改标签。", "family": "query-readonly" }
   ],
   "should_not_trigger": [
     { "text": "Summarize this article for me.", "family": "summarize" },

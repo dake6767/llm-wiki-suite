@@ -3,7 +3,7 @@ name: my-llm-wiki-maintainer
 description: >-
   Operate an existing agent-native LLM Wiki: compile already captured RAW
   sources into interlinked pages; update or merge pages and indexes;
-  run review, deep research, dedup, lint, saved answers, and overview
+  run review, deep research, dedup, tag governance/consolidation, lint, saved answers, and overview
   refreshes within one explicit project root. 用于维护与运营 LLM Wiki，把已沉淀的 RAW
   编译成互链页面，并执行 review、research、lint、去重与回存。Do not fetch or
   capture a new URL, X/Twitter post, 公众号 article, 小红书 note, attached
@@ -74,7 +74,7 @@ maintainer script:
    subagent, or an independent run) **and this is a heavy phase boundary**,
    delegate the whole maintenance operation to one fresh worker. Heavy boundaries
    are capture→synthesis handoffs, deep research, review processing,
-   flush-pending batches, large-source ingest, and any new task appended to an
+   flush-pending batches, large-source ingest, tag-governance batches, and any new task appended to an
    unrelated or payload-heavy conversation.
 3. **Otherwise execute here.** Lightweight lint, one deterministic lookup, or a
    small ingest already running in a fresh maintainer session does not need a new
@@ -129,7 +129,7 @@ dispatch handle alone.
 
 ## Workflow
 
-1. Identify the requested operation: ingest, flush pending (process the inbox), update, review, deep research, dedup, lint, query, save, or refresh overview. Hand new-Wiki initialization to `my-llm-wiki`.
+1. Identify the requested operation: ingest, flush pending (process the inbox), update, review, deep research, dedup, tag governance, lint, query, save, or refresh overview. Hand new-Wiki initialization to `my-llm-wiki`.
 2. Resolve and validate the project root.
 3. Load only the reference needed for the operation:
    - File/REVIEW output contract (block shapes, wikilink + filename rules): `references/output-blocks.md`
@@ -138,6 +138,7 @@ dispatch handle alone.
    - Large-source (map-reduce) ingest for long reports / big PDFs: `references/large-source-ingest.md`
    - Video ingest (YouTube/Bilibili transcript batch workflow): `references/video-ingest-workflow.md`
    - Review/deep research/sweep/dedup: `references/review-research.md`
+   - Tag audit/consolidation/rewrite/rollback: `references/tag-governance.md`
    - Lint/query/save/overview refresh: `references/lint-query-save.md`
    - File schema/state/token policy: `references/project-protocol.md`
    - Deterministic helper commands: `references/scripts.md`
@@ -166,7 +167,8 @@ dispatch handle alone.
 - **Query**: answer from retrieved wiki pages with citations and wikilinks; do not rederive from raw sources unless asked.
 - **Save**: save useful answers to `wiki/queries/`, then ingest the saved page so knowledge compounds.
 - **Dedup**: detect duplicate entities/concepts saved under different names; after explicit user confirmation, merge a group into one canonical page and rewrite references wiki-wide. Independent maintenance action, never part of ingest.
-- **Tag vocabulary**: `wiki_ops.py tags <root> --q "<source topic / entity names>"` (or `--paths-file` with the working set step 5 already selected) prints the tags in use on the pages nearest this source, derived from the pages themselves — no stored vocabulary file to maintain or drift. **Ingest must read this before writing any tag** (`references/ingest-update.md` step 5.6, before the size gate so the large-source and video paths get it too). It is what makes schema.md's "reusable across ≥2 pages" rule satisfiable: without it an agent coins tags blind and every session fragments the facet with fresh near-synonyms. **Always scope it.** Tags marked `*` are used on exactly one page so far and appear only in the scoped view; the unscoped view leads with established (≥2 page) tags, so a word coined by the previous ingest would be invisible there and could never reach 2 — that is the promotion path, and skipping `--q` closes it. Bounded either way (~590 tokens on a 900-page wiki, ~440 on a 20-page one), so it stays inside the O(top-k) budget. `--audit` adds every singleton, duplicate pair and untagged page — a cleanup view worth 16KB on a large wiki, never for ingest.
+- **Tag governance**: explicit maintenance operation for auditing and consolidating the live tag facet. Load `references/tag-governance.md`; separate format variants from semantic candidates and containment relations, apply Link-don't-tag before choosing a canonical label, work in bounded batches, and never mutate from audit output alone. Deterministic rewrites follow `tags-rewrite plan` → human review/confirmation → `apply`; rollback is hash-guarded and uses the run manifest under `.llm-wiki/agent/page-history/`.
+- **Tag vocabulary**: `wiki_ops.py tags <root> --q "<source topic / entity names>"` (or `--paths-file` with the working set step 5 already selected) prints the tags in use on the pages nearest this source, derived from the pages themselves — no stored vocabulary file to maintain or drift. **Ingest must read this before writing any tag** (`references/ingest-update.md` step 5.6, before the size gate so the large-source and video paths get it too). It is what makes schema.md's "reusable across ≥2 pages" rule satisfiable: without it an agent coins tags blind and every session fragments the facet with fresh near-synonyms. **Always scope it.** Tags marked `*` are used on exactly one page so far and appear only in the scoped view; the unscoped view leads with established (≥2 page) tags, so a word coined by the previous ingest would be invisible there and could never reach 2 — that is the promotion path, and skipping `--q` closes it. Bounded either way (~590 tokens on a 900-page wiki, ~440 on a 20-page one), so it stays inside the O(top-k) budget. `--audit` is a cleanup view, never an ingest input; text respects `--limit`, while `--audit --json` / `--limit 0` exposes the full singleton and candidate sets for disk-first batch tooling.
 - **Health**: `wiki_ops.py health <root>` reports *project*-level drift that page-level lint cannot see — schema.md behind the bundled template, domain table still empty on a mature wiki, purpose.md still holding init placeholders, overview never refreshed, tag facet sprawling. Setup nudges stay silent below `HEALTH_SOURCE_THRESHOLD` sources, since a young wiki genuinely shouldn't have a taxonomy yet. Run it when a wiki feels stale, or after a big batch.
 - **Schema upgrade**: a wiki's `schema.md` is copied once at init and never touched again, so template fixes never reach existing wikis. `wiki_ops.py schema-upgrade <root>` reports the version gap (`--diff` to see it, `--apply` to take it); it backs the old file up and carries the hand-filled domain table across, aborting rather than proceeding if that table can't be preserved.
 - **Refresh Overview**: regenerate `wiki/overview.md` as a short digest (one-sentence intro + `## 主要板块` + `## 怎么用`, 5–10 lines, 4-field frontmatter) from `purpose.md`, `schema.md`, and a description-free index listing. Manual only — never during ingest.
