@@ -6,8 +6,9 @@ description: >-
   run review, deep research, dedup, lint, saved answers, and overview
   refreshes within one explicit project root. 用于维护与运营 LLM Wiki，把已沉淀的 RAW
   编译成互链页面，并执行 review、research、lint、去重与回存。Do not fetch or
-  capture a new URL, X/Twitter post, 公众号 article, 小红书 note, video, or personal
-  idea into RAW; that upstream work belongs to my-llm-wiki. Do not own read-only
+  capture a new URL, X/Twitter post, 公众号 article, 小红书 note, attached
+  image/screenshot/photo, video, or personal idea into RAW; that upstream work
+  belongs to my-llm-wiki. Do not own read-only
   wiki lookups (“查一下知识库”, “wiki 里搜 X”, “知识库里有没有…”, “之前存过…吗”,
   “what does my wiki say about X”); that query entrance belongs to the sibling
   my-llm-wiki-search skill. Do not create or initialize a new Wiki repository;
@@ -19,6 +20,13 @@ description: >-
 Use this skill to act as the maintainer of an LLM Wiki: read raw sources, compile them into interlinked Markdown pages, surface review items, run deep research, answer with citations, and save valuable answers back into the wiki.
 
 **Upstream capture.** Raw sources are usually produced by a capture skill — typically **my-llm-wiki** — which writes `raw/sources/<source_type>/<YYYY-MM-DD>-<slug>.md` with capture frontmatter (`source_url`, `captured_at`, `status: raw`, `tags: [inbox]`, …) and localizes media under `raw/assets/`. Extra frontmatter fields are harmless — ingest reads the body plus what it needs and ignores the rest. A capture skill may hand over one just-written source path to ingest now, or ask to flush the whole inbox (see **Flush pending**). It owns wiki selection (which repo); this skill always operates on one explicit project root it is given.
+
+For `source_type: image`, the RAW body already contains the faithful searchable
+visual extraction (`可检索文字` + `画面描述`) and `source_file` points to the
+immutable original. Analyze that body normally. Inspect the local original with
+the host's image-view capability when an `不确定项` or a material numeric/diagram
+claim needs visual verification; if the host cannot view it, preserve the
+uncertainty in the derived page or review queue instead of guessing.
 
 ## Hard Rules
 

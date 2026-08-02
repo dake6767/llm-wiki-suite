@@ -189,6 +189,38 @@
           "text": "The final response briefly states what will be included, what will be excluded, and that domains will be proposed after the corpus matures"
         }
       ]
+    },
+    {
+      "id": 7,
+      "name": "attached-image-capture-and-synthesize",
+      "prompt": "/my-llm-wiki 识别附件中的架构图，保存到“大模型推理优化” Wiki 并直接整理入库。知识库根目录就是你的 outputs 目录（已有 schema.md、wiki/ 和 .llm-wiki/project.json）。不要只停在 RAW。",
+      "expected_output": "The attachment is inspected with native image vision, preserved byte-for-byte as source_type=image, embedded from raw/assets/, and accompanied by faithful searchable text plus an objective diagram description. SHA-256 supplies original_id and source_file points to the same localized asset. The exact RAW is then ingested by my-llm-wiki-maintainer and cache check reports hit=true.",
+      "files": [
+        "evals/fixtures/retrieval-pipeline.svg"
+      ],
+      "assertions": [
+        {
+          "text": "A file matching raw/sources/image/*.md exists with source_type: image, status: raw, and tags containing inbox and image"
+        },
+        {
+          "text": "The RAW frontmatter has a SHA-256 original_id and source_file pointing to a localized raw/assets image"
+        },
+        {
+          "text": "The original SVG bytes are preserved in raw/assets exactly once and the RAW body embeds that localized asset with a relative ../../assets/ link"
+        },
+        {
+          "text": "The RAW body contains ## 可检索文字 with the visible labels Query, Retriever, Vector DB, Top-K = 8, and Recall@8 = 0.82"
+        },
+        {
+          "text": "The RAW body contains ## 画面描述 and faithfully records the left-to-right arrows and the three-box relationship without inventing unseen facts"
+        },
+        {
+          "text": "At least one derived page under wiki/ cites the exact image RAW and cache check for that RAW reports hit: true"
+        },
+        {
+          "text": "The terminal response reports both image RAW capture and wiki synthesis without asking the user to repeat the organize request"
+        }
+      ]
     }
   ]
 }

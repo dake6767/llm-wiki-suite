@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="360" viewBox="0 0 900 360">
+  <rect width="900" height="360" fill="#f7f7f5"/>
+  <text x="450" y="48" text-anchor="middle" font-family="sans-serif" font-size="28" font-weight="700">RAG 检索链路</text>
+  <g fill="#ffffff" stroke="#2f5d8a" stroke-width="3">
+    <rect x="60" y="125" width="180" height="90" rx="12"/>
+    <rect x="360" y="125" width="180" height="90" rx="12"/>
+    <rect x="660" y="125" width="180" height="90" rx="12"/>
+  </g>
+  <g fill="#17324d" font-family="sans-serif" font-size="22" text-anchor="middle">
+    <text x="150" y="178">用户 Query</text>
+    <text x="450" y="178">Retriever</text>
+    <text x="750" y="165">Vector DB</text>
+    <text x="750" y="193">Top-K = 8</text>
+  </g>
+  <g stroke="#d35f35" stroke-width="5" fill="none">
+    <path d="M240 170 H348"/>
+    <path d="M540 170 H648"/>
+  </g>
+  <g fill="#d35f35">
+    <path d="M348 170 l-16 -10 v20 z"/>
+    <path d="M648 170 l-16 -10 v20 z"/>
+  </g>
+  <text x="450" y="280" text-anchor="middle" font-family="sans-serif" font-size="21" fill="#333333">离线评测：Recall@8 = 0.82</text>
+</svg>

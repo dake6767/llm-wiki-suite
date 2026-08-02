@@ -17,6 +17,7 @@ Obsidian vault, so a wiki the skill writes into opens cleanly in both.
 - [Folder layout](#folder-layout)
 - [Frontmatter schema](#frontmatter-schema)
 - [Online video](#online-video-source_type-video)
+- [User-provided images](#user-provided-images-source_type-image)
 - [First-party notes](#first-party-notes-source_type-note)
 - [Naming](#naming)
 - [Immutability](#immutability)
@@ -38,6 +39,8 @@ images go in the shared `raw/assets/` folder (Obsidian's attachment path):
         2026-05-04-<slug>.md     # the capture, with YAML frontmatter
       x/
         2026-06-01-<slug>.md
+      image/
+        2026-07-31-<slug>.md
       xiaohongshu/ , web/ ...
     assets/                      # shared media folder
       2026-05-04-<slug>--img_001.png
@@ -61,7 +64,7 @@ and the Wiki layer; it never breaks app compatibility:
 ```yaml
 ---
 title: <article/post title>
-source_type: wechat | x | xiaohongshu | web | ...
+source_type: wechat | x | xiaohongshu | web | doc | image | video | note | ...
 source_url: <canonical original URL>
 original_id: <platform id — mp /s/ token, tweet id, note id; "" if unknown>
 author: <author / 公众号 / handle>
@@ -69,7 +72,7 @@ publish_time: <original publish time, verbatim string from the source>
 captured_at: <UTC ISO-8601, when we ingested>
 status: raw
 tags: [inbox, ...]   # inbox = not yet processed into the wiki
-# present only when an original file was archived (e.g. a doc's source PDF):
+# present when an original file was archived (required for image):
 source_file: ../../assets/<date>-<slug>--<original-name>
 # present only when video couldn't be localized:
 has_video: true
@@ -91,8 +94,10 @@ never clutters the vault.) Find all flagged items later with
 `grep -rl 'capture_health: warn' raw/sources/`.
 
 Field intent:
-- **source_url / original_id** — let the Wiki layer link back and dedupe. Always
-  populate `source_url`; `original_id` is best-effort but is the item's identity.
+- **source_url / original_id** — let the Wiki layer link back and dedupe. Populate
+  `source_url` for remotely addressable sources; it is optional for a user-provided
+  local image. `original_id` is the item's identity and, for `image`, defaults to
+  the original file's SHA-256.
 - **publish_time vs captured_at** — keep them distinct. `publish_time` is the
   source's own (messy, human) string; `captured_at` is our machine timestamp.
 - **status: raw** — a marker that this is unprocessed source material. The Wiki
@@ -103,11 +108,12 @@ Field intent:
   "already synthesized into the wiki" ledger is the synthesis skill's own state
   (`my-llm-wiki-maintainer`'s `.llm-wiki/agent/ingest-cache.json`, keyed by source
   path + content hash), not this tag. See my-llm-wiki SKILL.md §7.
-- **source_file** — when an original file is archived alongside the text (a `doc`'s
-  source PDF/Word/PPT, passed via `--source-file`), it's copied into `raw/assets/`
-  with the same `<date>-<slug>--` prefix and `source_file:` points at it. The `.md`
-  body is the (lossy) text extraction; `source_file` is the **faithful original** to
-  fall back on. Omitted when there's no separate original (web/x/note captures).
+- **source_file** — when an original file is archived alongside the text (a
+  `doc`'s PDF/Word/PPT or an `image`'s original pixels, passed via
+  `--source-file`), it's copied into `raw/assets/` with the same
+  `<date>-<slug>--` prefix and `source_file:` points at it. The `.md` body is the
+  lossy searchable extraction; `source_file` is the **faithful original** to fall
+  back on. Omitted when there's no separate original (web/x/note captures).
 
 ## Online video (`source_type: video`)
 
@@ -172,6 +178,49 @@ spirit as `clean_md.py`); the translation is additive, never replacing the
 original. See the `my-llm-wiki-video` skill and its
 `references/video-capture-sop.md`.
 
+## User-provided images (`source_type: image`)
+
+An image capture is a screenshot, photo, scan, chart, diagram, or other image the
+user gives directly to the agent as evidence. It is not a first-party `note`
+unless the user also supplies their own opinion. The original bytes are archived
+and embedded; the Markdown body adds a faithful visual extraction so retrieval
+and maintainer ingest do not depend on reopening the binary.
+
+```yaml
+---
+title: <specific title inferred from visible content>
+source_type: image
+original_id: <SHA-256 of the original bytes>
+captured_at: <UTC ISO-8601>
+status: raw
+tags: [inbox, image]
+source_file: ../../assets/<date>-<slug>--<original-name>
+# optional only when known: source_url / author / publish_time / related
+---
+```
+
+The body keeps this order:
+
+1. the localized original image embed;
+2. `## 可检索文字` — verbatim visible text in reading order, or an explicit
+   statement that no clear text was detected;
+3. `## 画面描述` — objective content, layout, objects, and chart/diagram
+   relationships needed to understand the image; and
+4. optional `## 不确定项` — unreadable or genuinely ambiguous details, never
+   guessed repairs.
+
+`normalize_raw.py` requires `--source-file`, verifies that it is a supported
+image, and requires the body to embed that exact local file. When
+`--original-id` is absent, it hashes the file, so identical bytes deduplicate
+even if two agents infer different titles. The source file and embed resolve to
+the same `raw/assets/<date>-<slug>--<name>` object rather than two copies.
+`clean_md.py` is skipped because OCR and layout transcription are deliberate
+agent-authored Markdown, not damaged HTML conversion.
+
+Capture one RAW per attached image. Several sequential screenshots may be
+ingested together downstream, but they remain separate immutable evidence items
+and are never collaged or re-encoded during capture.
+
 ## First-party notes (`source_type: note`)
 
 Not everything in RAW is captured from outside. The wiki owner's **own** thoughts
@@ -208,10 +257,11 @@ How it differs from a captured source:
 
 Immutability still holds: a note is a snapshot of what you thought *then*. To
 revise a view, add a new note; the evolving, current understanding lives in the
-**wiki layer**, not in edits to the note. Local images (screenshots, photos) are
-localized into `raw/assets/` exactly like captured media. Ingest is via the
-my-llm-wiki skill's note path (SKILL.md) — typically you dictate the thought and
-the agent files it.
+**wiki layer**, not in edits to the note. A picture that merely illustrates the
+owner's dictated note is localized into `raw/assets/` like other media. A
+standalone screenshot/photo supplied as evidence uses `source_type: image`
+instead. Ingest is via the my-llm-wiki skill's note path (SKILL.md) — typically
+you dictate the thought and the agent files it.
 
 ## Naming
 

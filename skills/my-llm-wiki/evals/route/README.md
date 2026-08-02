@@ -5,10 +5,10 @@ against regressions when it is edited. Complements `evals/evals.json` (which tes
 **output** quality, not routing).
 
 - `trigger_cases.json` — `should_trigger` (the surfaces this skill owns: archive a
-  link, sync X bookmarks, file a note, distill a video, init a wiki) + `should_not_trigger`
-  (the confusable near-neighbors it must reject: summarize/analyze, search, judge,
-  rip a video FILE, convert a PDF just to read, generate the wiki's derived pages,
-  sync notes between apps).
+  link, capture an attached image, sync X bookmarks, file a note, distill a video,
+  init a wiki) + `should_not_trigger` (the confusable near-neighbors it must reject:
+  summarize/analyze without saving, search, judge, rip a video FILE, convert a PDF
+  just to read, generate the wiki's derived pages, sync notes between apps).
 - `semantic_config.json` — weighted positive/negative concepts for the semantic scorer.
 
 ## Run (compare a candidate description against the current one)

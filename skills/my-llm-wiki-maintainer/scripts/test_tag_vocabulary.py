@@ -175,5 +175,13 @@ class MissingTagsTests(unittest.TestCase):
                          "empty tags must be reported once, by missing_tags only")
 
 
+class RawTagLeakTests(unittest.TestCase):
+    def test_image_is_a_raw_format_tag_not_a_topical_tag(self) -> None:
+        bare = "---\ntype: source\ntags: [image]\n---\nbody"
+        topical = "---\ntype: source\ntags: [image, 检索架构]\n---\nbody"
+        self.assertEqual(wo.raw_tag_leaks(bare), ([], ["image"]))
+        self.assertEqual(wo.raw_tag_leaks(topical), ([], []))
+
+
 if __name__ == "__main__":
     unittest.main()

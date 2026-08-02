@@ -50,6 +50,14 @@
       "family": "first_party_note"
     },
     {
+      "text": "把这张截图识别后整理到“大模型推理优化” Wiki",
+      "family": "image_capture"
+    },
+    {
+      "text": "只把我附上的这张照片原样存进家庭资料库 RAW，先不要整理",
+      "family": "image_capture"
+    },
+    {
       "text": "把这个 YouTube 视频沉淀进知识库 https://youtu.be/xyz",
       "family": "video_to_raw"
     },
@@ -138,6 +146,10 @@
     {
       "text": "把我的 Obsidian 笔记同步到 Notion",
       "family": "sync_apps"
+    },
+    {
+      "text": "分析一下我发的这张架构图，不要保存",
+      "family": "summarize_analyze_only"
     }
   ],
   "near_neighbor": [

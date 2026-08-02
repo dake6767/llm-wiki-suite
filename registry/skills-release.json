@@ -1,5 +1,5 @@
 {
   "schema": 1,
-  "pack_version": "2.3.1",
-  "pack_notes": "修复视频转写失败后的重复下载与重复 ASR：transcript.md 现在通过确定性脚本原子组装，RAW 成功持久化并验证前不会清理音频、SRT 或锚点；同一工作区可从已有产物断点续跑，SenseVoice 输入统一由 FFmpeg 生成并验证为 16 kHz 单声道。"
+  "pack_version": "2.3.2",
+  "pack_notes": "正式新增 source_type:image：Agent 可将用户提供的截图、照片、图表和扫描件以原始字节归档到 RAW，生成忠实的可检索文字与画面描述，并继续整理进指定 Wiki；原图使用 SHA-256 去重，缺失、未嵌入或伪造格式会在写入前被拒绝。"
 }
