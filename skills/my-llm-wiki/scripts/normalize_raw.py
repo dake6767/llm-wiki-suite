@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import hashlib
 import os
 import re
 import shutil
@@ -301,6 +302,7 @@ GENERIC_STEMS = {
     "output", "out", "result", "final", "temp", "tmp", "test",
     "page", "capture", "untitled", "index", "content", "text",
     "doc", "document", "article", "note", "notes", "audio", "video",
+    "image", "photo", "screenshot",
 }
 
 
@@ -315,8 +317,9 @@ def assess_capture(body: str, asset_count: int, is_note: bool = False,
     `is_note` relaxes the checks for first-party notes: a two-line thought is a
     valid note, not a failed fetch, so the 'almost no text' tripwire (aimed at
     broken web captures) is skipped for notes. `has_source_file` does the same for
-    documents whose original is archived: sparse text extraction (e.g. a scanned
-    PDF) isn't a lost capture when the faithful original is kept alongside."""
+    documents/images whose original is archived: sparse text extraction (e.g. a
+    scanned PDF or text-free photo) isn't a lost capture when the faithful
+    original is kept alongside."""
     warnings: list[str] = []
     text_len = len(re.sub(r"\s+", "", body))
     if not is_note and not has_source_file and text_len < 200 and asset_count == 0:
@@ -460,7 +463,10 @@ def sniff_ext(path: Path) -> str | None:
         return ".pdf"
     if head[:4] == b"\x1aE\xdf\xa3":  # EBML / Matroska
         return ".webm"
-    if head[4:8] == b"ftyp":  # ISO base media (mp4 / mov / m4v ...)
+    if head[4:8] == b"ftyp":  # ISO base media (AVIF / mp4 / mov / m4v ...)
+        brand = head[8:12].lower()
+        if brand in {b"avif", b"avis"}:
+            return ".avif"
         return ".mov" if head[8:10] == b"qt" else ".mp4"
     stripped = head.lstrip()
     if stripped[:5].lower() == b"<?xml" or stripped[:4].lower() == b"<svg":
@@ -477,6 +483,43 @@ def _ext_equiv(a: str, b: str) -> bool:
 
 
 VIDEO_EXTS = {".mp4", ".mov", ".webm", ".mkv", ".m4v"}
+IMAGE_EXTS = {
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".avif",
+}
+
+
+def resolve_local_media(url: str, src_media: Path | None) -> Path | None:
+    """Resolve one local Markdown media target without accepting remote URLs."""
+    if src_media is None or re.match(r"^https?://", url):
+        return None
+    raw = Path(url)
+    candidate = raw.resolve() if raw.is_absolute() else (src_media / raw).resolve()
+    if not candidate.exists():
+        candidate = src_media / raw.name
+    return candidate if candidate.exists() and candidate.is_file() else None
+
+
+def markdown_references_file(body: str, src_media: Path | None, source: Path) -> bool:
+    """Whether an image embed in ``body`` resolves to the exact source file."""
+    for match in IMG_LINK.finditer(body):
+        candidate = resolve_local_media(match.group(2).strip(), src_media)
+        if candidate is None:
+            continue
+        try:
+            if candidate.samefile(source):
+                return True
+        except OSError:
+            if candidate.resolve() == source.resolve():
+                return True
+    return False
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def collect_and_rewrite(
@@ -502,12 +545,8 @@ def collect_and_rewrite(
             # Video is stored as a ready-made Obsidian embed; images as a rel path
             # to re-wrap with the current alt text.
             return val if val.startswith("![[") else f"{pre}{val}{post}"
-        candidate = None
-        if src_media is not None:
-            candidate = (src_media / Path(url)).resolve()
-            if not candidate.exists():
-                candidate = (src_media / Path(url).name)
-        if candidate and candidate.exists():
+        candidate = resolve_local_media(url, src_media)
+        if candidate is not None:
             assets_dir.mkdir(parents=True, exist_ok=True)
             name = candidate.name
             sniffed = sniff_ext(candidate)
@@ -581,21 +620,23 @@ def main() -> None:
                     help="target wiki: a root path or a registered name "
                          "(else resolved from CWD / $LLM_WIKI_DEFAULT)")
     ap.add_argument("--source-type", required=True,
-                    help="wechat | x | xiaohongshu | web | ... (becomes the raw/sources/<type>/ bucket)")
+                    help="wechat | x | xiaohongshu | web | doc | image | video | "
+                         "note | ... (becomes the raw/sources/<type>/ bucket)")
     ap.add_argument("--source-url", default="", help="canonical original URL")
     ap.add_argument("--original-id", default="", help="platform id (tweet id, mp article id, ...)")
     ap.add_argument("--title", default="", help="override title (else parsed from capture)")
     ap.add_argument("--author", default="", help="override author (else parsed; useful when a 图文 web-read fallback lost the author that weixin download had)")
     ap.add_argument("--publish-time", default="", help="override publish_time string (else parsed)")
     ap.add_argument("--source-file", default="",
-                    help="original file to archive alongside the text (e.g. the PDF "
-                         "a doc was converted from) — copied into raw/assets/ and "
-                         "recorded as `source_file:` so the faithful original is kept")
+                    help="original file to archive alongside the text (required for "
+                         "source_type=image; also used for a doc converted from PDF, "
+                         "Word, etc.) — copied into raw/assets/ and recorded as "
+                         "`source_file:` so the faithful original is kept")
     ap.add_argument("--tags", default="", help="comma-separated extra tags")
     ap.add_argument("--related", default="",
-                    help="comma-separated refs this note responds to (a captured "
-                         "source slug, an [[wikilink]], a URL, or a topic) — only "
-                         "meaningful for --source-type note")
+                    help="comma-separated refs this note/image responds to (a captured "
+                         "source slug, an [[wikilink]], a URL, or a topic) — meaningful "
+                         "for --source-type note or image")
     ap.add_argument("--captured-at", default="",
                     help="ISO datetime override (the agent should pass `date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ`)")
     ap.add_argument("--on-exists", choices=["version", "skip", "fail"], default="version",
@@ -643,6 +684,10 @@ def main() -> None:
             sys.exit(f"error: --md not found: {md_file}")
         media_root = native_path(args.assets).resolve() if args.assets else md_file.parent
 
+    source_file = native_path(args.source_file).resolve() if args.source_file else None
+    if source_file is not None and not source_file.is_file():
+        sys.exit(f"error: --source-file not found: {source_file}")
+
     md_text = md_file.read_text(encoding="utf-8")
     parsed, body = parse_capture(md_text)
 
@@ -671,6 +716,27 @@ def main() -> None:
                 file=sys.stderr,
             )
             args.source_type = inferred
+    is_note = args.source_type == "note"
+    is_image = args.source_type == "image"
+    if is_image:
+        if source_file is None:
+            sys.exit(
+                "error: --source-type image requires --source-file so the original "
+                "image remains archived as immutable evidence"
+            )
+        detected_ext = sniff_ext(source_file)
+        if detected_ext not in IMAGE_EXTS:
+            sys.exit(
+                f"error: --source-file is not a supported image "
+                f"({source_file.name}; detected {detected_ext or 'unknown'})"
+            )
+        if not markdown_references_file(body, media_root, source_file):
+            sys.exit(
+                "error: --source-type image requires the markdown body to embed "
+                "the exact --source-file with a local ![](...) link"
+            )
+        if not args.original_id:
+            args.original_id = sha256_file(source_file)
     publish_time = args.publish_time or parsed.get("publish_time", "")
     author = args.author or parsed.get("author", "")
     if author in ("", "-"):
@@ -721,12 +787,10 @@ def main() -> None:
             base = f"{base}-{n}"
         dest = dest_parent / f"{base}.md"
 
-    # A `note` is the wiki owner's own first-party writing, not a web capture —
-    # it has no HTML→Markdown conversion damage, so the structural "repairs"
-    # (un-escaping, heading merges) would only risk altering intentional
-    # formatting. Skip cleanup for notes; run it for every captured source.
-    is_note = args.source_type == "note"
-    if not is_note:
+    # A `note` is first-party writing and an `image` body is a deliberate
+    # vision/OCR record. Neither came through HTML conversion, so structural
+    # cleanup would risk altering intentional formatting or verbatim text.
+    if not (is_note or is_image):
         # Repair the converter's structural damage (exploded links, split headings,
         # over-escaping, social chrome) FIRST — so dropped chrome (e.g. the X avatar)
         # never gets downloaded into raw/assets/ as an orphan. collect_and_rewrite then
@@ -741,11 +805,10 @@ def main() -> None:
     # Archive the original file (e.g. the PDF behind a markitdown `doc`) so the
     # faithful original lives next to its lossy text extraction.
     source_file_rel = ""
-    if args.source_file:
-        sf = native_path(args.source_file).resolve()
-        if not sf.is_file():
-            sys.exit(f"error: --source-file not found: {sf}")
-        source_file_rel = archive_source_file(sf, assets_dir, dest_parent, base)
+    if source_file is not None:
+        source_file_rel = archive_source_file(
+            source_file, assets_dir, dest_parent, base
+        )
 
     extra_tags = [t.strip() for t in args.tags.split(",") if t.strip()]
     related = [r.strip() for r in args.related.split(",") if r.strip()]
@@ -763,6 +826,23 @@ def main() -> None:
         }
         if author:
             fm["author"] = author
+        if related:
+            fm["related"] = related
+    elif is_image:
+        fm = {
+            "title": title,
+            "source_type": "image",
+            "original_id": args.original_id,
+            "captured_at": captured_at,
+            "status": "raw",
+            "tags": list(dict.fromkeys([*DEFAULT_TAGS, "image", *extra_tags])),
+        }
+        if source_url:
+            fm["source_url"] = source_url
+        if author:
+            fm["author"] = author
+        if publish_time:
+            fm["publish_time"] = publish_time
         if related:
             fm["related"] = related
     else:

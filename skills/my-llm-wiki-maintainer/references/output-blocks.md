@@ -41,7 +41,7 @@ plus the Markdown body).
 > no retrieval facet at all. Generate real topical words from the source's actual
 > subject matter (`[清朝, 雍正朝, 官员, 正直讲史]`), ≤5 per page, per `schema.md`'s
 > Tag & Domain Policy. Do not echo the RAW capture frontmatter you just read:
-> `inbox` is never acceptable, and a bare format word like `video`/`bilibili` is
+> `inbox` is never acceptable, and a bare format word like `video`/`image`/`bilibili` is
 > fine *alongside* real tags but never as the entire set. `apply-blocks` and
 > `lint` both warn on an empty set, but emit it correctly rather than relying on
 > the warning. (The one exception is `wiki/overview.md`, whose frontmatter is

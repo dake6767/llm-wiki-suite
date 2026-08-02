@@ -1,11 +1,11 @@
 {
   "optimizer_hints": {
     "capability": "Ingest external content into the immutable RAW layer of an LLM-WIKI knowledge base, or create and route-register a new Wiki repository",
-    "inputs": ["a URL", "a WeChat 公众号 link", "an X/Twitter post", "a 小红书 note", "a web page", "an online video link", "the user's own thought", "a local PDF/doc", "a new Wiki name and topical scope"],
-    "trigger_actions": ["save a link into the wiki", "archive/clip/沉淀 a source into RAW", "capture a source and synthesize it into wiki pages in the same turn", "sync X bookmarks into RAW", "file my own note/idea", "distill a video into RAW", "initialize or create a new wiki repository and register its route"],
+    "inputs": ["a URL", "a WeChat 公众号 link", "an X/Twitter post", "a 小红书 note", "a web page", "an online video link", "an attached image/screenshot/photo", "the user's own thought", "a local PDF/doc", "a new Wiki name and topical scope"],
+    "trigger_actions": ["save a link into the wiki", "archive/clip/沉淀 a source into RAW", "capture an attached image with faithful OCR/description", "capture a source and synthesize it into wiki pages in the same turn", "sync X bookmarks into RAW", "file my own note/idea", "distill a video into RAW", "initialize or create a new wiki repository and register its route"],
     "exclusions": ["summarize or analyze the content", "search for content", "judge whether it is worth reading", "rip a video file to keep", "convert a PDF just to read it", "generate the wiki's derived pages", "sync notes between apps"]
   },
-  "fallback_positive_concepts": ["archive_link", "bookmark_sync", "first_party_note", "video_to_raw", "init_wiki"],
+  "fallback_positive_concepts": ["archive_link", "bookmark_sync", "first_party_note", "image_capture", "video_to_raw", "init_wiki"],
   "positive_concepts": {
     "archive_link": {
       "weight": 0.3,
@@ -34,6 +34,15 @@
         "file my own note", "save this idea", "record my thought", "capture my take",
         "记一下我的想法", "存个 idea", "沉淀一个观点", "记个笔记到知识库", "把我的想法存下来",
         "记录我的观察", "存个想法"
+      ]
+    },
+    "image_capture": {
+      "weight": 0.18,
+      "phrases": [
+        "save this attached image into my wiki", "archive this screenshot", "store this photo in RAW",
+        "extract this image and organize it in the wiki", "capture this diagram into the knowledge base",
+        "把这张图存到 wiki", "把这张截图存进知识库", "把附图存成 RAW", "识别图片后整理入库",
+        "解析这张图片并整理到知识库", "把这张照片归档", "保存我发的图片"
       ]
     },
     "video_to_raw": {
@@ -68,7 +77,7 @@
       "phrases": [
         "summarize this article", "summarize this tweet", "analyze this", "give me the key points",
         "what does this article say", "tldr", "recap this",
-        "总结这篇", "总结一下这条", "分析一下这篇文章", "提炼重点", "讲讲这篇说了什么", "概括一下"
+        "总结这篇", "总结一下这条", "分析一下这篇文章", "分析一下这张图，不要保存", "提炼重点", "讲讲这篇说了什么", "概括一下"
       ]
     },
     "search_only": {

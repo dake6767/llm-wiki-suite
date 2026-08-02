@@ -113,8 +113,8 @@ Pass metadata as flags. Only `--source-type` is required.
 | `--author` | optional | Author / handle / 公众号. |
 | `--publish-time` | optional | The source's own publish-time string (verbatim; the core parses a date out of it). |
 | `--captured-at` | recommended | UTC ISO-8601 ingest time. Pass `"$(date -u +%Y-%m-%dT%H:%M:%SZ)"`. |
-| `--source-file` | doc only | An original file (e.g. the PDF a `doc` was converted from) to archive into `raw/assets/` and record as `source_file:`. |
-| `--related` | note only | Comma-separated refs a `note` responds to (a RAW slug, `[[wikilink]]`, URL, or topic). |
+| `--source-file` | doc/image | The faithful original to archive into `raw/assets/` and record as `source_file:`. Required for `image`. |
+| `--related` | note/image | Comma-separated refs a note or image responds to (a RAW slug, `[[wikilink]]`, URL, or topic). |
 | `--tags` | optional | Comma-separated extra tags (always added on top of `inbox`). |
 | `--on-exists` | optional | `version` (default) / `skip` / `fail` — what to do if the item already exists. |
 
@@ -153,9 +153,11 @@ reimplement any of it in an adapter:
   date parsed from `publish_time` when possible.
 - **Media** — relocate into shared `raw/assets/`, slug-prefix to de-collide,
   magic-byte extension correction, relative-link rewrite, video → Obsidian embed.
-- **Readability cleanup** — runs `clean_md.py` on every non-`note` capture to
+- **Readability cleanup** — runs `clean_md.py` on every capture except `note` and
+  `image` to
   repair HTML→Markdown structural damage (exploded links, split headings,
-  over-escaping, social-page chrome). Content-preserving. (Skipped for `note`.)
+  over-escaping, social-page chrome). Content-preserving. Notes and faithful
+  image transcriptions were not produced from HTML, so their formatting is kept.
 - **Immutability & versioning** — never overwrites; identity is `original_id`.
   Same id again → `-v2.md`; a different source that slugifies the same → an id
   suffix. Slug clashes never silently drop a capture.
@@ -172,13 +174,15 @@ reimplement any of it in an adapter:
 `source_type` is both the `raw/sources/<type>/` folder and a frontmatter field.
 Keep it short and stable. The buckets the skill uses today:
 
-`wechat` · `x` · `xiaohongshu` · `web` · `doc` (local documents) · `video`
+`wechat` · `x` · `xiaohongshu` · `web` · `doc` (local documents) · `image`
+(user-provided screenshots/photos with faithful visual extraction) · `video`
 (online-video transcripts) · `note` (the wiki owner's own first-party writing).
 
 `web` is the catch-all for any site without a dedicated bucket. Add a new bucket
 (`zhihu`, `bloomberg`, …) only when a source recurs enough to deserve its own
-shelf. `note` and `doc` get slightly relaxed health checks (a short note isn't a
-failed fetch; a sparse doc extraction is fine because its original is archived).
+shelf. `note`, `doc`, and `image` get slightly relaxed health checks (a short
+note isn't a failed fetch; sparse document/image text is fine because its
+original is archived).
 
 `video` is the online-video bucket (`my-llm-wiki-video` owns its
 `references/video-capture-sop.md`

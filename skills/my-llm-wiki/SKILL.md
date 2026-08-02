@@ -5,9 +5,10 @@ description: >-
   base as a faithful, self-contained original, not a summary, and initialize or
   create new Wiki repositories with routing registration. Use when the user
   wants to save, archive, clip, capture, file, or “沉淀” a URL, WeChat article,
-  webpage, Xiaohongshu note, local document, X/Twitter post or bookmarks, online
-  video, or their own note/idea; also use for “创建一个新的 wiki 仓 / 新建知识库 /
-  initialize a wiki” or when explicitly invoked. Combine with my-llm-wiki-x for
+  webpage, Xiaohongshu note, local document, attached image/screenshot/photo,
+  X/Twitter post or bookmarks, online video, or their own note/idea; also use for
+  “把这张图存到某个 Wiki / 识别图片后整理入库”, “创建一个新的 wiki 仓 / 新建知识库 /
+  initialize a wiki”, or when explicitly invoked. Combine with my-llm-wiki-x for
   X/Twitter and my-llm-wiki-video for
   online video. For requests that combine capture with synthesis—such as “抓取并整理”,
   “抓取并理解/读懂/吃透”, or “capture then ingest”—own the full chain: write RAW,
@@ -195,6 +196,7 @@ of raw API JSON into context this way). So:
 |---|---|---|
 | WeChat, ordinary web page, Xiaohongshu article | this skill + `references/sources.md` | localized faithful page |
 | Local PDF/docx/pptx/xlsx/epub | this skill + `references/sources.md` | extracted text + archived original |
+| User-provided image, screenshot, or photo | this skill → Image flow | `source_type: image`, original + faithful visual extraction |
 | User's own note/idea | this skill → Note flow | `source_type: note` |
 | X post/article/bookmarks | **also use `my-llm-wiki-x`** | complete per-post RAW |
 | Online video | **also use `my-llm-wiki-video`** | timestamped transcript + cover |
@@ -305,7 +307,7 @@ Commit only a verified temp capture through the deterministic core:
 ```bash
 python3 <skill>/scripts/normalize_raw.py \
   --from <temp-adapter-folder> --wiki <resolved-wiki-path-or-name> \
-  --source-type <wechat|web|xiaohongshu|doc|x|video|note> \
+  --source-type <wechat|web|xiaohongshu|doc|image|x|video|note> \
   --source-url "<original-url>" --original-id "<stable-id>" \
   --captured-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 ```
@@ -320,6 +322,70 @@ and therefore the slug between captures.
 
 Surface every `capture_health: warn` and adapter error. Report the resolved wiki,
 final RAW path, localized assets, duplicate/version outcome, and any known gap.
+
+## Capture a user-provided image
+
+An attached screenshot/photo is external evidence, not the owner's stance, so
+capture it as `source_type: image` rather than `note`. This flow does not use the
+web/document preflight: use the host's native multimodal/image-view capability
+to inspect the attachment and its host-provided local file path.
+
+The original bytes are the faithful source. Copy them unchanged into a fresh
+temporary capture directory; do not crop, re-encode, annotate, or save a
+screenshot of the chat preview. If the host exposes the image visually but does
+not provide readable original bytes, stop and ask the user to attach it as a
+file—visual access alone is insufficient for an immutable RAW capture.
+
+Inspect the staged original, then write one `image.md` with this shape:
+
+```markdown
+# <specific title inferred from the image>
+
+![原图](<staged-original-filename>)
+
+## 可检索文字
+
+<verbatim visible text in reading order; use “未检测到清晰文字” when appropriate>
+
+## 画面描述
+
+<objective content, layout, objects, chart/diagram relationships, and source/UI
+context needed to understand the image>
+
+## 不确定项
+
+<only genuinely unreadable/ambiguous details; omit the section when none>
+```
+
+Keep OCR separate from description: never silently repair numbers, names, table
+cells, or chart labels, and mark unreadable fragments instead of guessing. For a
+diagram/chart, preserve direction, grouping, labels, axes, units, and visible
+relationships. This is a faithful searchable representation, not the later Wiki
+summary. User commentary about the image is a separate `note` only when they
+actually supplied a view or hypothesis; link it through `--related`.
+
+Normalize the staged image and Markdown together:
+
+```bash
+python3 <skill>/scripts/normalize_raw.py \
+  --md <temp>/image.md --assets <temp> \
+  --source-type image --source-file <temp>/<staged-original-filename> \
+  --wiki <resolved-wiki> \
+  --captured-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+```
+
+For `image`, `--source-file` is required. The core verifies that it is a supported
+image, requires the exact original to be embedded in the Markdown, archives it
+under `raw/assets/`, and derives `original_id` from SHA-256 when the caller did
+not supply one. Re-sending identical bytes therefore deduplicates independently
+of the inferred title. Capture multiple attachments as one immutable RAW per
+image; hand all resulting paths to one maintainer ingest only when the user asked
+to organize them together.
+
+A bare “存这张图” is capture-only: it still receives faithful OCR/description in
+RAW but no derived Wiki page. “识别/解析并整理/综合入库” is capture + synthesize:
+after normalization, use the standard fresh-context maintainer handoff and
+verify a cache hit for every image RAW before reporting completion.
 
 ## Record the user's own note
 

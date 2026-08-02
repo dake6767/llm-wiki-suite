@@ -382,7 +382,9 @@ def frontmatter_defect(content: str) -> str | None:
 # `tags: [inbox]` straight from a RAW file into the compiled wiki/sources page
 # instead of generating real tags.
 RAW_INBOX_TAG = "inbox"
-RAW_SOURCE_TYPE_TAGS = {"video", "x", "wechat", "xiaohongshu", "web", "note", "bilibili"}
+RAW_SOURCE_TYPE_TAGS = {
+    "video", "image", "x", "wechat", "xiaohongshu", "web", "note", "bilibili",
+}
 
 
 def extract_frontmatter_list(text: str, key: str) -> list[str]:

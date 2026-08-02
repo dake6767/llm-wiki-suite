@@ -137,6 +137,10 @@
         "distill this video",
         "distill this youtube video",
         "save this video to the knowledge base",
+        "save this attached image",
+        "archive this screenshot",
+        "capture this photo into raw",
+        "extract this image and organize it",
         "file my idea",
         "save my note",
         "存进知识库",
@@ -152,6 +156,10 @@
         "剪藏",
         "归档这条",
         "把这个视频存进知识库",
+        "把这张图存到 wiki",
+        "把这张截图存进知识库",
+        "识别图片后整理入库",
+        "解析这张图片并整理到知识库",
         "记一下我的想法",
         "存个 idea"
       ]

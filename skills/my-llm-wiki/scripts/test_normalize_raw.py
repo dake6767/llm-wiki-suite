@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -143,6 +144,138 @@ class NormalizeRawIdentityTests(unittest.TestCase):
             len(list((self.wiki / "raw" / "sources" / "x").glob("*.md"))),
             2,
         )
+
+
+class ImageCaptureTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name).resolve()
+        self.wiki = self.root / "wiki-root"
+        (self.wiki / "wiki").mkdir(parents=True)
+        (self.wiki / "schema.md").write_text("# schema\n", encoding="utf-8")
+        self.image = self.root / "diagram.png"
+        self.image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"faithful-image-bytes")
+        self.capture = self.root / "image.md"
+        self.capture.write_text(
+            "# 检索链路架构图\n\n"
+            "![原图](diagram.png)\n\n"
+            "## 可检索文字\n\nQuery → Retriever → Results\n\n"
+            "## 画面描述\n\n三个方框由左向右连接。\n",
+            encoding="utf-8",
+        )
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def run_normalize(
+        self,
+        *,
+        title: str = "检索链路架构图",
+        source_file: Path | None = None,
+        on_exists: str = "skip",
+    ) -> tuple[subprocess.CompletedProcess[str], dict[str, str]]:
+        command = [
+            sys.executable,
+            str(SCRIPT),
+            "--md",
+            str(self.capture),
+            "--assets",
+            str(self.root),
+            "--wiki",
+            str(self.wiki),
+            "--source-type",
+            "image",
+            "--title",
+            title,
+            "--captured-at",
+            "2026-07-31T10:00:00Z",
+            "--on-exists",
+            on_exists,
+        ]
+        if source_file is not None:
+            command.extend(["--source-file", str(source_file)])
+        proc = subprocess.run(command, capture_output=True, text=True)
+        return proc, parse_summary(proc.stdout)
+
+    def test_image_archives_original_embeds_asset_and_hashes_identity(self) -> None:
+        proc, summary = self.run_normalize(source_file=self.image)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(summary["source_type"], "image")
+        self.assertEqual(summary["assets"], "1")
+        self.assertEqual(summary["capture_health"], "ok")
+
+        raw = Path(summary["dest"])
+        text = raw.read_text(encoding="utf-8")
+        expected_hash = hashlib.sha256(self.image.read_bytes()).hexdigest()
+        asset_name = "2026-07-31-检索链路架构图--diagram.png"
+        asset = self.wiki / "raw" / "assets" / asset_name
+
+        self.assertIn("source_type: image", text)
+        self.assertIn(f"original_id: {expected_hash}", text)
+        self.assertIn("tags:\n  - inbox\n  - image", text)
+        self.assertIn(f"source_file: ../../assets/{asset_name}", text)
+        self.assertIn(f"![原图](../../assets/{asset_name})", text)
+        self.assertIn("## 可检索文字", text)
+        self.assertIn("## 画面描述", text)
+        self.assertEqual(asset.read_bytes(), self.image.read_bytes())
+        self.assertEqual(len(list((self.wiki / "raw" / "assets").iterdir())), 1)
+
+    def test_identical_image_deduplicates_even_when_title_changes(self) -> None:
+        first, first_summary = self.run_normalize(source_file=self.image)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        second, second_summary = self.run_normalize(
+            title="另一种标题", source_file=self.image
+        )
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(second_summary["status"], "skipped_exists")
+        self.assertEqual(second_summary["matched_by"], "original_id")
+        self.assertEqual(second_summary["dest"], first_summary["dest"])
+
+    def test_image_requires_source_file(self) -> None:
+        proc, _ = self.run_normalize()
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("requires --source-file", proc.stderr)
+
+    def test_image_requires_exact_source_file_embed(self) -> None:
+        self.capture.write_text(
+            "# 检索链路架构图\n\n## 可检索文字\n\nQuery → Results\n",
+            encoding="utf-8",
+        )
+        proc, _ = self.run_normalize(source_file=self.image)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("requires the markdown body to embed", proc.stderr)
+
+    def test_image_rejects_non_image_source_file(self) -> None:
+        not_image = self.root / "fake.png"
+        not_image.write_text("not an image", encoding="utf-8")
+        self.capture.write_text(
+            "# 检索链路架构图\n\n![原图](fake.png)\n",
+            encoding="utf-8",
+        )
+        proc, _ = self.run_normalize(source_file=not_image)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("not a supported image", proc.stderr)
+
+    def test_svg_image_is_supported_by_magic_bytes(self) -> None:
+        svg = self.root / "diagram.svg"
+        svg.write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg"><text>Query</text></svg>\n',
+            encoding="utf-8",
+        )
+        self.capture.write_text(
+            "# SVG 检索链路\n\n![原图](diagram.svg)\n\n"
+            "## 可检索文字\n\nQuery\n\n## 画面描述\n\n一个文本标签。\n",
+            encoding="utf-8",
+        )
+        proc, summary = self.run_normalize(
+            title="SVG 检索链路", source_file=svg
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertTrue(
+            (self.wiki / "raw" / "assets" /
+             "2026-07-31-SVG-检索链路--diagram.svg").is_file()
+        )
+        self.assertEqual(summary["capture_health"], "ok")
 
 
 class WikiByNameTests(unittest.TestCase):

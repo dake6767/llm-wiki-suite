@@ -1,4 +1,4 @@
-<!-- llm-wiki-schema-version: 2 -->
+<!-- llm-wiki-schema-version: 3 -->
 # Wiki Schema
 
 ## Page Types
@@ -124,15 +124,16 @@ across ≥2 pages:
 - **No type/domain semantics.** Don't put `concept`/`entity` or domain words in
   `tags` — those live in `type` and `domain`.
 - **Never carry RAW capture frontmatter into wiki tags as a substitute for real
-  ones.** RAW's `tags: [inbox, ...]` and `source_type` (`video`/`x`/`wechat`/
-  `xiaohongshu`/`web`/`note`/…) describe the *capture*, not the *content*. When
+  ones.** RAW's `tags: [inbox, ...]` and `source_type` (`video`/`image`/`x`/
+  `wechat`/`xiaohongshu`/`web`/`note`/…) describe the *capture*, not the
+  *content*. When
   writing a `wiki/sources/` FILE block, generate real topical tags from the
   source's actual subject matter; don't default to echoing the RAW frontmatter
   you just read. Two different failure modes here, of different severity:
   - `inbox` is **never** tolerable, no matter what else is tagged alongside it —
     it means "not yet processed into the wiki", which is false the moment a wiki
     page exists at all.
-  - A bare format word like `video`/`bilibili` is fine *as one tag among real
+  - A bare format word like `video`/`image`/`bilibili` is fine *as one tag among real
     topical ones* (`[清初, video, bilibili, 康熙朝, 索额图, 太子废立]` is OK — it's
     just a genre marker). It only becomes a defect when it's the page's *entire*
     tag set — i.e. no genuine topical tag was ever generated.
@@ -191,9 +192,10 @@ hand-edit. The two layers and the schema mirror the LLM-WIKI pattern
 from RAW, the LLM writes the wiki.
 
 **Where RAW lives** — `raw/sources/<source_type>/<YYYY-MM-DD>-<slug>.md`, one
-self-described markdown file per captured item. `source_type` is the platform
-bucket: `wechat`, `x`, `xiaohongshu`, `web`, … plus `note` for the wiki owner's
-own first-party writing (see below). Downloaded images live in the shared
+self-described markdown file per captured item. `source_type` is the
+platform/source bucket: `wechat`, `x`, `xiaohongshu`, `web`, … plus `image` for a
+user-provided screenshot/photo and `note` for the wiki owner's own first-party
+writing (see below). Downloaded images live in the shared
 `raw/assets/` folder (Obsidian's attachment path), named
 `<YYYY-MM-DD>-<slug>--img-NNN.<ext>` so captures don't collide, and referenced
 from the markdown with relative links (`../../assets/<file>`).
@@ -204,7 +206,7 @@ file is also just plain markdown):
 ```yaml
 ---
 title: ...
-source_type: wechat | x | xiaohongshu | web | ...
+source_type: wechat | x | xiaohongshu | web | doc | image | video | note | ...
 source_url: ...
 original_id: ...        # platform id — the item's stable identity
 author: ...
@@ -212,7 +214,8 @@ publish_time: ...       # the source's own string
 captured_at: ...        # UTC ISO-8601, when ingested
 status: raw
 tags: [inbox, ...]      # `inbox` = not yet processed into the wiki
-# optional: source_file (archived original) / has_video / video_links / capture_health: warn
+# optional except required for image: source_file (archived original)
+# optional: has_video / video_links / capture_health: warn
 ---
 ```
 
@@ -225,6 +228,17 @@ tags: [inbox, ...]      # `inbox` = not yet processed into the wiki
   adapter may have changed. The same events are logged in
   `.llm-wiki/capture-issues.log`. Find flagged items with
   `grep -rl 'capture_health: warn' raw/sources/`.
+
+**User-provided images (`source_type: image`)** — a screenshot, photo, chart,
+scan, or diagram supplied as external evidence. It is not a first-party `note`.
+Its frontmatter uses `tags: [inbox, image]`, archives the original bytes through
+`source_file`, and uses their SHA-256 as `original_id`; `source_url`, author, and
+publish time are optional when actually known. The body embeds the original,
+then records verbatim visible text under `## 可检索文字`, an objective visual
+account under `## 画面描述`, and only genuine ambiguity under optional
+`## 不确定项`. Treat that body as a faithful searchable extraction, not a
+summary. The original image remains the evidence of record. Capture one RAW per
+image rather than collaging or re-encoding several attachments.
 
 **First-party notes (`source_type: note`)** — the wiki owner's *own* thoughts,
 ideas, and observations, captured into RAW the same way an external source is.
@@ -252,6 +266,6 @@ what the owner thought *then*; revising a view means adding a new note, and
 letting the evolved understanding live in the wiki layer — not editing the note.
 
 **Ingest** — get an outside source into RAW with the **my-llm-wiki** skill (paste
-a link, or sync X bookmarks); it fetches via opencli, localizes media, and writes
-a conforming RAW file. Then process `inbox` RAW into wiki pages per the page-type
+a link, attach an image, or sync X bookmarks); it localizes media and writes a
+conforming RAW file. Then process `inbox` RAW into wiki pages per the page-type
 rules above. Don't hand-write RAW unless necessary.

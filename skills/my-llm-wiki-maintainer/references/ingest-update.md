@@ -12,6 +12,13 @@ Goal: compile one raw source into durable wiki pages while preserving traceabili
    the prompt costs O(wiki) tokens on **every** subsequent model call in the
    session and is the single largest measured waste in maintainer sessions.
 3. Extract source text and compute a hash.
+   - For `source_type: image`, use the RAW body's `可检索文字` and `画面描述` as
+     the searchable source text; the localized `source_file` is the immutable
+     evidence, not a decorative attachment. If `不确定项` exists or a material
+     number, label, arrow, axis, or diagram relationship affects synthesis,
+     inspect that local original with the host's image-view capability. When it
+     cannot be inspected, carry the uncertainty into the source summary or a
+     review item rather than silently repairing it.
 4. Check `.llm-wiki/agent/ingest-cache.json`. If hash and written files are unchanged, skip full ingest.
 5. Build the **retrieval working set** — O(top-k), never O(wiki):
 
@@ -113,7 +120,7 @@ Goal: compile one raw source into durable wiki pages while preserving traceabili
      Two traps, both observed in real ingests: leaving the placeholder empty (the
      page lands with no retrieval facet at all — `related:` full, `tags: []`), and
      echoing the RAW capture frontmatter you just read (`inbox` is never
-     acceptable; a format word like `video`/`bilibili` is fine alongside real tags
+     acceptable; a format word like `video`/`image`/`bilibili` is fine alongside real tags
      but never as the whole set). `apply-blocks` and `lint` both warn on an empty
      set, but the warning arrives after the page is written — get it right here.
    - **Use the tag vocabulary you read in step 5.6** (re-run it there if this is

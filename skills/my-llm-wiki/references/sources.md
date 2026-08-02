@@ -168,8 +168,10 @@ python3 <skill>/scripts/normalize_raw.py \
 ## Choosing source_type
 
 `source_type` = the `raw/sources/<source_type>/` bucket + frontmatter field.
-Canonical buckets: `wechat` · `x` · `xiaohongshu` · `web` · `doc` · `video` ·
-`note`. Add a new bucket (`zhihu`, `bloomberg`, …) only when a source recurs
+Canonical buckets: `wechat` · `x` · `xiaohongshu` · `web` · `doc` · `image` ·
+`video` · `note`. `image` is the user-provided attachment flow defined directly
+in `SKILL.md`, not a web/document fetch recipe. Add a new bucket (`zhihu`,
+`bloomberg`, …) only when a source recurs
 enough to deserve its own shelf — and prefer a dedicated adapter/channel over
 the generic web path when the installed tools have one (`opencli list`,
 `agent-reach doctor`), since it yields a cleaner capture.

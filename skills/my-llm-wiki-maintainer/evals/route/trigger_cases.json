@@ -28,6 +28,7 @@
     { "text": "Fetch this URL and download the images locally into RAW.", "family": "capture" },
     { "text": "Sync my Twitter bookmarks into the RAW layer.", "family": "capture" },
     { "text": "Distill this YouTube video into RAW as a timestamped transcript.", "family": "capture" },
+    { "text": "识别我附上的这张架构图，存成 image RAW 后整理到技术 Wiki。", "family": "capture" },
     { "text": "File my idea as a note in the wiki.", "family": "capture" },
     { "text": "把这个链接存进知识库，存成 raw。", "family": "capture" },
     { "text": "同步我的 X 收藏到 RAW。", "family": "capture" },
