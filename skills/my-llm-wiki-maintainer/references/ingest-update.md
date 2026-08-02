@@ -148,9 +148,9 @@ Goal: compile one raw source into durable wiki pages while preserving traceabili
 
      Bounded either way (~590 tokens on a 900-page wiki, the same on a 20-page
      one), so this does not violate the step-5 budget. **Never pass `--audit`
-     during ingest** — it adds every singleton, duplicate pair and untagged
-     page, which is 16KB of cleanup material on a large wiki and useless for
-     tagging one page.
+     during ingest** — it computes the corpus-wide singleton/candidate cleanup
+     view (fully exposed by JSON or `--limit 0`), which is irrelevant to tagging
+     one page even when the default text presentation is bounded.
    - **REVIEW blocks are part of the deliverable, not an optional extra.** For every
      source, explicitly decide 0–3 `suggestion` items — the research gaps this source
      opens: claims worth verifying, adjacent topics the wiki lacks, tensions with

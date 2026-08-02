@@ -1,4 +1,4 @@
-<!-- llm-wiki-schema-version: 3 -->
+<!-- llm-wiki-schema-version: 4 -->
 # Wiki Schema
 
 ## Page Types
@@ -99,6 +99,14 @@ across ≥2 pages:
 - **One language per concept.** Keep an established foreign technical term as-is
   (e.g. `RAG`, `MCP`), but never *also* emit its translated duplicate. Default to
   the wiki's primary language otherwise.
+- **Canonical spelling follows meaning, not a global casing trick.** Preserve the
+  recognized spelling of proper names and products (`SpaceX`, `Claude Code`). For
+  ordinary Latin labels, prefer the form already established on more pages after
+  language and meaning agree; frequency is only a tie-breaker, never a reason to
+  lowercase a proper name. Spaces, hyphens, underscores, and case can expose a
+  format-equivalent candidate (`AI Workflow` / `ai-workflow`), but they do not
+  choose the winner. First apply **Link, don't tag** below: if either form names an
+  existing concept/entity page, link that page instead of consolidating a bad tag.
 - **Link, don't tag, anything with its own page.** Before writing each tag, check
   whether `wiki/entities/` or `wiki/concepts/` already has a page for it (match on
   meaning, not just exact filename). If a page exists, drop the tag and put the
@@ -134,7 +142,7 @@ across ≥2 pages:
     it means "not yet processed into the wiki", which is false the moment a wiki
     page exists at all.
   - A bare format word like `video`/`image`/`bilibili` is fine *as one tag among real
-    topical ones* (`[清初, video, bilibili, 康熙朝, 索额图, 太子废立]` is OK — it's
+    topical ones* (`[清初, video, 康熙朝, 索额图, 太子废立]` is OK — it's
     just a genre marker). It only becomes a defect when it's the page's *entire*
     tag set — i.e. no genuine topical tag was ever generated.
 

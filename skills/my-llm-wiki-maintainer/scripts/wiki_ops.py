@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
 import difflib
 import hashlib
@@ -11,8 +12,11 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -103,6 +107,54 @@ def read_text(path: Path) -> str:
 def write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    """Write one file by fsync + same-directory replace.
+
+    A multi-page governance run is journaled rather than pretending to be one
+    filesystem transaction, but each individual page must never be left torn.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.tmp-", dir=path.parent)
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if path.exists():
+            os.chmod(tmp, stat.S_IMODE(path.stat().st_mode))
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+
+
+@contextlib.contextmanager
+def exclusive_agent_lock(root: Path, name: str):
+    """Cross-platform best-effort exclusive lock using O_EXCL creation."""
+    lock = agent_state_path(root, f"locks/{name}.lock")
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        detail = read_text(lock).strip() if lock.exists() else "another process"
+        die(f"{name} is already locked ({detail}); retry after that run finishes")
+    try:
+        payload = json.dumps({"pid": os.getpid(), "createdAt": dt.datetime.now(
+            dt.timezone.utc).isoformat()}) + "\n"
+        os.write(fd, payload.encode("utf-8"))
+        os.close(fd)
+        fd = -1
+        yield
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            lock.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def normalize_rel(value: str) -> str:
@@ -689,13 +741,68 @@ def parse_frontmatter_mapping(text: str) -> dict[str, str]:
     return out
 
 
-def parse_inline_array(value: str | None) -> list[str]:
+def _split_flow_items(raw: str) -> tuple[list[str], bool]:
+    """Split a YAML flow sequence without breaking commas inside quotes.
+
+    This is intentionally a small frontmatter-list parser, not a general YAML
+    implementation. Tags observed in real Wikis are either plain scalars or
+    single/double-quoted scalars; handling those faithfully is enough to avoid
+    the dangerous ``raw.split(',')`` behavior during a bulk rewrite.
+    """
+    items: list[str] = []
+    start = 0
+    quote: str | None = None
+    escaped = False
+    i = 0
+    while i < len(raw):
+        ch = raw[i]
+        if quote == '"':
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == quote:
+                quote = None
+        elif quote == "'":
+            if ch == "'" and i + 1 < len(raw) and raw[i + 1] == "'":
+                i += 1  # YAML single-quote escape: ''
+            elif ch == quote:
+                quote = None
+        elif ch in {"'", '"'}:
+            quote = ch
+        elif ch == ",":
+            items.append(raw[start:i].strip())
+            start = i + 1
+        i += 1
+    items.append(raw[start:].strip())
+    return [item for item in items if item], quote is None
+
+
+def _parse_yaml_scalar_token(token: str) -> str:
+    token = token.strip()
+    if len(token) >= 2 and token[0] == token[-1] == "'":
+        return token[1:-1].replace("''", "'")
+    if len(token) >= 2 and token[0] == token[-1] == '"':
+        try:
+            decoded = json.loads(token)
+            return decoded if isinstance(decoded, str) else str(decoded)
+        except json.JSONDecodeError:
+            return token[1:-1].replace('\\"', '"').replace("\\\\", "\\")
+    return token
+
+
+def _flow_array_tokens(value: str | None) -> tuple[list[str], bool]:
     if not value:
-        return []
+        return [], True
     raw = value.strip()
     if raw.startswith("[") and raw.endswith("]"):
         raw = raw[1:-1]
-    return [item.strip().strip("\"'") for item in raw.split(",") if item.strip()]
+    return _split_flow_items(raw)
+
+
+def parse_inline_array(value: str | None) -> list[str]:
+    tokens, _balanced = _flow_array_tokens(value)
+    return [_parse_yaml_scalar_token(item) for item in tokens]
 
 
 def set_frontmatter_scalar(text: str, key: str, value: str) -> str:
@@ -729,6 +836,82 @@ def set_frontmatter_array(text: str, key: str, values: list[str]) -> str:
     if not replaced:
         lines.insert(max(1, len(lines) - 1), rendered)
     return "\n".join(lines).rstrip() + "\n" + body
+
+
+def _preferred_yaml_quote(tokens: list[str]) -> str | None:
+    """Preserve the list's existing quote convention when it has one."""
+    for token in tokens:
+        stripped = token.strip()
+        if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in {"'", '"'}:
+            return stripped[0]
+    return None
+
+
+def _plain_yaml_scalar_safe(value: str) -> bool:
+    if not value or value != value.strip() or "\n" in value or "\r" in value:
+        return False
+    if value[0] in "-?:,[]{}#&*!|>'\"%@`":
+        return False
+    if any(marker in value for marker in (",", "[", "]", "{", "}", ": ", " #")):
+        return False
+    if value.casefold() in {"null", "true", "false", "yes", "no", "on", "off", "~"}:
+        return False
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        return False
+    return True
+
+
+def _render_yaml_scalar(value: str, quote: str | None) -> str:
+    if quote == "'":
+        return "'" + value.replace("'", "''") + "'"
+    if quote == '"':
+        return json.dumps(value, ensure_ascii=False)
+    return value if _plain_yaml_scalar_safe(value) else json.dumps(value, ensure_ascii=False)
+
+
+def set_frontmatter_list_preserving_style(text: str, key: str, values: list[str]) -> str:
+    """Replace one complete list field while preserving inline/block + quotes.
+
+    ``set_frontmatter_array`` is suitable for generated pages but not for a
+    governance rewrite: it always emits an unquoted flow list and, for an
+    existing block list, leaves the old ``- item`` lines behind. This helper
+    consumes the entire old field and retains its established representation.
+    """
+    fm, body = strip_frontmatter(text)
+    if not fm:
+        return text
+    lines = fm.splitlines()
+    for i, line in enumerate(lines):
+        match = re.match(rf"^(\s*){re.escape(key)}\s*:\s*(.*)$", line)
+        if not match:
+            continue
+        indent, inline = match.group(1), match.group(2).strip()
+        _old_values, consumed = _block_list_values_at(lines, i, key)
+        if inline:
+            tokens, balanced = _flow_array_tokens(inline)
+            if not balanced:
+                die(f"Malformed quoted {key} list; refusing to rewrite it")
+            quote = _preferred_yaml_quote(tokens)
+            rendered = ", ".join(_render_yaml_scalar(v, quote) for v in values)
+            replacement = [f"{indent}{key}: [{rendered}]"]
+        else:
+            raw_tokens: list[str] = []
+            item_indent = indent + "  "
+            for old_line in lines[i + 1:i + consumed]:
+                item = re.match(r"^(\s*)-\s+(.*)$", old_line)
+                if item:
+                    item_indent = item.group(1)
+                    raw_tokens.append(item.group(2).strip())
+            quote = _preferred_yaml_quote(raw_tokens)
+            replacement = [f"{indent}{key}:"]
+            replacement.extend(
+                f"{item_indent}- {_render_yaml_scalar(value, quote)}" for value in values
+            )
+            if not values:
+                replacement = [f"{indent}{key}: []"]
+        lines[i:i + consumed] = replacement
+        return "\n".join(lines).rstrip() + "\n" + body
+    die(f"Frontmatter list field not found: {key}")
 
 
 def basename_slug(target: str) -> str:
@@ -1511,6 +1694,22 @@ def cmd_apply_blocks(args: argparse.Namespace) -> None:
                     f"{rel} has empty tags — the template's `tags: []` placeholder was "
                     "never filled. Add real topical tags per schema.md's Tag & Domain Policy."
                 )
+            page_tags = extract_frontmatter_list(content, "tags")
+            if len(page_tags) > TAG_MAX_PER_PAGE:
+                warnings.append(
+                    f"{rel} has {len(page_tags)} tags; schema.md permits at most "
+                    f"{TAG_MAX_PER_PAGE}. Keep only coarse reusable facets."
+                )
+            by_format: dict[str, list[str]] = {}
+            for tag in dict.fromkeys(page_tags):
+                by_format.setdefault(tag_format_key(tag), []).append(tag)
+            duplicate_formats = [values for values in by_format.values() if len(values) > 1]
+            if duplicate_formats:
+                warnings.append(
+                    f"{rel} has same-page format variants: "
+                    + "; ".join(" ↔ ".join(values) for values in duplicate_formats)
+                    + ". Choose one canonical form after checking Link-don't-tag."
+                )
         write_text(target, content)
         written.append(rel)
     reviews = parse_review_blocks(text, root, args.source, warnings)
@@ -1950,6 +2149,38 @@ def cmd_schema_upgrade(args: argparse.Namespace) -> None:
 # on day one, and shouldn't have to. It emerges, then gets consolidated.
 
 TAG_ESTABLISHED_MIN = 2  # schema.md's "reusable across ≥2 pages" threshold
+TAG_MAX_PER_PAGE = 5
+
+
+def tag_case_key(tag: str) -> str:
+    """Unicode-normalized case key; separators still retain meaning here."""
+    return unicodedata.normalize("NFKC", tag).strip().casefold()
+
+
+def tag_format_key(tag: str) -> str:
+    """Candidate key for case/space/hyphen/underscore-only variants.
+
+    Deliberately preserve ``+``, ``#``, dots, slashes and other punctuation:
+    collapsing those would turn real technical names such as C++, C# and v2.1
+    into unrelated strings. Equality of this key is a high-confidence lexical
+    candidate, not permission to choose a canonical spelling or auto-merge.
+    """
+    return re.sub(r"[\s_-]+", "", tag_case_key(tag))
+
+
+def knowledge_page_key_map(root: Path) -> dict[str, set[str]]:
+    """Exact lexical keys for concept/entity slugs and titles."""
+    result: dict[str, set[str]] = {}
+    for folder in (root / "wiki" / "entities", root / "wiki" / "concepts"):
+        if not folder.exists():
+            continue
+        for path in sorted(folder.glob("*.md")):
+            rel = rel_to_root(root / "wiki", path)
+            result.setdefault(tag_format_key(path.stem), set()).add(rel)
+            title = frontmatter_value(read_text(path), "title")
+            if title:
+                result.setdefault(tag_format_key(title), set()).add(rel)
+    return result
 
 
 def _tag_near_duplicate(a: str, b: str) -> str | None:
@@ -1957,7 +2188,10 @@ def _tag_near_duplicate(a: str, b: str) -> str | None:
 
     Returns a short reason string, or None. Tuned for a mixed CJK/ASCII corpus:
 
-    - Case-folded equality catches `YouTube` / `youtube`.
+    - Unicode-normalized case-folded equality catches `YouTube` / `youtube`.
+      A second key removes only spaces/hyphens/underscores, surfacing
+      `AI Workflow` / `ai-workflow` without erasing semantic punctuation in
+      `C++`, `C#`, or `v2.1`.
     - CJK pairs need *two* tests, because Chinese near-synonyms fail in two
       different shapes. An expansion like `大模型` vs `大语言模型` is not a
       substring relation at all — the shared characters are not contiguous — so
@@ -1971,11 +2205,13 @@ def _tag_near_duplicate(a: str, b: str) -> str | None:
 
     A hint for a human or LLM to adjudicate — never an automatic merge.
     """
-    la, lb = a.strip().lower(), b.strip().lower()
+    la, lb = tag_case_key(a), tag_case_key(b)
     if not la or not lb:
         return None
     if la == lb:
         return "case-variant"
+    if tag_format_key(a) == tag_format_key(b):
+        return "format-variant"
     if cjk_ratio(la) > 0.5 and cjk_ratio(lb) > 0.5:
         if min(len(la), len(lb)) >= 2 and (la in lb or lb in la):
             return "containment"
@@ -2071,6 +2307,9 @@ def tag_vocabulary(root: Path, *, query: str | None = None, scope_top: int = 12,
     counts: dict[str, int] = {}
     pages_for: dict[str, list[str]] = {}
     untagged: list[str] = []
+    pages_over_limit: list[dict[str, Any]] = []
+    tag_references = 0
+    max_tags_per_page = 0
     total = 0
     for path in wiki_files(root):
         if path.name in {"index.md", "log.md", "overview.md"}:
@@ -2080,6 +2319,10 @@ def tag_vocabulary(root: Path, *, query: str | None = None, scope_top: int = 12,
         tags = [t.strip() for t in extract_frontmatter_list(read_text(path), "tags") if t.strip()]
         if not tags:
             untagged.append(rel)
+        tag_references += len(tags)
+        max_tags_per_page = max(max_tags_per_page, len(tags))
+        if len(tags) > TAG_MAX_PER_PAGE:
+            pages_over_limit.append({"page": rel, "count": len(tags)})
         for tag in dict.fromkeys(tags):  # a page counts once per tag
             counts[tag] = counts.get(tag, 0) + 1
             pages_for.setdefault(tag, []).append(rel)
@@ -2121,17 +2364,31 @@ def tag_vocabulary(root: Path, *, query: str | None = None, scope_top: int = 12,
                     hints.append({"a": a, "b": b, "reason": reason,
                                   "counts": f"{counts[a]}/{counts[b]}",
                                   "pagesAffected": counts[a] + counts[b]})
-        hints.sort(key=lambda h: (h["reason"] != "case-variant", -h["pagesAffected"],
-                                  h["a"], h["b"]))
+        reason_order = {"case-variant": 0, "format-variant": 1}
+        hints.sort(key=lambda h: (reason_order.get(h["reason"], 2),
+                                  -h["pagesAffected"], h["a"], h["b"]))
+    candidate_groups = {
+        "formatVariants": [h for h in hints if h["reason"] in {"case-variant", "format-variant"}],
+        "semanticReview": [h for h in hints if h["reason"].startswith("char-overlap")],
+        "containment": [h for h in hints if h["reason"] == "containment"],
+    }
+    singleton_pages = {
+        page for tag in singletons for page in pages_for.get(tag, [])
+    }
     return {
         "contentPages": total,
         "taggedPages": total - len(untagged),
+        "tagReferences": tag_references,
         "distinctTags": len(counts),
         "established": established,
         "singletons": singletons,
+        "pagesWithSingleton": len(singleton_pages),
         "relevant": relevant,
         "untaggedPages": untagged,
+        "pagesOverLimit": pages_over_limit,
+        "maxTagsPerPage": max_tags_per_page,
         "nearDuplicates": hints,
+        "candidateGroups": candidate_groups,
         "duplicatesComputed": with_duplicates,
         "pagesFor": pages_for,
     }
@@ -2223,20 +2480,477 @@ def cmd_tags(args: argparse.Namespace) -> None:
               "pages — `--audit` or `wiki_ops.py health` for the full cleanup view)")
         return
     if vocab["singletons"]:
-        print("\n## singletons (used once — prefer reusing one over coining a near-synonym)")
-        print(", ".join(vocab["singletons"]))
-    dups = vocab["nearDuplicates"]
-    if dups:
-        shown_d = dups if args.limit <= 0 else dups[: args.limit]
-        print(f"\n## possible duplicates ({len(dups)}, highest-impact first — judge, don't auto-merge)")
-        for h in shown_d:
-            print(f"  {h['a']} ↔ {h['b']}  [{h['counts']}] {h['reason']}")
-        if args.limit > 0 and len(dups) > args.limit:
-            print(f"  … +{len(dups) - args.limit} more (--limit 0 for all)")
+        shown_singletons = (vocab["singletons"] if args.limit <= 0
+                            else vocab["singletons"][: args.limit])
+        print(f"\n## singletons ({len(vocab['singletons'])}, used once — "
+              "prefer reusing one over coining a near-synonym)")
+        print(", ".join(shown_singletons))
+        if args.limit > 0 and len(vocab["singletons"]) > args.limit:
+            print(f"… +{len(vocab['singletons']) - args.limit} more "
+                  "(--limit 0 for all; use --json for batch tooling)")
+    groups = vocab["candidateGroups"]
+
+    def print_candidates(title: str, candidates: list[dict[str, Any]], guidance: str) -> None:
+        if not candidates:
+            return
+        shown_candidates = candidates if args.limit <= 0 else candidates[: args.limit]
+        print(f"\n## {title} ({len(candidates)}) — {guidance}")
+        for hint in shown_candidates:
+            print(f"  {hint['a']} ↔ {hint['b']}  [{hint['counts']}] {hint['reason']}")
+        if args.limit > 0 and len(candidates) > args.limit:
+            print(f"  … +{len(candidates) - args.limit} more (--limit 0 for all)")
+
+    print_candidates(
+        "format/case variants", groups["formatVariants"],
+        "high-confidence lexical equivalents; choose canonical + check Link-don't-tag before rewrite",
+    )
+    print_candidates(
+        "character-overlap candidates", groups["semanticReview"],
+        "semantic judgement required; similarity is recall, never a merge decision",
+    )
+    print_candidates(
+        "containment relations", groups["containment"],
+        "usually parent/child or related concepts; default is NO ACTION",
+    )
     if vocab["untaggedPages"]:
         print(f"\n## untagged pages ({len(vocab['untaggedPages'])})")
         for p in vocab["untaggedPages"]:
             print(f"  {p}")
+
+
+# ── Tag governance rewrite (plan → apply → rollback) ──────────────────────
+
+TAG_REWRITE_SCHEMA_VERSION = 1
+TAG_REWRITE_KINDS = {"format", "alias"}
+
+
+def _load_json_object(path: Path, label: str) -> dict[str, Any]:
+    try:
+        data = json.loads(read_text(path))
+    except FileNotFoundError:
+        die(f"{label} file not found: {path}")
+    except json.JSONDecodeError as exc:
+        die(f"{label} is invalid JSON at line {exc.lineno}: {exc.msg}")
+    if not isinstance(data, dict):
+        die(f"{label} must be a JSON object")
+    return data
+
+
+def _wiki_rel(value: str) -> str:
+    rel = normalize_rel(value)
+    if not rel.startswith("wiki/"):
+        rel = "wiki/" + rel
+    return ensure_md_page(rel)
+
+
+def _tag_audit_summary(vocab: dict[str, Any]) -> dict[str, Any]:
+    groups = vocab["candidateGroups"]
+    return {
+        "contentPages": vocab["contentPages"],
+        "taggedPages": vocab["taggedPages"],
+        "tagReferences": vocab["tagReferences"],
+        "distinctTags": vocab["distinctTags"],
+        "establishedTags": len(vocab["established"]),
+        "singletons": len(vocab["singletons"]),
+        "pagesWithSingleton": vocab["pagesWithSingleton"],
+        "untaggedPages": len(vocab["untaggedPages"]),
+        "pagesOverLimit": len(vocab["pagesOverLimit"]),
+        "maxTagsPerPage": vocab["maxTagsPerPage"],
+        "formatVariants": len(groups["formatVariants"]),
+        "semanticReviewCandidates": len(groups["semanticReview"]),
+        "containmentRelations": len(groups["containment"]),
+    }
+
+
+def _lint_summary(issues: list[dict[str, Any]]) -> dict[str, Any]:
+    by_severity: dict[str, int] = {}
+    by_type: dict[str, int] = {}
+    for issue in issues:
+        severity = str(issue.get("severity", "warning"))
+        item_type = str(issue.get("type", "unknown"))
+        by_severity[severity] = by_severity.get(severity, 0) + 1
+        by_type[item_type] = by_type.get(item_type, 0) + 1
+    return {"count": len(issues), "bySeverity": by_severity, "byType": by_type}
+
+
+def _rewrite_tag_values(tags: list[str], rule_map: dict[str, str]) -> list[str]:
+    rewritten: list[str] = []
+    for tag in tags:
+        candidate = rule_map.get(tag, tag)
+        if candidate not in rewritten:
+            rewritten.append(candidate)
+    return rewritten
+
+
+def _tag_plan_baseline_digest(pages: list[dict[str, Any]]) -> str:
+    payload = json.dumps(
+        [(page.get("path"), page.get("beforeSha256")) for page in pages],
+        ensure_ascii=False, separators=(",", ":"),
+    )
+    return hash_text(payload)
+
+
+def _validated_tag_rules(root: Path, mapping: dict[str, Any],
+                         vocab: dict[str, Any]) -> list[dict[str, Any]]:
+    if mapping.get("schemaVersion") != TAG_REWRITE_SCHEMA_VERSION:
+        die(f"mapping schemaVersion must be {TAG_REWRITE_SCHEMA_VERSION}")
+    declared_root = mapping.get("root")
+    if not isinstance(declared_root, str) or not declared_root.strip():
+        die("mapping root is required and must be the absolute Wiki project root")
+    declared_path = Path(declared_root).expanduser()
+    if not declared_path.is_absolute():
+        die("mapping root must be absolute")
+    if declared_path.resolve() != root.resolve():
+        die(f"mapping root does not match resolved project root: {declared_root} != {root}")
+    raw_rules = mapping.get("rules")
+    if not isinstance(raw_rules, list) or not raw_rules:
+        die("mapping rules must be a non-empty array")
+
+    rules: list[dict[str, Any]] = []
+    sources: set[str] = set()
+    pages_for = vocab["pagesFor"]
+    all_tags = set(pages_for)
+    page_keys = knowledge_page_key_map(root)
+    for index, raw_rule in enumerate(raw_rules, start=1):
+        if not isinstance(raw_rule, dict):
+            die(f"mapping rule {index} must be an object")
+        source = raw_rule.get("from")
+        target = raw_rule.get("to")
+        kind = raw_rule.get("kind", "alias")
+        if not isinstance(source, str) or not source.strip():
+            die(f"mapping rule {index} has an empty from")
+        if not isinstance(target, str) or not target.strip():
+            die(f"mapping rule {index} has an empty to; link/drop is a semantic operation, "
+                "not a tags-rewrite mapping")
+        source, target = source.strip(), target.strip()
+        if source == target:
+            die(f"mapping rule {index} maps a tag to itself: {source}")
+        if source in sources:
+            die(f"mapping contains more than one rule for: {source}")
+        if kind not in TAG_REWRITE_KINDS:
+            die(f"mapping rule {index} kind must be one of {sorted(TAG_REWRITE_KINDS)}")
+        if kind == "format" and _tag_near_duplicate(source, target) not in {
+            "case-variant", "format-variant"
+        }:
+            die(f"format rule is not case/spacing/separator-equivalent: {source} → {target}")
+        expected_count = raw_rule.get("expectedCount")
+        expected_pages = raw_rule.get("expectedPages")
+        if not isinstance(expected_count, int) or expected_count < 1:
+            die(f"mapping rule {index} requires expectedCount >= 1 (page references)")
+        if not isinstance(expected_pages, list) or not expected_pages or not all(
+            isinstance(page, str) for page in expected_pages
+        ):
+            die(f"mapping rule {index} requires a non-empty expectedPages string array")
+        actual_pages = sorted(_wiki_rel(page) for page in pages_for.get(source, []))
+        declared_pages = sorted(dict.fromkeys(_wiki_rel(page) for page in expected_pages))
+        if expected_count != len(actual_pages):
+            die(f"expectedCount mismatch for {source}: mapping says {expected_count}, "
+                f"live Wiki has {len(actual_pages)} page reference(s)")
+        if declared_pages != actual_pages:
+            die(f"expectedPages mismatch for {source}: mapping={declared_pages}, live={actual_pages}")
+        if target not in all_tags and not raw_rule.get("allowNewCanonical", False):
+            die(f"canonical target tag does not yet exist: {target}. Set allowNewCanonical=true "
+                "only after explicitly choosing a new spelling.")
+        shadows = sorted(page_keys.get(tag_format_key(target), set()))
+        if shadows:
+            die(f"canonical target '{target}' shadows existing knowledge page(s) {shadows}; "
+                "classify this as link/drop instead of mapping tags")
+        sources.add(source)
+        rules.append({
+            "from": source,
+            "to": target,
+            "kind": kind,
+            "expectedCount": expected_count,
+            "expectedPages": declared_pages,
+            "allowNewCanonical": bool(raw_rule.get("allowNewCanonical", False)),
+            "reason": str(raw_rule.get("reason", "")).strip(),
+        })
+
+    for rule in rules:
+        if rule["to"] in sources:
+            die(f"chained/cyclic mappings are not supported in one plan: {rule['from']} → {rule['to']}")
+
+    targets_by_key: dict[str, set[str]] = {}
+    for rule in rules:
+        targets_by_key.setdefault(tag_format_key(rule["to"]), set()).add(rule["to"])
+    for key, targets in targets_by_key.items():
+        surviving = {
+            tag for tag in all_tags
+            if tag_format_key(tag) == key and tag not in sources and tag not in targets
+        }
+        if surviving:
+            die(f"planned canonical {sorted(targets)} would leave other format variant(s) "
+                f"unresolved: {sorted(surviving)}")
+    return rules
+
+
+def build_tags_rewrite_plan(root: Path, mapping: dict[str, Any]) -> dict[str, Any]:
+    vocab = tag_vocabulary(root)
+    rules = _validated_tag_rules(root, mapping, vocab)
+    rule_map = {rule["from"]: rule["to"] for rule in rules}
+    affected = sorted({page for rule in rules for page in rule["expectedPages"]})
+    pages: list[dict[str, Any]] = []
+    for rel in affected:
+        path = safe_project_path(root, rel)
+        if not path.is_file():
+            die(f"planned page does not exist: {rel}")
+        before_text = read_text(path)
+        before_tags = extract_frontmatter_list(before_text, "tags")
+        after_tags = _rewrite_tag_values(before_tags, rule_map)
+        if after_tags == before_tags:
+            die(f"mapping produced no tag change for expected page: {rel}")
+        after_text = set_frontmatter_list_preserving_style(before_text, "tags", after_tags)
+        pages.append({
+            "path": rel,
+            "beforeSha256": hash_text(before_text),
+            "afterSha256": hash_text(after_text),
+            "beforeTags": before_tags,
+            "afterTags": after_tags,
+            "frontmatterDiff": {"before": f"tags: {before_tags}", "after": f"tags: {after_tags}"},
+        })
+    return {
+        "schemaVersion": TAG_REWRITE_SCHEMA_VERSION,
+        "kind": "tag-rewrite-plan",
+        "projectRoot": str(root),
+        "createdAt": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "baselineDigest": _tag_plan_baseline_digest(pages),
+        "rules": rules,
+        "pages": pages,
+        "auditBefore": _tag_audit_summary(vocab),
+    }
+
+
+def cmd_tags_rewrite_plan(args: argparse.Namespace) -> None:
+    root = resolve_root(Path(args.project_root))
+    mapping = _load_json_object(Path(args.mapping).expanduser().resolve(), "mapping")
+    plan = build_tags_rewrite_plan(root, mapping)
+    if args.out:
+        out = Path(args.out).expanduser().resolve()
+        atomic_write_text(out, json.dumps(plan, indent=2, ensure_ascii=False) + "\n")
+        print(json.dumps({
+            "status": "planned", "planFile": str(out), "pages": len(plan["pages"]),
+            "baselineDigest": plan["baselineDigest"], "auditBefore": plan["auditBefore"],
+        }, indent=2, ensure_ascii=False))
+        return
+    print(json.dumps(plan, indent=2, ensure_ascii=False))
+
+
+def _validate_rewrite_plan(root: Path, plan: dict[str, Any]) -> None:
+    if plan.get("schemaVersion") != TAG_REWRITE_SCHEMA_VERSION or plan.get("kind") != "tag-rewrite-plan":
+        die("plan has an unsupported schemaVersion or kind")
+    if Path(str(plan.get("projectRoot", ""))).expanduser().resolve() != root.resolve():
+        die("plan projectRoot does not match the resolved project root")
+    if not isinstance(plan.get("rules"), list) or not isinstance(plan.get("pages"), list):
+        die("plan rules/pages are malformed")
+    if not all(isinstance(rule, dict) for rule in plan["rules"]):
+        die("plan contains a malformed rule")
+    if not all(isinstance(page, dict) for page in plan["pages"]):
+        die("plan contains a malformed page entry")
+    expected_paths = sorted({
+        _wiki_rel(str(page))
+        for rule in plan["rules"]
+        for page in (rule.get("expectedPages") or [])
+    })
+    actual_paths = sorted(_wiki_rel(str(page.get("path", ""))) for page in plan["pages"])
+    if actual_paths != expected_paths:
+        die(f"plan page set does not match its rules: pages={actual_paths}, expected={expected_paths}")
+    if plan.get("baselineDigest") != _tag_plan_baseline_digest(plan["pages"]):
+        die("plan baselineDigest does not match its page/hash set")
+
+
+def cmd_tags_rewrite_apply(args: argparse.Namespace) -> int:
+    root = resolve_root(Path(args.project_root))
+    plan_path = Path(args.plan).expanduser().resolve()
+    plan = _load_json_object(plan_path, "plan")
+    _validate_rewrite_plan(root, plan)
+
+    with exclusive_agent_lock(root, "tag-rewrite"):
+        live_vocab = tag_vocabulary(root)
+        live_mapping = {
+            "schemaVersion": TAG_REWRITE_SCHEMA_VERSION,
+            "root": str(root),
+            "rules": plan["rules"],
+        }
+        live_rules = _validated_tag_rules(root, live_mapping, live_vocab)
+        rule_map = {rule["from"]: rule["to"] for rule in live_rules}
+        preflight: list[tuple[dict[str, Any], Path, str, str]] = []
+        for entry in plan["pages"]:
+            rel = _wiki_rel(str(entry.get("path", "")))
+            path = safe_project_path(root, rel)
+            if not path.is_file():
+                die(f"apply preflight: page missing: {rel}")
+            current = read_text(path)
+            if hash_text(current) != entry.get("beforeSha256"):
+                die(f"apply preflight: before-hash mismatch for {rel}; regenerate the plan")
+            if extract_frontmatter_list(current, "tags") != entry.get("beforeTags"):
+                die(f"apply preflight: beforeTags mismatch for {rel}; regenerate the plan")
+            after_tags = _rewrite_tag_values(entry["beforeTags"], rule_map)
+            after_text = set_frontmatter_list_preserving_style(current, "tags", after_tags)
+            if after_tags != entry.get("afterTags") or hash_text(after_text) != entry.get("afterSha256"):
+                die(f"apply preflight: plan output mismatch for {rel}; regenerate with this Skill version")
+            preflight.append((entry, path, current, after_text))
+
+        before_issues = collect_lint_issues(root)
+        before_issue_keys = {lint_issue_fingerprint(issue) for issue in before_issues}
+        audit_before = _tag_audit_summary(live_vocab)
+        run_id = dt.datetime.now().strftime("%Y%m%d%H%M%S%f")
+        run_dir = agent_state_path(root, f"page-history/tag-rewrite-{run_id}")
+        manifest_path = run_dir / "manifest.json"
+        manifest = json.loads(json.dumps(plan))
+        manifest.update({
+            "kind": "tag-rewrite-manifest",
+            "status": "applying",
+            "runId": run_id,
+            "planFile": str(plan_path),
+            "startedAt": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "auditBeforeApply": audit_before,
+            "lintBeforeApply": _lint_summary(before_issues),
+        })
+        for entry in manifest["pages"]:
+            entry["backup"] = normalize_rel(str(
+                (run_dir / entry["path"]).relative_to(root)
+            ))
+            entry["status"] = "pending"
+        atomic_write_text(manifest_path, json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
+
+        try:
+            for index, (_plan_entry, path, current, after_text) in enumerate(preflight):
+                manifest_entry = manifest["pages"][index]
+                backup = safe_project_path(root, manifest_entry["backup"])
+                atomic_write_text(backup, current)
+                if hash_file(backup) != manifest_entry["beforeSha256"]:
+                    raise OSError(f"backup hash mismatch for {manifest_entry['path']}")
+                manifest_entry["status"] = "backed-up"
+                atomic_write_text(
+                    manifest_path, json.dumps(manifest, indent=2, ensure_ascii=False) + "\n"
+                )
+                manifest_entry["status"] = "writing"
+                atomic_write_text(
+                    manifest_path, json.dumps(manifest, indent=2, ensure_ascii=False) + "\n"
+                )
+                atomic_write_text(path, after_text)
+                if hash_file(path) != manifest_entry["afterSha256"]:
+                    raise OSError(f"after hash mismatch for {manifest_entry['path']}")
+                manifest_entry["status"] = "applied"
+                atomic_write_text(
+                    manifest_path, json.dumps(manifest, indent=2, ensure_ascii=False) + "\n"
+                )
+        except Exception as exc:
+            manifest["status"] = "partial"
+            manifest["error"] = str(exc)
+            manifest["failedAt"] = dt.datetime.now(dt.timezone.utc).isoformat()
+            atomic_write_text(manifest_path, json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
+            print(json.dumps({
+                "status": "partial", "manifest": str(manifest_path), "error": str(exc),
+                "hint": "run tags-rewrite rollback with this manifest after resolving the filesystem error",
+            }, indent=2, ensure_ascii=False))
+            return 1
+
+        after_issues = collect_lint_issues(root)
+        write_lint_report(root, after_issues)
+        new_findings = [
+            issue for issue in after_issues
+            if issue.get("severity") in {"warning", "error"}
+            and lint_issue_fingerprint(issue) not in before_issue_keys
+        ]
+        audit_after = _tag_audit_summary(tag_vocabulary(root))
+        if audit_after["formatVariants"] > audit_before["formatVariants"]:
+            new_findings.append({
+                "type": "tag-format-regression", "severity": "warning", "page": "wiki/",
+                "detail": "format-variant candidate count increased during rewrite",
+            })
+        manifest["status"] = "applied-with-findings" if new_findings else "applied"
+        manifest["completedAt"] = dt.datetime.now(dt.timezone.utc).isoformat()
+        manifest["auditAfterApply"] = audit_after
+        manifest["lintAfterApply"] = _lint_summary(after_issues)
+        manifest["newWarningOrErrorFindings"] = new_findings
+        atomic_write_text(manifest_path, json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
+        print(json.dumps({
+            "status": manifest["status"], "manifest": str(manifest_path),
+            "pages": len(manifest["pages"]), "auditBefore": audit_before,
+            "auditAfter": audit_after, "newFindings": new_findings,
+        }, indent=2, ensure_ascii=False))
+        return 1 if new_findings else 0
+
+
+def cmd_tags_rewrite_rollback(args: argparse.Namespace) -> int:
+    root = resolve_root(Path(args.project_root))
+    manifest_path = Path(args.manifest).expanduser().resolve()
+    manifest = _load_json_object(manifest_path, "manifest")
+    if (manifest.get("schemaVersion") != TAG_REWRITE_SCHEMA_VERSION
+            or manifest.get("kind") != "tag-rewrite-manifest"):
+        die("manifest has an unsupported schemaVersion or kind")
+    if Path(str(manifest.get("projectRoot", ""))).expanduser().resolve() != root.resolve():
+        die("manifest projectRoot does not match the resolved project root")
+
+    with exclusive_agent_lock(root, "tag-rewrite"):
+        restorable: list[tuple[dict[str, Any], Path, Path, str]] = []
+        candidates = 0
+        for entry in manifest.get("pages", []):
+            if entry.get("status") not in {"applied", "writing", "backed-up"}:
+                continue
+            candidates += 1
+            path = safe_project_path(root, _wiki_rel(str(entry.get("path", ""))))
+            backup = safe_project_path(root, normalize_rel(str(entry.get("backup", ""))))
+            if not backup.is_file() or hash_file(backup) != entry.get("beforeSha256"):
+                die(f"rollback refused: backup missing or hash mismatch: {entry.get('backup')}")
+            if not path.is_file():
+                die(f"rollback refused: current page is missing: {entry.get('path')}")
+            current_hash = hash_file(path)
+            if current_hash == entry.get("beforeSha256"):
+                entry["status"] = "not-applied"
+                continue
+            if current_hash != entry.get("afterSha256"):
+                die(f"rollback refused: current file matches neither before- nor after-hash: "
+                    f"{entry.get('path')}")
+            restorable.append((entry, path, backup, read_text(backup)))
+        if not candidates:
+            die("manifest has no applied pages to roll back")
+        if not restorable:
+            manifest["status"] = "rolled-back"
+            manifest["rolledBackAt"] = dt.datetime.now(dt.timezone.utc).isoformat()
+            atomic_write_text(
+                manifest_path, json.dumps(manifest, indent=2, ensure_ascii=False) + "\n"
+            )
+            print(json.dumps({
+                "status": "rolled-back", "manifest": str(manifest_path), "pages": 0,
+                "detail": "all journaled pages already matched their before-hashes",
+            }, indent=2, ensure_ascii=False))
+            return 0
+
+        manifest["status"] = "rolling-back"
+        manifest["rollbackStartedAt"] = dt.datetime.now(dt.timezone.utc).isoformat()
+        atomic_write_text(manifest_path, json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
+        try:
+            for entry, path, _backup, before_text in restorable:
+                atomic_write_text(path, before_text)
+                if hash_file(path) != entry["beforeSha256"]:
+                    raise OSError(f"restored hash mismatch for {entry['path']}")
+                entry["status"] = "rolled-back"
+                atomic_write_text(
+                    manifest_path, json.dumps(manifest, indent=2, ensure_ascii=False) + "\n"
+                )
+        except Exception as exc:
+            manifest["status"] = "rollback-partial"
+            manifest["rollbackError"] = str(exc)
+            atomic_write_text(manifest_path, json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
+            print(json.dumps({
+                "status": "rollback-partial", "manifest": str(manifest_path), "error": str(exc),
+            }, indent=2, ensure_ascii=False))
+            return 1
+
+        issues = collect_lint_issues(root)
+        write_lint_report(root, issues)
+        manifest["status"] = "rolled-back"
+        manifest["rolledBackAt"] = dt.datetime.now(dt.timezone.utc).isoformat()
+        manifest["auditAfterRollback"] = _tag_audit_summary(tag_vocabulary(root))
+        manifest["lintAfterRollback"] = _lint_summary(issues)
+        atomic_write_text(manifest_path, json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
+        print(json.dumps({
+            "status": "rolled-back", "manifest": str(manifest_path),
+            "pages": len(restorable), "auditAfter": manifest["auditAfterRollback"],
+        }, indent=2, ensure_ascii=False))
+        return 0
 
 
 # ── Wiki health (project-level, where lint is page-level) ───────────────────
@@ -2327,12 +3041,26 @@ def cmd_health(args: argparse.Namespace) -> None:
              f"{singles} of {distinct} tags are used on exactly one page — the facet is "
              "sprawling rather than converging.",
              "wiki_ops.py tags <root> and fold singletons into established tags")
-    if vocab["nearDuplicates"]:
-        pairs = ", ".join(f"{h['a']}↔{h['b']}" for h in vocab["nearDuplicates"][:5])
+    if vocab["pagesOverLimit"]:
+        note("tags", "warning",
+             f"{len(vocab['pagesOverLimit'])} content page(s) exceed the {TAG_MAX_PER_PAGE}-tag limit "
+             f"(maximum observed: {vocab['maxTagsPerPage']}).",
+             "wiki_ops.py lint <root> lists them as too-many-tags")
+    groups = vocab["candidateGroups"]
+    if groups["formatVariants"]:
+        pairs = ", ".join(f"{h['a']}↔{h['b']}" for h in groups["formatVariants"][:5])
         note("tags", "info",
-             f"{len(vocab['nearDuplicates'])} possible duplicate tag pair(s): {pairs}"
-             + ("…" if len(vocab["nearDuplicates"]) > 5 else ""),
-             "wiki_ops.py tags <root> shows all pairs; merge by editing the pages")
+             f"{len(groups['formatVariants'])} format/case-equivalent tag pair(s): {pairs}"
+             + ("…" if len(groups["formatVariants"]) > 5 else ""),
+             "wiki_ops.py tags <root> --audit shows the actionable group; choose canonical and "
+             "check Link-don't-tag before planning a rewrite")
+    semantic_count = len(groups["semanticReview"])
+    containment_count = len(groups["containment"])
+    if semantic_count or containment_count:
+        note("tags", "info",
+             f"{semantic_count} character-overlap candidate(s) need semantic review; "
+             f"{containment_count} containment relation(s) are usually parent/child and default to no action.",
+             "wiki_ops.py tags <root> --audit groups candidates by executability")
 
     result = {
         "wiki": str(root),
@@ -2373,10 +3101,11 @@ def make_lint_item(seq: int, item_type: str, severity: str, page: str, detail: s
     return item
 
 
-def cmd_lint(args: argparse.Namespace) -> None:
-    root = resolve_root(Path(args.project_root))
+def collect_lint_issues(root: Path) -> list[dict[str, Any]]:
+    """Collect deterministic lint findings without printing or writing state."""
     files = wiki_files(root)
     id_to_path: dict[str, Path] = {}
+    knowledge_page_keys = knowledge_page_key_map(root)
     for path in files:
         pid = page_id(root, path)
         id_to_path[slug_key(pid)] = path
@@ -2402,6 +3131,7 @@ def cmd_lint(args: argparse.Namespace) -> None:
             if defect:
                 issue("semantic", "warning", rel, defect)
         if path.name not in {"index.md", "log.md", "overview.md"}:
+            tags = extract_frontmatter_list(content, "tags")
             if missing_tags(content):
                 issue("missing-tags", "warning", rel,
                       "tags is empty — this page never got topical tags at all. The "
@@ -2422,6 +3152,35 @@ def cmd_lint(args: argparse.Namespace) -> None:
                       "alongside genuine tags, but as the entire tag set it means this page "
                       "never got real tags generated. Add topical tags per the Tag & Domain "
                       "Policy.")
+            if len(tags) > TAG_MAX_PER_PAGE:
+                issue("too-many-tags", "warning", rel,
+                      f"tags has {len(tags)} values; schema.md permits at most "
+                      f"{TAG_MAX_PER_PAGE}. Keep only coarse reusable retrieval facets.")
+            exact_duplicates = sorted({tag for tag in tags if tags.count(tag) > 1})
+            if exact_duplicates:
+                issue("duplicate-tag", "warning", rel,
+                      f"tags repeats the same value(s): {exact_duplicates}. Keep one occurrence.")
+            by_format: dict[str, list[str]] = {}
+            for tag in dict.fromkeys(tags):
+                by_format.setdefault(tag_format_key(tag), []).append(tag)
+            format_duplicates = [values for values in by_format.values() if len(values) > 1]
+            if format_duplicates:
+                issue("duplicate-tag-format", "warning", rel,
+                      "tags contains case/spacing/separator variants on the same page: "
+                      + "; ".join(" ↔ ".join(values) for values in format_duplicates)
+                      + ". Choose one canonical form after checking Link-don't-tag.")
+            shadows: dict[str, list[str]] = {}
+            for tag in dict.fromkeys(tags):
+                targets = sorted(knowledge_page_keys.get(tag_format_key(tag), set()))
+                if targets:
+                    shadows[tag] = targets
+            if shadows:
+                detail = "; ".join(
+                    f"{tag} → {', '.join(targets)}" for tag, targets in shadows.items()
+                )
+                issue("tag-shadows-page", "info", rel,
+                      "tag(s) normalize to an existing concept/entity page: " + detail
+                      + ". Review whether the tag should be removed and replaced with related:/a Wikilink.")
         links = extract_wikilinks(content)
         outlinks[path] = links
         for link in links:
@@ -2483,7 +3242,24 @@ def cmd_lint(args: argparse.Namespace) -> None:
             "references/ingest-update.md step 7.",
         )
 
-    write_text(app_state_path(root, "lint.json"), json.dumps(issues, indent=2, ensure_ascii=False) + "\n")
+    return issues
+
+
+def lint_issue_fingerprint(item: dict[str, Any]) -> str:
+    return "\x1f".join(str(item.get(key, "")) for key in ("type", "severity", "page", "detail"))
+
+
+def write_lint_report(root: Path, issues: list[dict[str, Any]]) -> None:
+    atomic_write_text(
+        app_state_path(root, "lint.json"),
+        json.dumps(issues, indent=2, ensure_ascii=False) + "\n",
+    )
+
+
+def cmd_lint(args: argparse.Namespace) -> None:
+    root = resolve_root(Path(args.project_root))
+    issues = collect_lint_issues(root)
+    write_lint_report(root, issues)
 
     # Severity ranking so a CI gate can fail on "warning and above" while still
     # tolerating "info" (orphans / no-outlinks are advisory, not breakage).
@@ -3414,6 +4190,25 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--verbose", action="store_true",
                    help="with --json, also emit pagesFor (tag → pages using it)")
     p.set_defaults(func=cmd_tags)
+
+    p = sub.add_parser(
+        "tags-rewrite",
+        help="safe tag governance rewrite: reviewed plan → hash-checked apply → guarded rollback",
+    )
+    rewrite_sub = p.add_subparsers(dest="tag_rewrite_cmd", required=True)
+    r = rewrite_sub.add_parser("plan", help="validate a mapping and emit a read-only page/hash plan")
+    r.add_argument("project_root")
+    r.add_argument("--mapping", required=True, help="schemaVersion 1 mapping JSON")
+    r.add_argument("--out", help="write the complete plan JSON here; omit to print it")
+    r.set_defaults(func=cmd_tags_rewrite_plan)
+    r = rewrite_sub.add_parser("apply", help="apply one previously reviewed plan")
+    r.add_argument("project_root")
+    r.add_argument("--plan", required=True, help="plan JSON emitted by tags-rewrite plan")
+    r.set_defaults(func=cmd_tags_rewrite_apply)
+    r = rewrite_sub.add_parser("rollback", help="restore applied pages if after-hashes still match")
+    r.add_argument("project_root")
+    r.add_argument("--manifest", required=True, help="run manifest emitted by tags-rewrite apply")
+    r.set_defaults(func=cmd_tags_rewrite_rollback)
 
     p = sub.add_parser(
         "health",

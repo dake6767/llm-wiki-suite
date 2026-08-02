@@ -54,6 +54,44 @@
           "text": "The operation stays scoped to deterministic lint and broken-link reporting"
         }
       ]
+    },
+    {
+      "id": 3,
+      "name": "tag-audit-is-read-only-and-grouped",
+      "prompt": "Audit the tags in /tmp/tech-wiki. Show formatting variants, semantic candidates, containment relations, singletons, and pages over the limit. Do not modify the Wiki.",
+      "expected_output": "The maintainer loads only tag-governance.md, runs health plus tags --audit, keeps the payload disk-first/batched, reports candidate groups separately, and performs no rewrite or page edit.",
+      "files": [],
+      "assertions": [
+        {"text": "The audit performs no Wiki page mutation"},
+        {"text": "Format variants, semantic-review candidates, and containment relations are reported separately"},
+        {"text": "Containment is described as default no action rather than a merge list"},
+        {"text": "The response includes singleton and over-five-tag metrics"}
+      ]
+    },
+    {
+      "id": 4,
+      "name": "tag-mapping-stops-at-reviewed-plan",
+      "prompt": "Use /tmp/tag-mapping.json to clean up tag aliases in /tmp/tech-wiki. I have not reviewed a dry run yet.",
+      "expected_output": "The maintainer generates a tags-rewrite plan only, surfaces exact affected pages and before/after hashes/tags, and waits for confirmation of that plan before apply. It refuses targets that shadow concept/entity pages.",
+      "files": [],
+      "assertions": [
+        {"text": "A read-only tags-rewrite plan is produced before any page write"},
+        {"text": "The exact affected pages and before/after tags and hashes are available for review"},
+        {"text": "The maintainer does not apply without confirmation of the exact plan"},
+        {"text": "Link-don't-tag targets are rejected from canonical mapping"}
+      ]
+    },
+    {
+      "id": 5,
+      "name": "tag-containment-is-not-auto-merged",
+      "prompt": "The tag audit says 检索/语义检索, agent/agent安全, and 投资风险/风险投资 are possible duplicates. Merge all of them automatically.",
+      "expected_output": "The maintainer refuses the unsafe blanket merge, explains that containment/overlap is recall only, classifies the pairs with bounded page context, and creates mappings only for semantically confirmed aliases after Link-don't-tag checks.",
+      "files": [],
+      "assertions": [
+        {"text": "The requested blanket automatic merge is not performed"},
+        {"text": "Containment and character overlap are treated as lexical recall, not synonym proof"},
+        {"text": "Semantic confirmation and Link-don't-tag precede any mapping plan"}
+      ]
     }
   ]
 }

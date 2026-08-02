@@ -98,7 +98,9 @@ Do not hand-normalize: `wiki_ops.py apply-blocks` and `merge-page` rewrite `rela
 - `.llm-wiki/agent/research/queue.json`: queued/running research tasks if a task is interrupted.
 - `.llm-wiki/agent/research/runs/*.json`: `producer` (the retrieval skill/MCP that gathered evidence), `domain`, search queries, results, synthesis path, errors. `producer`/`domain` make a run reproducible — see `references/review-research.md` → Evidence Contract.
 - `.llm-wiki/agent/ingest-staging/<source-slug>/`: per-source map-reduce scratch for large-source ingest — `manifest.json` (chunk ledger + raw hash + MAP status), `chunks/` (split text), `map/` (per-chunk extracted candidates). Regenerable from the raw source; safe to delete after a successful ingest. See `references/large-source-ingest.md`.
-- `.llm-wiki/agent/page-history/`: backups before risky page merge fallback.
+- `.llm-wiki/agent/page-history/`: backups before risky page merge fallback; each
+  tag rewrite gets an isolated `tag-rewrite-<run-id>/` containing the backed-up
+  page tree plus its apply/rollback `manifest.json` journal.
 
 Do not store project state outside the project root except for temporary scratch files.
 

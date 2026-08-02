@@ -29,6 +29,7 @@ VERSION_RE = re.compile(r"<!--\s*llm-wiki-schema-version:\s*(\d+)\s*-->")
 KNOWN_SCHEMA_DIGESTS = {
     2: "f919479e6531aa29c1fd09c0e9d4cde10f1caf5ed46f0c770228804675a5c7fe",
     3: "b51a07005b9373d74fde9b5858c060b0fe1a3d5c8218d66c03112f61b9151d94",
+    4: "ff2a4ed2872c8fa723e119b261796d9221299754d7b613c7a30fa3de2ad6bccc",
 }
 
 

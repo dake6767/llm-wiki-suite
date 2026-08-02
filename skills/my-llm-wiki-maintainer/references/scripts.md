@@ -141,7 +141,10 @@ wiki_ops.py trace /path/to/wiki query.retrieval --backend browser --candidates 8
 By default it exits 0 (report-only). `--exit-code` turns it into a **cron/CI gate** —
 it exits 1 when any issue at or above `--fail-on` (severity ranking `info < warning <
 error`, default `warning`) exists, so broken links / missing frontmatter fail a scheduled
-health check while advisory `info` items (orphans, no-outlinks) don't. `trace` appends
+health check while advisory `info` items (orphans, no-outlinks) don't. Tag hygiene
+adds `too-many-tags` and same-page duplicate/format-variant warnings plus an advisory
+`tag-shadows-page` finding when a tag lexically matches an existing concept/entity
+slug or title. `trace` appends
 JSONL to `.llm-wiki/agent/token-trace.jsonl`; the retrieval flags (`--backend
 mcp|browser|local`, `--candidates`, `--pages-read`, `--context-chars`,
 `--prompt-tokens`, `--cache-read-tokens`) are the runtime-agnostic counters used
@@ -156,6 +159,9 @@ wiki_ops.py tags <root>                           # unscoped backbone + bounded 
 wiki_ops.py tags <root> --limit 0                 # all established tags
 wiki_ops.py tags <root> --audit                   # cleanup view: + singletons, dups, untagged
 wiki_ops.py tags <root> --json --verbose          # machine-readable, plus tag → pages
+wiki_ops.py tags-rewrite plan <root> --mapping mapping.json --out plan.json
+wiki_ops.py tags-rewrite apply <root> --plan plan.json
+wiki_ops.py tags-rewrite rollback <root> --manifest <run>/manifest.json
 ```
 
 `--q` takes topic words / entity names; punctuation (ASCII or CJK) is treated as
@@ -170,9 +176,9 @@ maintain or to drift out of sync. A hand-kept registry was considered and
 rejected: every other derived artifact here (`index.md`, `ingest-cache.json`,
 `lint.json`) is regenerable from the pages, and a tag registry would be the
 first to hold truth the pages don't, which is exactly what turns it into a
-maintenance burden. Where a registry looked uniquely useful — knowing that `ai`
-should be spelled `AI` — the canonical form is just the more-used spelling, a
-rule rather than data, so it needs no storage.
+maintenance burden. Canonical choice remains a rule rather than stored truth:
+meaning and the Wiki's primary language first, recognized product/proper-name
+spelling next, and corpus frequency only as a tie-breaker for ordinary terms.
 
 **Ingest reads the scoped view before generating tags** (`ingest-update.md`
 step 5.6, placed before the size gate so the large-source and video paths get it
@@ -190,14 +196,26 @@ fallback, but `--q` / `--paths-file` is the intended ingest path.
 **Keep the two views apart.** Both scoped and unscoped are bounded, so cost is
 flat in corpus size (~590 tokens on a 900-page wiki, ~440 on a 20-page one) —
 that matters because ingest pays it on every source, and the SOP's first
-retrieval rule is O(top-k), never O(wiki). `--audit` adds the full singleton
-list, every duplicate pair and every untagged page (16KB on a 911-page wiki);
-that is cleanup material, useless mid-ingest, and belongs to `health` or an
-explicit tag-consolidation pass. `--audit`/`--json` are also the only modes that
-pay the O(tags²) duplicate scan. `nearDuplicates` pairs are ranked highest-impact first
-and are a hint to judge, never an automatic merge — the test is lexical
-(case-folding, CJK character-set overlap, containment), so it finds
-`检索`/`检索增强` but not semantic pairs like `大模型`/`LLM`.
+retrieval rule is O(top-k), never O(wiki). `--audit` is the corpus-wide cleanup
+view; text respects `--limit`, while `--audit --json` / `--limit 0` exposes the
+full singleton, candidate and untagged sets for disk-first batch tooling. That
+material is useless mid-ingest and belongs to `health` or an explicit
+tag-consolidation pass. `--audit`/`--json` are also the only modes that
+pay the O(tags²) duplicate scan. `nearDuplicates` remains a compatibility list;
+`candidateGroups` is the governance view. It separates case/space/hyphen/
+underscore-only `formatVariants`, CJK character-overlap `semanticReview`, and
+mostly-parent/child `containment`. Every group is a hint to judge, never an
+automatic merge — the test is lexical, so it finds `检索`/`检索增强` but not
+semantic pairs like `大模型`/`LLM`.
+
+`tags-rewrite` is the deterministic write boundary for confirmed tag-to-tag
+mappings. `plan` validates exact page counts/paths, rejects Link-don't-tag targets,
+and records before/after tags plus hashes without modifying the Wiki. `apply`
+requires that exact reviewed plan, locks the project, backs up and journals every
+page under `.llm-wiki/agent/page-history/tag-rewrite-<run-id>/`, atomically replaces
+each file, then reruns lint/audit. `rollback` restores only when current after-hashes
+and backup before-hashes still match. Full classification and confirmation SOP:
+`references/tag-governance.md`.
 
 ## Wiki Health (project-level drift)
 
