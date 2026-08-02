@@ -1,5 +1,5 @@
 {
   "schema": 1,
-  "pack_version": "2.3.2",
-  "pack_notes": "正式新增 source_type:image：Agent 可将用户提供的截图、照片、图表和扫描件以原始字节归档到 RAW，生成忠实的可检索文字与画面描述，并继续整理进指定 Wiki；原图使用 SHA-256 去重，缺失、未嵌入或伪造格式会在写入前被拒绝。"
+  "pack_version": "2.3.3",
+  "pack_notes": "新增 Tag 存量治理：审计按格式变体、语义候选与父子 containment 分组，lint 检查标签过多、同页格式重复与知识页遮蔽；确定性改写采用 plan/apply/rollback，具备精确页面与计数校验、哈希防漂移、page-history 备份、原子写入和受保护回滚。"
 }
