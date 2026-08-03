@@ -14,6 +14,7 @@ import MobileApp from "./mobile/MobileApp";
 import { credentialMode } from "./lib/shareSession";
 import { ShareBlockedGuide } from "./components/ShareStates";
 import { ShareNavigate } from "./lib/shareNavigation";
+import PageRefRedirect from "./components/PageRefRedirect";
 
 export default function App() {
   // 窄屏触屏设备走单列阅读器；平板/横屏等宽视口走桌面三栏（随方向变化实时切换）。
@@ -38,6 +39,7 @@ export default function App() {
           <Route index element={<DefaultBrowseRedirect />} />
           <Route path="browse" element={<Overview />} />
           <Route path="browse/:type" element={<BrowseLanding />} />
+          <Route path="open/:pageRef" element={<PageRefRedirect />} />
           <Route path="page/*" element={<PageView kind="page" />} />
           <Route path="raw/*" element={<PageView kind="raw" />} />
           <Route path="review" element={<ReviewQueue />} />

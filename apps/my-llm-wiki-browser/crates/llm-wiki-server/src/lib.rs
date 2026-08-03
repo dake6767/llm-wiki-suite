@@ -1068,6 +1068,7 @@ async fn get_share_config(State(state): State<AppState>) -> Json<ShareConfigInfo
     Json(ShareConfigInfo {
         relay_connected: online_url.is_some(),
         online_url,
+        agent_page_ref_version: 1,
     })
 }
 
@@ -2116,6 +2117,10 @@ struct ServerConfigInfo {
 struct ShareConfigInfo {
     relay_connected: bool,
     online_url: Option<String>,
+    /// Agent-facing deep links may use `/w/<wiki>/open/<base64url-page-path>`.
+    /// Older Browser builds omit this field, so Skills can retain the legacy
+    /// human-readable `/page/<path>` route until the app supports the decoder.
+    agent_page_ref_version: u8,
 }
 
 #[derive(Debug, Serialize)]
@@ -3483,11 +3488,13 @@ mod tests {
             share.online_url.as_deref(),
             Some("https://wiki.example/demo/?token=secret")
         );
+        assert_eq!(share.agent_page_ref_version, 1);
 
         *online_url.lock().unwrap() = None;
         let share: ShareConfigInfo = get_json(&app, "/api/v1/config/share").await;
         assert!(!share.relay_connected);
         assert_eq!(share.online_url, None);
+        assert_eq!(share.agent_page_ref_version, 1);
     }
 
     #[tokio::test]

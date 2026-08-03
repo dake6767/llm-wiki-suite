@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
 import datetime as dt
 import difflib
@@ -3603,6 +3604,9 @@ def _browser_share_result(**kwargs: Any) -> dict[str, Any]:
         "pageUrl": None,
         "linkUrl": None,
         "markdownLink": None,
+        "reportLine": None,
+        "pagePath": None,
+        "pageVerified": None,
         "reason": None,
         "endpoint": None,
     }
@@ -3653,13 +3657,57 @@ def _normalize_browser_page_path(page: str, root: Path | None = None) -> str | N
     return value or None
 
 
-def _online_page_url(online_url: str, wiki_key: str, page_path: str) -> str:
+def _browser_page_exists(root: Path | None, page_path: str | None) -> bool | None:
+    """Verify a normalized derived-page path without leaving ``<root>/wiki``.
+
+    ``None`` means the caller supplied no resolvable project root, so the helper
+    cannot make a local existence claim. A concrete root always produces a
+    boolean and prevents a typo from being advertised as a valid deep link.
+    """
+    if root is None or page_path is None:
+        return None
+    wiki_dir = (root / "wiki").resolve()
+    candidate = (wiki_dir / f"{page_path}.md").resolve()
+    try:
+        candidate.relative_to(wiki_dir)
+    except ValueError:
+        return False
+    return candidate.is_file()
+
+
+def _browser_page_ref(page_path: str) -> str:
+    """Return an opaque URL-safe page reference for agent-facing links.
+
+    Human-readable percent-encoded CJK slugs are easy for a language model to
+    decode and accidentally rewrite while composing a parent task's final
+    response. Base64url keeps the route deterministic while removing semantic
+    text from the copy boundary. Padding is unnecessary in a path segment and
+    is restored by the Browser decoder.
+    """
+    encoded = base64.urlsafe_b64encode(page_path.encode("utf-8")).decode("ascii")
+    return encoded.rstrip("=")
+
+
+def _online_page_url(
+    online_url: str,
+    wiki_key: str,
+    page_path: str,
+    *,
+    opaque_ref: bool = False,
+) -> str:
     parts = urllib.parse.urlsplit(online_url)
     base_path = parts.path.rstrip("/")
-    route = (
-        f"/w/{urllib.parse.quote(wiki_key, safe='')}"
-        f"/page/{urllib.parse.quote(page_path, safe='/')}"
-    )
+    if opaque_ref:
+        route = (
+            f"/w/{urllib.parse.quote(wiki_key, safe='')}"
+            f"/open/{_browser_page_ref(page_path)}"
+        )
+    else:
+        # Compatibility for Browser versions that predate agent page refs.
+        route = (
+            f"/w/{urllib.parse.quote(wiki_key, safe='')}"
+            f"/page/{urllib.parse.quote(page_path, safe='/')}"
+        )
     path = f"{base_path}{route}" if base_path else route
     return urllib.parse.urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
 
@@ -3745,26 +3793,41 @@ def cmd_browser_share(args: argparse.Namespace) -> None:
     relay_connected = bool(payload.get("relay_connected") or online_url)
     root = _optional_root(args.project_root)
     page_path = _normalize_browser_page_path(args.page, root) if args.page else None
+    page_verified = _browser_page_exists(root, page_path)
     page_url = None
     page_reason = None
-    if online_url and page_path:
+    if args.page and page_path is None:
+        page_reason = "invalid-page-path"
+    elif page_verified is False:
+        page_reason = "page-not-found"
+    elif online_url and page_path:
         try:
             wiki_key = _resolve_browser_wiki_key(base_url, headers, args.timeout, root, args.wiki)
         except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
             wiki_key = None
         if wiki_key:
-            page_url = _online_page_url(online_url, wiki_key, page_path)
+            page_ref_version = payload.get("agent_page_ref_version")
+            opaque_ref = type(page_ref_version) is int and page_ref_version >= 1
+            page_url = _online_page_url(
+                online_url,
+                wiki_key,
+                page_path,
+                opaque_ref=opaque_ref,
+            )
         else:
             page_reason = "wiki-key-unresolved"
     link_url = page_url or online_url
+    markdown_link = _markdown_link(link_url, args.label)
     result = _browser_share_result(
         available=bool(online_url),
         relayConnected=relay_connected,
         onlineUrl=online_url,
         pageUrl=page_url,
         linkUrl=link_url,
-        markdownLink=_markdown_link(link_url, args.label),
+        markdownLink=markdown_link,
+        reportLine=f"线上 WIKI: {markdown_link}" if markdown_link else None,
         pagePath=page_path,
+        pageVerified=page_verified,
         reason=None if online_url else "relay-not-connected",
         pageReason=page_reason,
         endpoint=endpoint,

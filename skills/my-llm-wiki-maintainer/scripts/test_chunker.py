@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Unit tests for the deterministic large-source chunker in wiki_ops.py.
+"""Unit tests for deterministic helpers in wiki_ops.py.
 
 Run: python3 scripts/test_chunker.py
-Pure-function coverage only — no wiki I/O. Validates the highest-risk piece of
-the map-reduce ingest path (the chunker + size gate) before it reaches an LLM.
+Validates the highest-risk pieces of the map-reduce and Browser-share paths
+before they reach an LLM.
 """
 
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from argparse import Namespace
 from pathlib import Path
@@ -144,17 +145,25 @@ class TestBrowserShareHelpers(unittest.TestCase):
         )
         self.assertIsNone(w._normalize_browser_page_path("../escape.md"))
 
-    def test_online_page_url_preserves_relay_base_and_token(self):
+    def test_online_page_url_uses_opaque_ref_when_supported(self):
         url = w._online_page_url(
             "https://wiki.htmlgo.to/DEMO_UID/?token=secret",
             "llm-wiki",
             "sources/WorkBuddy-从入门到榨干",
+            opaque_ref=True,
         )
         self.assertEqual(
             url,
-            "https://wiki.htmlgo.to/DEMO_UID/w/llm-wiki/page/"
-            "sources/WorkBuddy-%E4%BB%8E%E5%85%A5%E9%97%A8%E5%88%B0%E6%A6%A8%E5%B9%B2"
+            "https://wiki.htmlgo.to/DEMO_UID/w/llm-wiki/open/"
+            f"{w._browser_page_ref('sources/WorkBuddy-从入门到榨干')}"
             "?token=secret",
+        )
+        self.assertNotIn("%E4", url)
+
+    def test_browser_page_ref_is_stable_for_cjk_title(self):
+        self.assertEqual(
+            w._browser_page_ref("sources/汕头失落的特区经济学人7月长文"),
+            "c291cmNlcy_msZXlpLTlpLHokL3nmoTnibnljLrnu4_mtY7lrabkuro35pyI6ZW_5paH",
         )
 
     def test_online_page_url_encodes_spaces_and_question_marks(self):
@@ -172,6 +181,17 @@ class TestBrowserShareHelpers(unittest.TestCase):
             w._markdown_link("https://wiki.example/p?token=secret", "点击查看总结"),
             "[点击查看总结](https://wiki.example/p?token=secret)",
         )
+
+    def test_browser_page_exists_is_confined_to_derived_wiki(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            page = root / "wiki" / "sources" / "中文总结.md"
+            page.parent.mkdir(parents=True)
+            page.write_text("# 中文总结\n", encoding="utf-8")
+            self.assertTrue(w._browser_page_exists(root, "sources/中文总结"))
+            self.assertFalse(w._browser_page_exists(root, "sources/不存在"))
+            self.assertFalse(w._browser_page_exists(root, "../outside"))
+            self.assertIsNone(w._browser_page_exists(None, "sources/中文总结"))
 
 
 class TestRetrievalSearch(unittest.TestCase):
