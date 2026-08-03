@@ -145,7 +145,7 @@ dispatch handle alone.
 4. Run deterministic helpers from `scripts/wiki_ops.py` where applicable.
 5. Record meaningful state changes in `wiki/log.md` and/or `.llm-wiki/agent/token-trace.jsonl`.
 6. When ingest/flush/update added review items, end the final response with a short "可深挖方向" section: each new `suggestion` as one line (title + a hook clause), then one line on how to continue ("想展开哪个，直接说：research <标题>"). A new `contradiction` gets one alert line. Surface titles and hooks only — never raw JSON or item IDs. This is what turns the review queue into offered research directions instead of a silently growing file.
-7. After a successful write-backed operation, probe the optional My LLM Wiki Browser share status with `scripts/wiki_ops.py browser-share <root> --page <primary-written-page>`. Prefer a newly written/updated `wiki/sources/...md` source summary as the primary page for ingest/flush/update; otherwise use the saved query page, overview page, or canonical dedup page when there is one. If the command returns `markdownLink`, include that exact Markdown link in the final user response (default label: `点击查看总结`). If it only returns `pageUrl`/`onlineUrl`, format it as `[点击查看总结](url)`; never expose a long bare URL. If the browser is not installed/running, auth fails, or relay is not connected, silently omit the link unless the user explicitly asked for browser/relay diagnostics. Do not store tokenized share URLs in `wiki/`, `wiki/log.md`, review state, or trace files.
+7. After a successful write-backed operation, probe the optional My LLM Wiki Browser share status with `scripts/wiki_ops.py browser-share <root> --page <primary-written-page>`. Prefer a newly written/updated `wiki/sources/...md` source summary as the primary page for ingest/flush/update; otherwise use the saved query page, overview page, or canonical dedup page when there is one. If the command returns `reportLine`, include that whole line **byte-for-byte** in the final user response. Treat its URL as opaque data: never decode, re-encode, shorten, translate, or reconstruct it from a page title/path. If only `markdownLink` is present (older helper), include that exact Markdown link (default label: `点击查看总结`). If it only returns `pageUrl`/`onlineUrl`, format it as `[点击查看总结](url)`; never expose a long bare URL. If the browser is not installed/running, auth fails, or relay is not connected, silently omit the link unless the user explicitly asked for browser/relay diagnostics. Do not store tokenized share URLs in `wiki/`, `wiki/log.md`, review state, or trace files.
 
 ## Core Operations
 
@@ -194,16 +194,22 @@ Pick the page from the operation's written files:
 
 Read the JSON result:
 
-- `markdownLink` is the preferred final-response value. Add one concise line such as `线上 WIKI: [点击查看总结](...)`.
+- `reportLine` is the preferred final-response value. Copy it byte-for-byte as a
+  standalone line. It already contains `线上 WIKI: ` and the complete Markdown
+  link; never regenerate the href from `pagePath` or visible title.
+- `markdownLink` is the compatibility fallback for an older helper. Include it
+  exactly inside one concise `线上 WIKI: ...` line.
 - `pageUrl` means My LLM Wiki Browser is reachable, its relay is connected, and the helper resolved a concrete browser route for the page. Use it only to build a Markdown link if `markdownLink` is absent.
+- `pageVerified: true` means the requested derived page existed under the selected
+  Wiki when the link was created. `pageReason: page-not-found` suppresses the bad
+  deep link and falls back to the online Wiki root.
 - `available: true` without `pageUrl` still means the online WIKI root is available. Use `onlineUrl` as a fallback.
 - `available: false` means no online link should be shown. Common reasons are `browser-unavailable`, `relay-not-connected`, or `unauthorized`; keep these out of the normal success response unless the user asked you to debug browser access.
 
 Returned URLs already include the browser token because they are meant for the user
-to open directly. Treat them as convenience share links: show one as a Markdown
-link in the response, but never write it into wiki content, logs, review items, or
-agent trace files. Do not paste long bare URLs into chat/IM; they are easy to
-break when titles contain spaces or punctuation.
+to open directly. Treat them as convenience share links: copy `reportLine`
+byte-for-byte into the response, but never write it into wiki content, logs, review
+items, or agent trace files. Do not paste long bare URLs into chat/IM.
 
 ## Output Blocks
 

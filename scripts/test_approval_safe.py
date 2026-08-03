@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -161,6 +162,115 @@ class BackgroundLifecycleTests(unittest.TestCase):
         text = path.read_text(encoding="utf-8")
         self.assertIn("Reap before the final answer", text)
         self.assertIn("`process poll` is intentionally read-only", text)
+
+
+class BrowserShareDeliveryTests(unittest.TestCase):
+    def _wiki(self, directory: str) -> tuple[Path, str]:
+        root = Path(directory) / "wiki"
+        page_path = "sources/汕头失落的特区经济学人7月长文"
+        page = root / "wiki" / f"{page_path}.md"
+        page.parent.mkdir(parents=True)
+        page.write_text("# 汕头，失落的特区——经济学人7月长文\n", encoding="utf-8")
+        (root / "purpose.md").write_text("# Purpose\n", encoding="utf-8")
+        (root / "schema.md").write_text("# Schema\n", encoding="utf-8")
+        return root, page_path
+
+    def _browser_payload(self, root: Path):
+        def fetch(_base_url, path, _headers, _timeout):
+            if path == "/api/v1/config/share":
+                return {
+                    "relay_connected": True,
+                    "online_url": "https://wiki.example/OWNER/?token=secret",
+                    "agent_page_ref_version": 1,
+                }
+            if path == "/api/v1/config/wikis":
+                return [{"root_dir": str(root), "key": "llm-wiki-renwen"}]
+            raise AssertionError(f"unexpected path: {path}")
+        return fetch
+
+    def test_browser_share_emits_verified_opaque_report_line(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root, page_path = self._wiki(directory)
+            output = io.StringIO()
+            with mock.patch.object(
+                wiki_ops, "_fetch_browser_json", side_effect=self._browser_payload(root)
+            ), mock.patch.object(wiki_ops, "_browser_token", return_value="secret"), \
+                 contextlib.redirect_stdout(output):
+                rc = wiki_ops.main([
+                    "browser-share", str(root), "--page", f"wiki/{page_path}.md",
+                ])
+            self.assertEqual(rc, 0)
+            result = json.loads(output.getvalue())
+            self.assertTrue(result["pageVerified"])
+            self.assertIn("/w/llm-wiki-renwen/open/", result["pageUrl"])
+            self.assertNotIn("%E5%AD%A6", result["pageUrl"])
+            self.assertEqual(
+                result["reportLine"], f"线上 WIKI: {result['markdownLink']}"
+            )
+
+    def test_browser_share_falls_back_to_root_for_missing_page(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root, _ = self._wiki(directory)
+            output = io.StringIO()
+            with mock.patch.object(
+                wiki_ops,
+                "_fetch_browser_json",
+                return_value={
+                    "relay_connected": True,
+                    "online_url": "https://wiki.example/OWNER/?token=secret",
+                    "agent_page_ref_version": 1,
+                },
+            ), mock.patch.object(wiki_ops, "_browser_token", return_value="secret"), \
+                 contextlib.redirect_stdout(output):
+                rc = wiki_ops.main([
+                    "browser-share", str(root),
+                    "--page", "wiki/sources/经济人7月长文.md",
+                ])
+            self.assertEqual(rc, 0)
+            result = json.loads(output.getvalue())
+            self.assertFalse(result["pageVerified"])
+            self.assertEqual(result["pageReason"], "page-not-found")
+            self.assertIsNone(result["pageUrl"])
+            self.assertEqual(result["linkUrl"], result["onlineUrl"])
+
+    def test_browser_share_keeps_legacy_route_for_older_browser(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root, page_path = self._wiki(directory)
+
+            def fetch(_base_url, path, _headers, _timeout):
+                if path == "/api/v1/config/share":
+                    return {
+                        "relay_connected": True,
+                        "online_url": "https://wiki.example/OWNER/?token=secret",
+                    }
+                if path == "/api/v1/config/wikis":
+                    return [{"root_dir": str(root), "key": "llm-wiki-renwen"}]
+                raise AssertionError(f"unexpected path: {path}")
+
+            output = io.StringIO()
+            with mock.patch.object(
+                wiki_ops, "_fetch_browser_json", side_effect=fetch
+            ), mock.patch.object(wiki_ops, "_browser_token", return_value="secret"), \
+                 contextlib.redirect_stdout(output):
+                rc = wiki_ops.main([
+                    "browser-share", str(root), "--page", f"wiki/{page_path}.md",
+                ])
+            self.assertEqual(rc, 0)
+            result = json.loads(output.getvalue())
+            self.assertTrue(result["pageVerified"])
+            self.assertIn("/w/llm-wiki-renwen/page/sources/", result["pageUrl"])
+            self.assertIn("%E5%AD%A6", result["pageUrl"])
+
+    def test_capture_parent_contract_requires_verbatim_report_line(self) -> None:
+        capture = (ROOT / "skills" / "my-llm-wiki" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        maintainer = (
+            ROOT / "skills" / "my-llm-wiki-maintainer" / "SKILL.md"
+        ).read_text(encoding="utf-8")
+        for text in (capture, maintainer):
+            self.assertIn("`reportLine`", text)
+            self.assertIn("byte-for-byte", text)
 
 
 class CacheFilesFileTests(unittest.TestCase):

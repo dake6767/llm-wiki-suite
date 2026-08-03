@@ -1,5 +1,5 @@
 {
   "schema": 1,
-  "pack_version": "2.3.3",
-  "pack_notes": "新增 Tag 存量治理：审计按格式变体、语义候选与父子 containment 分组，lint 检查标签过多、同页格式重复与知识页遮蔽；确定性改写采用 plan/apply/rollback，具备精确页面与计数校验、哈希防漂移、page-history 备份、原子写入和受保护回滚。"
+  "pack_version": "2.3.4",
+  "pack_notes": "修复 Agent 在异步完成回复中重写线上 Wiki 深链的问题：browser-share 校验目标页面，支持 Browser 的不透明 page-ref 路由，并输出需逐字透传的 reportLine；缺失页面自动回退 Wiki 根链接。"
 }

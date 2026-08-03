@@ -293,11 +293,21 @@ relay share URL. It reads the persisted browser port and auth token from
 `~/.my-llm-wiki/connector/` (or `LLM_WIKI_BROWSER_URL` / `LLM_WIKI_WEB_URL` /
 `LLM_WIKI_WEB_TOKEN`) and calls `/api/v1/config/share`. When given a project root
 and `--page`, it also calls `/api/v1/config/wikis` to resolve the browser wiki key
-and returns `pageUrl`, a deep link like `/w/<wiki>/page/sources/<slug>`. It also
-returns `markdownLink` using the label from `--label` (default: `点击查看总结`).
+and returns `pageUrl`. Browser versions that advertise
+`agent_page_ref_version: 1` receive an opaque
+`/w/<wiki>/open/<page-ref>` deep link, so an Agent cannot semantically rewrite a
+CJK slug while composing a parent task's reply. Older Browser versions retain
+the compatible `/w/<wiki>/page/<slug>` route. The helper also returns
+`markdownLink` using the label from `--label` (default: `点击查看总结`) and the
+complete `reportLine` ready for the final response.
 
-It always exits successfully and prints JSON. Prefer `markdownLink` in the final
-user response; fall back to formatting `pageUrl`/`onlineUrl` as
+With a project root, the helper verifies that `pagePath` exists below `wiki/`
+before emitting a deep link. A missing page returns `pageVerified: false`,
+`pageReason: page-not-found`, and uses the online Wiki root instead.
+
+It always exits successfully and prints JSON. Prefer `reportLine` in the final
+user response and copy it byte-for-byte; fall back to `markdownLink`, then format
+`pageUrl`/`onlineUrl` as
 `[点击查看总结](url)` only when `markdownLink` is absent. If `available: false`
 (`browser-unavailable`, `relay-not-connected`, `unauthorized`, etc.), omit the
 link during normal maintainer output.

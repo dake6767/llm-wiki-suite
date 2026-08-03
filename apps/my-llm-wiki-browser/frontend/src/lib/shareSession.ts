@@ -3,6 +3,7 @@
 // URL 契约：
 //   /<uid>/share/<grant_id>/#key=<secret>
 //   /<uid>/share/<grant_id>/w/<wiki>/page/<path>#key=<secret>
+//   /<uid>/share/<grant_id>/w/<wiki>/open/<page-ref>#key=<secret>
 //
 // grant_id 是公开标识，进入 pathname，给路由一个稳定的 Guest 命名空间；secret 只在
 // fragment 中，页面导航不会把它发给 relay / Cloudflare。URL 是可转发凭证的真相来源，

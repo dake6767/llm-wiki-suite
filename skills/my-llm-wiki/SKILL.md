@@ -82,7 +82,8 @@ wiki_root: <absolute resolved root>
 raw_paths: [<absolute newly written RAW path>]
 required_skill: my-llm-wiki-maintainer
 completion_gates: cache check hit=true; return written pages, warnings,
-  review suggestions, and the online wiki link if available
+  review suggestions, primary written page, and browser-share `reportLine`
+  if available
 ```
 
 Do not copy the fetched body, transcript, search output, or conversation summary
@@ -108,6 +109,14 @@ list every review suggestion verbatim (never collapse them into a count like
 “沉淀了 2 条建议”), and include the `线上 WIKI: [点击查看总结](...)` Markdown
 link when the maintainer returned one. These are the two pieces the user acts
 on next; dropping them makes the report incomplete even if both gates passed.
+
+Treat the maintainer's `reportLine` as opaque output data. Paste that whole line
+**byte-for-byte** on its own line in the terminal response; never decode,
+re-encode, shorten, translate, or reconstruct its URL from the title or written
+page path. This is especially strict in a Hermes background-completion turn:
+the parent may rewrite the surrounding summary, but the `reportLine` itself is
+an immutable passthrough field. If it is absent, omit the link; do not fabricate
+one. A link whose href differs by even one encoded byte is not the returned link.
 
 Do not send a capture-only success response between those gates. In particular,
 do not finish with “已沉淀，如需整理请告诉我” when the original request already
