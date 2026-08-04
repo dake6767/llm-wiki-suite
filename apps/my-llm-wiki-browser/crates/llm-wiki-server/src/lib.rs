@@ -2682,7 +2682,7 @@ mod tests {
         .await;
         assert_eq!(response.status(), StatusCode::ACCEPTED);
 
-        // tools/list → 契约层的 6 个工具
+        // tools/list → 契约层的 7 个工具
         let reply = mcp_rpc(
             &app,
             None,
@@ -2690,8 +2690,9 @@ mod tests {
         )
         .await;
         let tools = reply["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 6);
+        assert_eq!(tools.len(), 7);
         assert!(tools.iter().any(|tool| tool["name"] == "search_wiki"));
+        assert!(tools.iter().any(|tool| tool["name"] == "retrieve_context"));
         assert!(tools.iter().any(|tool| tool["name"] == "read_pages"));
 
         // list_wikis
@@ -2726,6 +2727,78 @@ mod tests {
         let text = tool_text(&reply);
         assert!(text.contains("\"scope\": \"all\""));
         assert!(text.contains("\"wiki\": \"demo\""));
+
+        // retrieve_context → MCP 作为唯一全文种子，一跳图扩展召回未包含查询词的 Claude 页。
+        let reply = mcp_rpc(
+            &app,
+            None,
+            serde_json::json!({"jsonrpc":"2.0","id":42,"method":"tools/call",
+            "params":{"name":"retrieve_context","arguments":{
+                "wiki":"demo","query":"MCP","seedLimit":1,"maxDepth":1,"maxNodes":5
+            }}}),
+        )
+        .await;
+        assert_eq!(reply["result"]["isError"], false);
+        let context: serde_json::Value =
+            serde_json::from_str(&tool_text(&reply)).expect("retrieve_context payload");
+        assert_eq!(context["seedCount"], 1);
+        assert_eq!(context["returnedCount"], 2);
+        let nodes = context["nodes"].as_array().unwrap();
+        assert_eq!(nodes[0]["path"], "mcp");
+        let linked = nodes
+            .iter()
+            .find(|node| node["path"] == "entities/claude")
+            .expect("graph-expanded Claude page");
+        assert_eq!(linked["depth"], 1);
+        assert!(linked["body"].as_str().unwrap().contains("hello"));
+        assert!(
+            linked["discoveredVia"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|via| via["relation"] == "outgoingLink" && via["page"] == "mcp")
+        );
+
+        // 反链也参与扩展：Claude 本身不链接 MCP，但 MCP → Claude 建立了 backlink。
+        let reply = mcp_rpc(
+            &app,
+            None,
+            serde_json::json!({"jsonrpc":"2.0","id":43,"method":"tools/call",
+            "params":{"name":"retrieve_context","arguments":{
+                "wiki":"demo","query":"Claude","seedLimit":1,"maxDepth":1
+            }}}),
+        )
+        .await;
+        let context: serde_json::Value =
+            serde_json::from_str(&tool_text(&reply)).expect("backlink context payload");
+        let backlink = context["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["path"] == "mcp")
+            .expect("backlink-expanded MCP page");
+        assert!(
+            backlink["discoveredVia"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|via| via["relation"] == "backlink" && via["page"] == "entities/claude")
+        );
+
+        // maxDepth=0 保持纯全文检索，不隐式读取关联页。
+        let reply = mcp_rpc(
+            &app,
+            None,
+            serde_json::json!({"jsonrpc":"2.0","id":44,"method":"tools/call",
+            "params":{"name":"retrieve_context","arguments":{
+                "wiki":"demo","query":"MCP","seedLimit":1,"maxDepth":0
+            }}}),
+        )
+        .await;
+        let context: serde_json::Value =
+            serde_json::from_str(&tool_text(&reply)).expect("depth-zero context payload");
+        assert_eq!(context["returnedCount"], 1);
+        assert_eq!(context["nodes"][0]["path"], "mcp");
 
         // read_page → 原文正文，wikilink 不被改写
         let reply = mcp_rpc(
