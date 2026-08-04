@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 pub enum ToolName {
     ListWikis,
     SearchWiki,
+    RetrieveContext,
     ReadPage,
     ReadPages,
     ReadRaw,
@@ -25,11 +26,21 @@ pub const READ_PAGES_CHARS_PER_PAGE_CEILING: usize = 20_000;
 pub const READ_PAGES_DEFAULT_TOTAL_CHARS: usize = 24_000;
 pub const READ_PAGES_TOTAL_CHARS_CEILING: usize = 100_000;
 
+/// retrieve_context 的图遍历边界。默认一跳足以补齐显式关联页，二跳上限则允许
+/// 多跳问题显式请求更深探索，同时阻止高连接页面把候选集合无限放大。
+pub const RETRIEVE_CONTEXT_DEFAULT_SEED_LIMIT: usize = 5;
+pub const RETRIEVE_CONTEXT_SEED_LIMIT_CEILING: usize = 20;
+pub const RETRIEVE_CONTEXT_DEFAULT_MAX_DEPTH: usize = 1;
+pub const RETRIEVE_CONTEXT_MAX_DEPTH_CEILING: usize = 2;
+pub const RETRIEVE_CONTEXT_DEFAULT_MAX_NODES: usize = 12;
+pub const RETRIEVE_CONTEXT_MAX_NODES_CEILING: usize = 50;
+
 impl ToolName {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::ListWikis => "list_wikis",
             Self::SearchWiki => "search_wiki",
+            Self::RetrieveContext => "retrieve_context",
             Self::ReadPage => "read_page",
             Self::ReadPages => "read_pages",
             Self::ReadRaw => "read_raw",
@@ -59,6 +70,13 @@ impl ToolName {
                  Returns hits with wiki, path, title, type, snippet and score. Feed a hit's \
                  `wiki` + `path` to read_page for the full content. Optional `type`/`tag` \
                  filters narrow the candidate set."
+            }
+            Self::RetrieveContext => {
+                "Retrieve a bounded answer context with hybrid full-text + wikilink graph search. \
+                 Full-text hits become seeds, then resolved outgoing links and backlinks are \
+                 expanded within the same wiki up to `maxDepth` (default 1, max 2). Results \
+                 include bodies, relation provenance and scores under strict node and character \
+                 budgets. Omit `wiki` to seed from all wikis; graph traversal never crosses wikis."
             }
             Self::ReadPage => {
                 "Read one compiled wiki page as markdown: frontmatter metadata, body with \
@@ -100,6 +118,21 @@ impl ToolName {
                     "type": {"type": "string", "description": "Optional page type filter, e.g. 'concepts'."},
                     "tag": {"type": "string", "description": "Optional tag filter."},
                     "limit": {"type": "integer", "description": "Max hits, default 8, max 50."}
+                },
+                "required": ["query"]
+            }),
+            Self::RetrieveContext => json!({
+                "type": "object",
+                "properties": {
+                    "wiki": {"type": "string", "description": "Optional wiki key. Omit to seed from all wikis."},
+                    "query": {"type": "string", "description": "Full-text query used to select seed pages."},
+                    "type": {"type": "string", "description": "Optional page type filter for seed search only."},
+                    "tag": {"type": "string", "description": "Optional tag filter for seed search only."},
+                    "seedLimit": {"type": "integer", "description": format!("Max full-text seed pages (default {RETRIEVE_CONTEXT_DEFAULT_SEED_LIMIT}, max {RETRIEVE_CONTEXT_SEED_LIMIT_CEILING}).")},
+                    "maxDepth": {"type": "integer", "description": format!("Wikilink traversal depth (default {RETRIEVE_CONTEXT_DEFAULT_MAX_DEPTH}, max {RETRIEVE_CONTEXT_MAX_DEPTH_CEILING}; 0 disables expansion).")},
+                    "maxNodes": {"type": "integer", "description": format!("Max ranked pages returned (default {RETRIEVE_CONTEXT_DEFAULT_MAX_NODES}, max {RETRIEVE_CONTEXT_MAX_NODES_CEILING}).")},
+                    "maxCharsPerPage": {"type": "integer", "description": format!("Per-page body budget in characters (default {READ_PAGES_DEFAULT_CHARS_PER_PAGE}, max {READ_PAGES_CHARS_PER_PAGE_CEILING}).")},
+                    "maxTotalChars": {"type": "integer", "description": format!("Total body budget in characters (default {READ_PAGES_DEFAULT_TOTAL_CHARS}, max {READ_PAGES_TOTAL_CHARS_CEILING}).")}
                 },
                 "required": ["query"]
             }),
@@ -155,6 +188,7 @@ impl ToolName {
 pub const TOOL_NAMES: &[ToolName] = &[
     ToolName::ListWikis,
     ToolName::SearchWiki,
+    ToolName::RetrieveContext,
     ToolName::ReadPage,
     ToolName::ReadPages,
     ToolName::ReadRaw,
@@ -184,6 +218,47 @@ pub struct SearchWikiArgs {
     pub r#type: Option<String>,
     pub tag: Option<String>,
     pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RetrieveContextArgs {
+    /// 缺省 = 跨全部库选择种子；后续图遍历仍限定在每个种子所属的库内。
+    pub wiki: Option<String>,
+    pub query: String,
+    pub r#type: Option<String>,
+    pub tag: Option<String>,
+    pub seed_limit: Option<usize>,
+    pub max_depth: Option<usize>,
+    pub max_nodes: Option<usize>,
+    pub max_chars_per_page: Option<usize>,
+    pub max_total_chars: Option<usize>,
+}
+
+impl RetrieveContextArgs {
+    pub fn budget(&self) -> (usize, usize, usize, usize, usize) {
+        let seed_limit = self
+            .seed_limit
+            .unwrap_or(RETRIEVE_CONTEXT_DEFAULT_SEED_LIMIT)
+            .clamp(1, RETRIEVE_CONTEXT_SEED_LIMIT_CEILING);
+        let max_depth = self
+            .max_depth
+            .unwrap_or(RETRIEVE_CONTEXT_DEFAULT_MAX_DEPTH)
+            .min(RETRIEVE_CONTEXT_MAX_DEPTH_CEILING);
+        let max_nodes = self
+            .max_nodes
+            .unwrap_or(RETRIEVE_CONTEXT_DEFAULT_MAX_NODES)
+            .clamp(1, RETRIEVE_CONTEXT_MAX_NODES_CEILING);
+        let per_page = self
+            .max_chars_per_page
+            .unwrap_or(READ_PAGES_DEFAULT_CHARS_PER_PAGE)
+            .clamp(200, READ_PAGES_CHARS_PER_PAGE_CEILING);
+        let total = self
+            .max_total_chars
+            .unwrap_or(READ_PAGES_DEFAULT_TOTAL_CHARS)
+            .clamp(per_page.min(1_000), READ_PAGES_TOTAL_CHARS_CEILING);
+        (seed_limit, max_depth, max_nodes, per_page, total)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -262,6 +337,42 @@ mod tests {
                 READ_PAGES_MAX_PAGES_CEILING,
                 200,
                 READ_PAGES_TOTAL_CHARS_CEILING
+            )
+        );
+    }
+
+    #[test]
+    fn retrieve_context_budget_defaults_and_clamps() {
+        let args: RetrieveContextArgs =
+            serde_json::from_value(json!({"query": "graph retrieval"})).unwrap();
+        assert_eq!(
+            args.budget(),
+            (
+                RETRIEVE_CONTEXT_DEFAULT_SEED_LIMIT,
+                RETRIEVE_CONTEXT_DEFAULT_MAX_DEPTH,
+                RETRIEVE_CONTEXT_DEFAULT_MAX_NODES,
+                READ_PAGES_DEFAULT_CHARS_PER_PAGE,
+                READ_PAGES_DEFAULT_TOTAL_CHARS,
+            )
+        );
+
+        let args: RetrieveContextArgs = serde_json::from_value(json!({
+            "query": "graph retrieval",
+            "seedLimit": 999,
+            "maxDepth": 999,
+            "maxNodes": 999,
+            "maxCharsPerPage": 1,
+            "maxTotalChars": 10_000_000
+        }))
+        .unwrap();
+        assert_eq!(
+            args.budget(),
+            (
+                RETRIEVE_CONTEXT_SEED_LIMIT_CEILING,
+                RETRIEVE_CONTEXT_MAX_DEPTH_CEILING,
+                RETRIEVE_CONTEXT_MAX_NODES_CEILING,
+                200,
+                READ_PAGES_TOTAL_CHARS_CEILING,
             )
         );
     }
