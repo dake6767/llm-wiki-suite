@@ -67,78 +67,28 @@ Obsidian 或 CLI。分享授权当前以整个 Wiki 为边界，不是单页授�
 
 ## 快速开始
 
-推荐路径是从 [GitHub Releases](https://github.com/dake6767/llm-wiki-suite/releases/latest)
-安装标准 My LLM Wiki Browser。第一次启动不会先打开 `127.0.0.1`：应用内置的 Setup
-页面会先让你选择需要安装 Skills 的 Agent 宿主，一次确认后完成：
+### 推荐：Browser 一键安装
 
-```text
-完整 Skills Pack → 官方验证工具链 → Wiki 初始化 → 打开 Browser
-```
+从 [GitHub Releases](https://github.com/dake6767/llm-wiki-suite/releases/latest)
+下载并安装 My LLM Wiki Browser。
 
-确认页可以修改 Wiki 的存放路径；默认仍为 `~/wikis/my-llm-wiki`，已有 Wiki 目录会直接复用。
-同一页还可以修改工具链与 Skills 的安装目录，默认仍为 `~/.my-llm-wiki`。工具链、语音模型和
-Skills 合计可能 3 GB 左右，Windows 上默认全部落在系统盘并随重装丢失，因此可以改到数据盘：
-此时 `~/.my-llm-wiki` 会变成指向该目录的链接（Windows 上是 junction），Skills、MCP 注册和
-`wikis.json` 的既有路径全部照常工作；重装系统后把新的 `~/.my-llm-wiki` 指回原目录即可复用，
-不必重新下载。
-首次界面不再要求用户组合 Documents、Web、Video、中文/非中文 ASR 或失败策略。
-`toolchain-base` 包含 FFmpeg、yt-dlp、aria2c、Node/OpenCLI 和文档转换。完成页会立即开放 Wiki，
-并提供独立的“安装并预热”按钮：Browser 可在后台准备中文 ASR runtime、fsmn-vad 与
-SenseVoiceSmall，用户无需等待即可先抓取网页。所有 pack 都由 CI 预构建和验证，用户机器
-只下载、校验 SHA-256、解压和激活，不调用全局 pip/npm、Homebrew、apt 或 winget。
+首次启动时：
 
-Skills 与工具链安装完成后，托盘只保留一个设置入口：
+1. 选择需要安装 Skills 的 Agent；
+2. 检查同名外来 Skill 冲突；
+3. 确认 Wiki 与安装目录。
 
-```text
-设置…
-├── Browser          # Wiki、端口、自启、分享与 relay
-└── Agent            # Skills、工具链、update、repair 与人工动作
-```
+保持默认选项即可安装完整 Skills Pack 和官方验证工具链。系统盘空间有限时，可以把安装目录
+改到数据盘。Setup 完成后会初始化或复用 Wiki，并直接打开 Browser。
 
-统一设置窗口仍保留安全分界：Browser 配置使用带 Owner 凭证的本机 API，Skills 与工具链直接
-调用 Tauri Setup Core，安装和修复能力不会进入 `127.0.0.1` 或 relay。
+然后给 Agent 一份真实资料：
 
-之后新装了别的 Agent，不必重跑安装：「Skills 与工具链」页的 Skills Pack 面板列出全部已知宿主，
-可以逐个把已经装好的那份 Skills Pack 装给它，或者把某个宿主摘掉。新增只建链接，不联网、
-不重新下载工具链；遇到同名外来 Skill 仍然逐项授权后才备份替换。移除只摘该宿主的链接，
-安装目录里的 Skills Pack、能力包与 Wiki 都保留。
+> 把这个视频保存到我的 Wiki，保留完整转写和可跳转时间戳，然后整理成知识页面：&lt;URL&gt;
 
-无界面 Agent 可以下载 Release 中的独立 CLI；Browser 也会把它安装到：
+### 其他安装方式
 
-```text
-~/.my-llm-wiki/bin/my-llm-wiki
-```
-
-CLI 与 GUI 调用同一个 Rust Setup Core：
-
-```bash
-my-llm-wiki inspect --json
-my-llm-wiki setup --host codex --wiki-path ~/wikis/my-llm-wiki --json
-my-llm-wiki setup --host codex --install-root D:\my-llm-wiki --json
-my-llm-wiki add-host --host claude --json
-my-llm-wiki uninstall --host claude --json
-my-llm-wiki status --json
-my-llm-wiki update --check --json
-my-llm-wiki update --json
-my-llm-wiki repair --json
-```
-
-最小状态写在 `~/.my-llm-wiki/setup-state.json`，Provider 偏好写在
-`~/.my-llm-wiki/providers.json`。repair、update 和 uninstall 只触碰 Setup Core 能证明拥有的
-路径；Wiki、RAW、自定义 Provider 与外来 Skills 永远按用户数据保留。
-
-官方工具链是推荐并默认优先的 Provider，因为它通过了项目 SOP；它不是唯一实现。用户可以在
-Setup 中为某项能力保存 system/custom Provider，也可以在单次任务里临时指定，产物仍需通过
-同一套 RAW、来源、字幕与完整性检查。只安装 Skills、不安装 Browser 的开放路径同样受支持。
-
-完整的 Agent/CLI 操作边界见 [`AGENTS.md`](AGENTS.md)。MCP 不属于初始安装；只有用户之后
-明确提出时才单独配置。
-
-安装完成后，直接给 agent 一份真实资料：
-
-```text
-把这个视频保存到我的 Wiki，保留完整转写和可跳转时间戳，然后整理成知识页面：<URL>
-```
+只需要 Skills、不使用 Browser，或需要无界面 CLI 安装时，请参阅
+[`AGENTS.md`](AGENTS.md)。
 
 ## 组件状态
 
